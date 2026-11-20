@@ -42,7 +42,7 @@ def speakable(text):
 class Voice:
     # Vom Nutzer gewählt (Hörprobe): männliche Stimme M1, 5 Diffusionsschritte, schnelleres Tempo.
     voice: str = "M1"
-    speed: float = 1.15
+    speed: float = 1.25
     lofi: bool = False
     steps: int = 5
 
