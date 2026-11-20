@@ -46,6 +46,8 @@ const state = () => ({ type: "state", model: settings.model, voiceModel: setting
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
 let splitter: SentenceSplitter | undefined;
+const holds = new Set<ReturnType<typeof setTimeout>>(); // zurückgehaltene Sätze nach dem ersten Werkzeug (siehe chat)
+const clearHolds = () => { for (const t of holds) clearTimeout(t); holds.clear(); };
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
 const speech = new Speech(e => {
@@ -68,7 +70,7 @@ function setVoice(mode: typeof voice) {
   voice = mode;
   speech.mode(mode);
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
-  if (mode === "off") { splitter = undefined; speech.stopSpeaking(); }
+  if (mode === "off") { splitter = undefined; clearHolds(); speech.stopSpeaking(); }
   broadcast(state());
 }
 
@@ -123,7 +125,17 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   let first = true, switching = false, textSeen = false, announced = false;
   splitter = spoken ? new SentenceSplitter() : undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
-  const speakAll = (parts: string[]) => { for (const p of parts) speech.say(p); };
+  // Nach dem ersten Werkzeugaufruf werden Sätze 1 s zurückgehalten: Folgt direkt ein weiteres Werkzeug, war es ein Zwischentext
+  // über etwas, das ohnehin gerade passiert, und wird verworfen (sonst kündigt Jarvis Erledigtes erst nachträglich an).
+  let toolSeen = false;
+  const speakAll = (parts: string[]) => {
+    for (const p of parts) {
+      vlog(`say: ${toolSeen ? "(gehalten) " : ""}${p.slice(0, 120)}`);
+      if (!toolSeen) { speech.say(p); continue; }
+      const t = setTimeout(() => { holds.delete(t); speech.say(p); }, 1000);
+      holds.add(t);
+    }
+  };
   const system = spoken ? SYSTEM_PROMPT + "\n\nDu bist gerade im Sprachmodus: antworte in höchstens zwei kurzen Sätzen, ohne Listen." : SYSTEM_PROMPT;
   await brain.prompt(sid, text, model, system, (e: BrainEvent) => {
     if (switching) return;
@@ -153,7 +165,12 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       clearTimeout(flushTimer);
       flushTimer = setTimeout(() => { if (splitter) speakAll(splitter.flushIfSentence()); }, 600);
     }
-    if (splitter && e.kind === "tool") { clearTimeout(flushTimer); speakAll(splitter.flush()); }
+    if (splitter && e.kind === "tool") {
+      clearTimeout(flushTimer);
+      if (toolSeen) { clearHolds(); splitter.flush(); vlog("Zwischentext vor Werkzeug verworfen"); } // Ankündigung gab es schon
+      else speakAll(splitter.flush());
+      toolSeen = true;
+    }
     if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") { busy = false; broadcast(state()); }
@@ -187,6 +204,7 @@ browser.onEvent = m => {
 async function stop() {
   stoppedUntil = Date.now() + 1500;
   splitter = undefined;
+  clearHolds();
   speech.stopSpeaking();
   if (session) await brain.abort(session);
   busy = false; broadcast({ type: "stopped" }); broadcast(state());
