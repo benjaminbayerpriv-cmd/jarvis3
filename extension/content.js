@@ -52,7 +52,14 @@
     return clean.length > 90 ? clean.slice(0, 89) + "…" : clean;
   }
 
+  function isPassword(element) {
+    return (element instanceof HTMLInputElement && element.type === "password")
+      || /(?:^|\s)(?:current-password|new-password)(?:\s|$)/i.test(element.getAttribute("autocomplete") ?? "")
+      || getComputedStyle(element).webkitTextSecurity !== "none";
+  }
+
   function itemName(element, role, custom) {
+    if (isPassword(element)) return "Passwortfeld";
     const root = element.getRootNode();
     const references = (element.getAttribute("aria-labelledby") ?? "").trim().split(/\s+/);
     const referenced = references.map(id => root.getElementById?.(id) ?? document.getElementById(id));
@@ -199,7 +206,7 @@
     return false;
   }
 
-  function locate(viewport) {
+  function locate(viewport, all = false) {
     const styleCache = new Map();
     const hitCache = new Map();
     const appearance = element => {
@@ -244,11 +251,12 @@
         rect = intersect(rect, clip);
       }
       if (hidden || rect.right - rect.x < 3 || rect.bottom - rect.y < 3) continue;
-      if (!uncover(rect, element, hitCache)) continue;
+      if (!all && !uncover(rect, element, hitCache)) continue;
 
       const disabled = element.matches(":disabled, [aria-disabled='true']");
       const type = disabled ? "disabled" : custom ? "custom" : fields.has(role) ? "field" : role === "link" ? "link" : "control";
-      visible.push({ rect, color: colors[type], custom, name: itemName(element, role, custom) });
+      visible.push({ element, rect, role, enabled: !disabled, color: colors[type],
+        custom, name: itemName(element, role, custom) });
     }
     return visible;
   }
@@ -316,6 +324,8 @@
     }
   }
 
+  let capturePending = false;
+
   function ensureOverlay() {
     const container = document.fullscreenElement || document.documentElement;
     if (host.parentNode !== container) {
@@ -332,7 +342,7 @@
     if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
-      if (!enabled || document.hidden) return;
+      if (!enabled || capturePending || document.hidden) return;
       ensureOverlay();
       if (scanPending) {
         scanPending = false;
@@ -383,7 +393,226 @@
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.enabled) setEnabled(changes.enabled.newValue !== false);
+    if (area === "local" && changes.enabled) setEnabled(changes.enabled.newValue === true);
   });
-  chrome.storage.local.get({ enabled: true }).then(({ enabled }) => setEnabled(enabled));
+  chrome.storage.local.get({ enabled: false }).then(({ enabled }) => setEnabled(enabled));
+
+  let commandTargets = new Map();
+  const frameViewport = () => ({ x: 0, y: 0, right: innerWidth, bottom: innerHeight });
+  const rectArray = ({ x, y, right, bottom }) => [x, y, right - x, bottom - y];
+  const overlaps = (a, b) => Math.min(a.right, b.right) > Math.max(a.x, b.x)
+    && Math.min(a.bottom, b.bottom) > Math.max(a.y, b.y);
+
+  // Translate same-origin frame coordinates into the top-level CSS viewport.
+  function placement() {
+    let x = 0;
+    let y = 0;
+    let clip = frameViewport();
+    try {
+      for (let view = window; view !== view.top; view = view.parent) {
+        const frame = view.frameElement;
+        if (!frame || !frame.getClientRects().length) return null;
+        const style = view.parent.getComputedStyle(frame);
+        if (style.visibility !== "visible" || style.opacity === "0" || style.transform !== "none") return null;
+        const bounds = frame.getBoundingClientRect();
+        const dx = bounds.left + frame.clientLeft + parseFloat(style.paddingLeft);
+        const dy = bounds.top + frame.clientTop + parseFloat(style.paddingTop);
+        x += dx;
+        y += dy;
+        clip = intersect({ x: clip.x + dx, y: clip.y + dy, right: clip.right + dx, bottom: clip.bottom + dy },
+          { x: 0, y: 0, right: view.parent.innerWidth, bottom: view.parent.innerHeight });
+      }
+    } catch {
+      return null;
+    }
+    return { x, y, clip };
+  }
+
+  function isTextInput(element) {
+    return element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement &&
+      ["text", "email", "search", "password", "tel", "url", "number"].includes(element.type));
+  }
+
+  function readRect(rect) {
+    const region = { x: rect[0], y: rect[1], right: rect[0] + rect[2], bottom: rect[1] + rect[3] };
+    const parts = [];
+    const range = new Range();
+    const activeRoots = new Set([document]);
+    for (const root of activeRoots) {
+      const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+          }
+          if (node === host || node.matches("script, style, noscript, template, textarea, select, input[type=hidden]")
+            || isPassword(node)) {
+            return node.matches("textarea, select") && !isPassword(node)
+              ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const inner = nestedRoot(node);
+          if (inner) activeRoots.add(inner);
+          if ((isTextInput(node) || node instanceof HTMLSelectElement)
+            && getComputedStyle(node).visibility === "visible"
+            && overlaps(region, box(node.getBoundingClientRect()))) {
+            parts.push(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value);
+          }
+          continue;
+        }
+        if (node.parentElement && getComputedStyle(node.parentElement).visibility !== "visible") continue;
+        if (node.parentElement?.closest("textarea, select")) continue;
+        range.selectNodeContents(node);
+        if ([...range.getClientRects()].some(bounds => overlaps(region, box(bounds)))) parts.push(node.data.trim());
+      }
+    }
+    return parts.filter(Boolean).join(" ");
+  }
+
+  // Force links and forms to use this tab for the duration of native activation.
+  function click(element) {
+    const link = element.closest("a[href], area[href]");
+    const form = element.closest("button, input")?.form;
+    const submitter = form && element.closest("button, input");
+    const attributes = link ? [[link, "target"]] : form ? [[form, "target"], [submitter, "formtarget"]] : [];
+    const previous = attributes.map(([node, attribute]) => node.getAttribute(attribute));
+    try {
+      for (const [node, attribute] of attributes) node.setAttribute(attribute, "_self");
+      if (element instanceof HTMLElement) element.click();
+      else element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    } finally {
+      attributes.forEach(([node, attribute], index) => {
+        if (previous[index] === null) node.removeAttribute(attribute);
+        else node.setAttribute(attribute, previous[index]);
+      });
+    }
+  }
+
+  function type(element, text) {
+    if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
+    const valueField = isTextInput(element) && !element.readOnly;
+    if (!valueField && !element.isContentEditable) throw new Error("Element ist kein beschreibbares Textfeld");
+    element.focus({ preventScroll: true });
+    // A site's focus handler may mutate the target.
+    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
+    const eventOptions = { bubbles: true, composed: true, inputType: "insertReplacementText", data: text };
+    if (!element.dispatchEvent(new InputEvent("beforeinput", { ...eventOptions, cancelable: true }))) {
+      throw new Error("Die Seite hat die Eingabe abgelehnt");
+    }
+    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
+    if (valueField && isTextInput(element) && !element.readOnly) {
+      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, text);
+    } else if (element.isContentEditable) {
+      if (element.querySelector("input, [autocomplete], [contenteditable]")) {
+        throw new Error("Das Textfeld enthält weitere Eingabefelder");
+      }
+      element.textContent = text;
+    } else {
+      throw new Error("Das Textfeld ist nicht mehr beschreibbar");
+    }
+    element.dispatchEvent(new InputEvent("input", eventOptions));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function scroll(element, dy) {
+    const pixels = dy * 40;
+    for (let node = element; node && node !== document.scrollingElement; node = parentOf(node)) {
+      if (node.scrollHeight > node.clientHeight && /^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY)) {
+        node.scrollBy({ top: pixels, behavior: "instant" });
+        return;
+      }
+    }
+    window.scrollBy({ top: pixels, behavior: "instant" });
+  }
+
+  function describe(item) {
+    const { element, role, enabled, name } = item;
+    const password = isPassword(element);
+    const category = password || fields.has(role) ? "field" : role === "link" ? "link" : "control";
+    const axRoles = { button: "Button", link: "Link", textbox: "TextField", searchbox: "SearchField",
+      checkbox: "CheckBox", radio: "RadioButton", combobox: "ComboBox", menuitem: "MenuItem" };
+    const axRole = password ? "SecureTextField" : (axRoles[role] ?? (role ? role[0].toUpperCase() + role.slice(1) : "Unknown"));
+    return { role: category, axRole: "AX" + axRole, label: name, enabled, source: "dom" };
+  }
+
+  function handle(request) {
+    const { cmd, id, dy, text } = request;
+    const frame = placement();
+    if (cmd === "overlay") {
+      capturePending = request.hide;
+      if (capturePending) host.remove();
+      else schedule(true);
+      return {};
+    }
+    if (!frame) return { skipped: true };
+    const translate = rect => intersect(frame.clip, {
+      x: rect.x + frame.x, y: rect.y + frame.y, right: rect.right + frame.x, bottom: rect.bottom + frame.y
+    });
+    if (cmd === "scan" || cmd === "viewport") {
+      scan();
+      if (cmd === "viewport") {
+        const passwords = targets.filter(({ element }) => isPassword(element))
+          .map(({ element }) => translate(box(element.getBoundingClientRect())))
+          .filter(rect => rect.x < rect.right && rect.y < rect.bottom).map(rectArray);
+        return { rect: [0, 0, innerWidth, innerHeight], passwords };
+      }
+      commandTargets = new Map();
+      const items = [];
+      for (const item of locate(frameViewport(), request.all === true)) {
+        const rect = translate(item.rect);
+        if (rect.x >= rect.right || rect.y >= rect.bottom) continue;
+        const localId = items.length;
+        commandTargets.set(localId, item.element);
+        items.push({ localId, ...describe(item), rect: rectArray(rect) });
+      }
+      return { targets: items };
+    }
+    if (cmd === "read" && id === undefined) {
+      const [x, y, width, height] = request.rect;
+      const region = intersect(frame.clip, { x, y, right: x + width, bottom: y + height });
+      const local = { x: region.x - frame.x, y: region.y - frame.y,
+        right: region.right - frame.x, bottom: region.bottom - frame.y };
+      return { text: region.x < region.right && region.y < region.bottom ? readRect(rectArray(local)) : "" };
+    }
+    if (cmd === "wait") {
+      return { found: (document.body?.innerText ?? "").includes(request.for) };
+    }
+    if (cmd === "scroll" && id === undefined) {
+      scroll(null, dy);
+      return {};
+    }
+    const element = commandTargets.get(id);
+    if (!element?.isConnected) throw new Error("Unbekannte oder abgelaufene ID. Erst scan ausführen.");
+    if (["click", "type", "focus"].includes(cmd) && element.matches(":disabled, [aria-disabled='true']")) {
+      throw new Error("Element ist deaktiviert");
+    }
+    switch (cmd) {
+      case "click": click(element); return { via: "dom" };
+      case "type": type(element, text); return { via: "dom" };
+      case "focus":
+        element.focus({ preventScroll: true });
+        if (element.getRootNode().activeElement !== element) throw new Error("Element ist nicht fokussierbar");
+        return {};
+      case "scroll": scroll(element, dy); return {};
+      case "read":
+        if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
+        return { text: isTextInput(element) ? element.value
+          : element instanceof HTMLSelectElement ? element.selectedOptions[0]?.label ?? ""
+          : element.innerText ?? element.textContent ?? "" };
+      default: throw new Error("Unbekannter Seitenbefehl");
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((request, sender, reply) => {
+    if (sender.id !== chrome.runtime.id) return;
+    try {
+      reply({ ok: true, ...handle(request) });
+    } catch (error) {
+      reply({ ok: false, error: error.message });
+    }
+  });
 })();

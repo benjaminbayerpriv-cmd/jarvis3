@@ -5,6 +5,8 @@ using System.Text;
 
 namespace UiMap;
 
+internal sealed record DisplayRef(IntPtr Handle, string Name, Rectangle Bounds, bool Primary);
+
 internal static class Native
 {
     private const int Root = 2;
@@ -19,12 +21,12 @@ internal static class Native
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not enable per-monitor physical coordinates.");
     }
 
-    public static List<WindowRef> Windows()
+    public static List<WindowRef> Windows(bool requireIdentity = true)
     {
         var result = new List<WindowRef>();
         if (!EnumWindows((window, _) =>
         {
-            if (Describe(window) is { } current)
+            if (Describe(window, requireIdentity) is { } current)
                 result.Add(current);
             return true;
         }, IntPtr.Zero))
@@ -53,7 +55,7 @@ internal static class Native
         throw new InvalidOperationException("No visible window matches the requested app or title.");
     }
 
-    public static WindowRef? Describe(IntPtr hwnd)
+    public static WindowRef? Describe(IntPtr hwnd, bool requireIdentity = true)
     {
         if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd) || IsIconic(hwnd) ||
             (DwmGetWindowAttribute(hwnd, DwmCloaked, out int cloaked, sizeof(int)) == 0 && cloaked != 0))
@@ -72,19 +74,48 @@ internal static class Native
             using var process = Process.GetProcessById((int)pid);
             return new WindowRef(hwnd.ToInt64(), pid, process.StartTime.ToUniversalTime().Ticks, PixelRect.From(bounds));
         }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception) { return null; }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return requireIdentity ? null : new WindowRef(hwnd.ToInt64(), pid, 0, PixelRect.From(bounds));
+        }
     }
 
     public static bool IsCurrent(WindowRef window) =>
         Describe(window.Hwnd) is { } current && current.Pid == window.Pid && current.Started == window.Started;
 
-    public static (IntPtr Handle, Rectangle Bounds) Monitor(IntPtr window)
+    public static IntPtr Monitor(IntPtr window) => MonitorFromWindow(window, 2);
+
+    public static DisplayRef[] Displays()
     {
-        IntPtr handle = MonitorFromWindow(window, 2);
-        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        if (!GetMonitorInfo(handle, ref info))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not resolve the window's monitor.");
-        return (handle, info.Monitor.Rectangle);
+        var result = new List<DisplayRef>();
+        if (!EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (monitor, _, _, _) =>
+        {
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref info))
+                result.Add(new(monitor, info.Device, info.Monitor.Rectangle, (info.Flags & 1) != 0));
+            return true;
+        }, IntPtr.Zero) || result.Count == 0)
+            throw new InvalidOperationException("No active Windows monitor was found.");
+        return result.OrderByDescending(d => d.Primary).ThenBy(d => d.Bounds.X).ThenBy(d => d.Bounds.Y).ToArray();
+    }
+
+    public static void ScrollAtCursor(int lines)
+    {
+        if (!GetCursorPos(out _))
+            throw new InvalidOperationException("Could not resolve the cursor on the interactive desktop.");
+        if (lines != 0) SendMouse([Mouse(0x0800, WheelDelta(lines))], false);
+    }
+
+    private static uint WheelDelta(int lines)
+    {
+        uint perNotch = 3;
+        if (SystemParametersInfo(0x0068, 0, out uint configured, 0) && configured is > 0 and < uint.MaxValue)
+            perNotch = configured;
+        long delta = -(long)lines * 120 / perNotch;
+        if (delta == 0 && lines != 0) delta = -Math.Sign(lines);
+        if (delta is < int.MinValue or > int.MaxValue)
+            throw new ArgumentException("Scroll distance is too large.");
+        return unchecked((uint)delta);
     }
 
     public static Point Center(Rectangle rect) => new(rect.X + rect.Width / 2, rect.Y + rect.Height / 2);
@@ -99,6 +130,19 @@ internal static class Native
         return (windowClass.Equals("Edit", StringComparison.OrdinalIgnoreCase) ||
             windowClass.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)) &&
             (GetWindowLong(hwnd, -16) & 0x20) != 0;
+    }
+
+    public static void AddNativePasswordRects(IntPtr owner, Rectangle region, List<Rectangle> masks)
+    {
+        EnumChildWindows(owner, (child, _) =>
+        {
+            if (IsWindowVisible(child) && IsPasswordEdit(child))
+            {
+                masks.Add(GetWindowRect(child, out var bounds) ?
+                    Rectangle.Intersect(region, bounds.Rectangle) : region);
+            }
+            return true;
+        }, IntPtr.Zero);
     }
 
     public static void FocusWindow(IntPtr hwnd)
@@ -117,7 +161,11 @@ internal static class Native
             IsPasswordEdit(WindowFromPoint(point)))
             throw new InvalidOperationException("The target point changed before input. Scan again.");
         if (!click && dy == 0) return;
-        Input[] input = click ? [Mouse(0x0002), Mouse(0x0004)] : [Mouse(0x0800, unchecked(0u - (uint)dy))];
+        SendMouse(click ? [Mouse(0x0002), Mouse(0x0004)] : [Mouse(0x0800, WheelDelta(dy))], click);
+    }
+
+    private static void SendMouse(Input[] input, bool click)
+    {
         uint sent = SendInput((uint)input.Length, input, Marshal.SizeOf<Input>());
         if (sent != input.Length)
         {
@@ -153,8 +201,14 @@ internal static class Native
         public readonly Rectangle Rectangle => Rectangle.FromLTRB(Left, Top, Right, Bottom);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public Rect Monitor, Work;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device;
+    }
 
     // Only the mouse variant is used. MOUSEINPUT is the largest member of the native INPUT union.
     [StructLayout(LayoutKind.Sequential)]
@@ -163,7 +217,11 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)]
     private struct MouseInput { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
 
+    private delegate bool MonitorVisitor(IntPtr monitor, IntPtr dc, IntPtr rect, IntPtr context);
+    [DllImport("user32")] private static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorVisitor visitor, IntPtr context);
+    [DllImport("user32")] private static extern bool SystemParametersInfo(uint action, uint param, out uint value, uint flags);
     private delegate bool WindowVisitor(IntPtr window, IntPtr context);
+    [DllImport("user32")] private static extern bool EnumChildWindows(IntPtr owner, WindowVisitor visitor, IntPtr context);
     [DllImport("user32", SetLastError = true)] private static extern bool EnumWindows(WindowVisitor visitor, IntPtr context);
     [DllImport("user32")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32")] private static extern bool IsIconic(IntPtr window);

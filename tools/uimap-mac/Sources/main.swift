@@ -149,6 +149,9 @@ final class Session {
                 if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
                 let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [])
                 return ["ok": true, "path": path, "rect": [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)]]
+            case "key":
+                try pressCombo(request["combo"] as? String ?? "")
+                return ["ok": true]
             case "displays":
                 return ["ok": true, "displays": displays().indices.map { i in
                     let r = displayRect(i)

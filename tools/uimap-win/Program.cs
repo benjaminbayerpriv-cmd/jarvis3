@@ -7,63 +7,86 @@ using System.Text.Json.Serialization;
 
 namespace UiMap;
 
+[JsonConverter(typeof(PixelRectConverter))]
 internal readonly record struct PixelRect(int X, int Y, int Width, int Height)
 {
-    [JsonIgnore]
     public Rectangle Bounds => new(X, Y, Width, Height);
-
     public static PixelRect From(Rectangle rect) => new(rect.X, rect.Y, rect.Width, rect.Height);
 }
 
-internal sealed record Target(string Id, string Role, string Label, PixelRect Rect, bool Enabled, string Source);
+internal sealed class PixelRectConverter : JsonConverter<PixelRect>
+{
+    public override PixelRect Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.StartArray) throw new JsonException("rect must be [x,y,w,h].");
+        Span<int> numbers = stackalloc int[4];
+        for (int i = 0; i < numbers.Length; i++)
+        {
+            if (!reader.Read() || reader.TokenType != JsonTokenType.Number || !reader.TryGetInt32(out numbers[i]))
+                throw new JsonException("rect must be [x,y,w,h].");
+        }
+        if (!reader.Read() || reader.TokenType != JsonTokenType.EndArray ||
+            numbers[2] <= 0 || numbers[3] <= 0 ||
+            (long)numbers[0] + numbers[2] > int.MaxValue || (long)numbers[1] + numbers[3] > int.MaxValue)
+            throw new JsonException("rect must be [x,y,w,h] with positive dimensions.");
+        return new(numbers[0], numbers[1], numbers[2], numbers[3]);
+    }
+
+    public override void Write(Utf8JsonWriter writer, PixelRect rect, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        writer.WriteNumberValue(rect.X);
+        writer.WriteNumberValue(rect.Y);
+        writer.WriteNumberValue(rect.Width);
+        writer.WriteNumberValue(rect.Height);
+        writer.WriteEndArray();
+    }
+}
+
+internal sealed record Target(int Id, string Role, string AxRole, string Label, PixelRect Rect, bool Enabled, string Source);
 internal sealed record WindowRef(long Handle, uint Pid, long Started, PixelRect Rect)
 {
     [JsonIgnore]
     public IntPtr Hwnd => new(Handle);
 }
 
-internal sealed record Entry(Target Target, WindowRef Window, int[]? RuntimeId, int ControlType);
-internal sealed record Snapshot(int Version, Entry[] Entries);
+internal sealed record Entry(Target Target, WindowRef Window, int[]? RuntimeId, int ControlType, bool Password);
+internal sealed record Snapshot(Entry[] Entries, int NextId, int Display);
+internal sealed record Request(string? Cmd, int? Id = null, string? Text = null, int? Dy = null,
+    PixelRect? Rect = null, bool Marks = false, bool All = false, int? Display = null);
 
 internal static class Program
 {
-    private const int SnapshotVersion = 1;
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     [MTAThread]
     private static int Main(string[] args)
     {
+        Console.InputEncoding = new UTF8Encoding(false);
         Console.OutputEncoding = new UTF8Encoding(false);
         if (args.Length == 0 || args is ["--help" or "-h"])
         {
-            Console.WriteLine("uimap scan --app <exe or window title> [--screen] [--overlay]");
-            Console.WriteLine("uimap click <id> | type <id> <text> | scroll <id> <dy> | focus <id>");
+            Console.WriteLine("uimap scan|serve [--app <exe or window title>] [--display <index>] [--screen]");
+            Console.WriteLine("scan also accepts --all --text --overlay; other commands: click, type, focus, scroll, read, shot, displays");
             return args.Length == 0 ? 2 : 0;
         }
 
-        try
+        try { return Run(args); }
+        catch (Exception e) when (IsCommandError(e))
         {
-            return Run(args);
-        }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or IOException
-            or JsonException or UnauthorizedAccessException or NotSupportedException or COMException
-            or System.ComponentModel.Win32Exception or TimeoutException)
-        {
-            // A provider error during SetValue could contain the submitted text.
-            string message = args[0] == "type" && error is not ArgumentException and not InvalidOperationException
-                ? $"Text operation failed (0x{error.HResult:X8})."
-                : error.Message;
-            Console.Error.WriteLine($"uimap: {message}");
-            return error is ArgumentException ? 2 : 1;
+            Console.Error.WriteLine($"uimap: {ErrorMessage(e)}");
+            return e is ArgumentException ? 2 : 1;
         }
     }
 
     private static int Run(string[] args)
     {
+        string command = args[0];
         string? app = null;
-        bool screen = false, overlay = false;
-        int delta = 0;
-        if (args[0] == "scan")
+        bool screen = false, overlay = false, shortList = false, all = false;
+        int? display = null;
+        Request request;
+        if (command is "scan" or "serve")
         {
             for (int i = 1; i < args.Length; i++)
             {
@@ -71,136 +94,140 @@ internal static class Program
                 {
                     case "--app" when app == null && i + 1 < args.Length && !args[i + 1].StartsWith("--"):
                         app = args[++i];
+                        if (string.IsNullOrWhiteSpace(app)) throw new ArgumentException("Missing app name.");
                         break;
-                    case "--screen" when !screen:
-                        screen = true;
+                    case "--display" when display == null && i + 1 < args.Length:
+                        display = Number(args[++i]);
                         break;
-                    case "--overlay" when !overlay:
-                        overlay = true;
-                        break;
-                    default:
-                        throw new ArgumentException($"Unexpected scan argument: {args[i]}");
+                    case "--screen" when !screen: screen = true; break;
+                    case "--overlay" when command == "scan" && !overlay: overlay = true; break;
+                    case "--all" when command == "scan" && !all: all = true; break;
+                    case "--text" when command == "scan" && !shortList: shortList = true; break;
+                    default: throw new ArgumentException($"Unexpected argument: {args[i]}");
                 }
             }
-            if (string.IsNullOrWhiteSpace(app))
-                throw new ArgumentException("scan requires --app <exe or window title>.");
+            request = new(command, All: all, Display: display);
         }
-        else if (args is ["scroll", _, var dy])
+        else
         {
-            if (!int.TryParse(dy, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out delta))
-                throw new ArgumentException("dy must be a signed 32-bit integer in wheel units.");
-        }
-        else if (args is not ["click" or "focus", _] and not ["type", _, _])
-        {
-            throw new ArgumentException("Invalid command or argument count. See uimap --help.");
+            request = args switch
+            {
+                ["click" or "focus" or "read", var id] => new(command, Id: Number(id)),
+                ["type", var id, var text] => new(command, Id: Number(id), Text: text),
+                ["scroll", var id, var dy] => new(command, Id: Number(id), Dy: Number(dy)),
+                ["scroll", var dy] => new(command, Dy: Number(dy)),
+                ["read", "--rect", var x, var y, var w, var h] =>
+                    new(command, Rect: ParseRect(x, y, w, h)),
+                ["shot"] or ["shot", "--marks"] => new(command, Marks: args.Length == 2),
+                ["shot", "--rect", var x, var y, var w, var h] =>
+                    new(command, Rect: ParseRect(x, y, w, h)),
+                ["shot", "--rect", var x, var y, var w, var h, "--marks"] =>
+                    new(command, Rect: ParseRect(x, y, w, h), Marks: true),
+                ["displays"] => new(command),
+                _ => throw new ArgumentException("Invalid command or argument count. See uimap --help.")
+            };
         }
 
         Native.UsePhysicalPixels();
-        int session = Process.GetCurrentProcess().SessionId;
-        if (session == 0)
+        int windowsSession = Process.GetCurrentProcess().SessionId;
+        if (windowsSession == 0)
             throw new InvalidOperationException("Run uimap in the signed-in user's interactive Windows session.");
-        string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Jarvis", "uimap", session.ToString(CultureInfo.InvariantCulture));
-        Directory.CreateDirectory(folder);
-        string path = Path.Combine(folder, "scan.json");
+        using var session = new Session(app, screen, display);
+        if (command == "serve") return Serve(session);
+        if (command == "displays") { Emit(session.Handle(request, false)); return 0; }
 
-        Target[]? targets = null;
-        using (var gate = new Mutex(false, $@"Local\Jarvis.uimap.{session}"))
+        string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Jarvis", "uimap", windowsSession.ToString(CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, "latest-v2.json");
+        Dictionary<string, object?> reply;
+        using (var gate = new Mutex(false, $@"Local\Jarvis.uimap.{windowsSession}"))
         {
             try
             {
-                if (!gate.WaitOne(TimeSpan.FromSeconds(15)))
-                    throw new TimeoutException("Another uimap command is still running.");
+                if (!gate.WaitOne(TimeSpan.FromSeconds(30))) throw new TimeoutException("Another uimap command is running.");
             }
-            catch (AbandonedMutexException)
-            {
-                // The previous process exited. Snapshot publication uses an atomic rename.
-            }
+            catch (AbandonedMutexException) { }
             try
             {
-                using var automation = new Accessibility();
-                if (app != null)
+                if (File.Exists(path))
+                    session.Restore(JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(path), Json));
+                reply = session.Handle(request, shortList);
+                if (command == "scan")
                 {
-                    // Starting a scan invalidates the previous IDs even if the new scan fails.
-                    File.Delete(path);
-                    var entries = Scan(app, screen, automation);
                     string temporary = path + ".tmp";
                     try
                     {
-                        File.WriteAllText(temporary, JsonSerializer.Serialize(new Snapshot(SnapshotVersion, entries), Json));
+                        File.WriteAllText(temporary, JsonSerializer.Serialize(session.Save(), Json));
                         File.Move(temporary, path, true);
                     }
                     finally { File.Delete(temporary); }
-
-                    targets = entries.Select(entry => entry.Target).ToArray();
-                    Console.WriteLine(JsonSerializer.Serialize(targets, Json));
-                }
-                else
-                {
-                    if (!File.Exists(path))
-                        throw new InvalidOperationException("No current scan. Run uimap scan first.");
-                    var snapshot = JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(path), Json);
-                    var entry = snapshot?.Version == SnapshotVersion
-                        ? snapshot.Entries.FirstOrDefault(item => item.Target.Id == args[1])
-                        : null;
-                    if (entry == null)
-                        throw new InvalidOperationException("Unknown or expired ID. Run uimap scan again.");
-                    automation.Act(entry, args[0], args[0] == "type" ? args[2] : null, delta);
                 }
             }
             finally { gate.ReleaseMutex(); }
         }
 
-        if (overlay && targets is { Length: > 0 })
+        if (reply["ok"] is true && shortList) Console.WriteLine(reply["text"]);
+        else Emit(reply);
+        if (reply["ok"] is not true) return 1;
+        if (overlay && reply["targets"] is Target[] { Length: > 0 } targets) Overlay.ShowTargets(targets);
+        return 0;
+    }
+
+    private sealed record ScanRequest(bool All = false, bool Text = false, int? Display = null);
+
+    internal static int Serve(Session session)
+    {
+        while (Console.ReadLine() is { } line)
         {
-            Console.Out.Flush();
-            Overlay.ShowTargets(targets);
+            Dictionary<string, object?> reply;
+            JsonElement? rid = null;
+            try
+            {
+                using var json = JsonDocument.Parse(line);
+                if (json.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException();
+                if (json.RootElement.TryGetProperty("rid", out var value)) rid = value.Clone();
+                bool shortList = false;
+                var root = json.RootElement;
+                if (root.TryGetProperty("cmd", out var cmd) && cmd.ValueKind == JsonValueKind.String &&
+                    cmd.GetString() == "scan")
+                {
+                    var scan = root.Deserialize<ScanRequest>(Json) ?? throw new JsonException();
+                    shortList = scan.Text;
+                    reply = session.Handle(new Request("scan", All: scan.All, Display: scan.Display), shortList);
+                }
+                else
+                {
+                    var request = root.Deserialize<Request>(Json) ?? throw new JsonException();
+                    reply = session.Handle(request, false);
+                }
+            }
+            catch (JsonException) { reply = new() { ["ok"] = false, ["error"] = "Invalid JSON request or field type." }; }
+            if (rid is { } correlation) reply["rid"] = correlation;
+            Emit(reply);
         }
         return 0;
     }
 
-    private static Entry[] Scan(string app, bool screen, Accessibility automation)
+    private static int Number(string value) => int.TryParse(value, NumberStyles.AllowLeadingSign,
+        CultureInfo.InvariantCulture, out int number) ? number : throw new ArgumentException("Expected an integer.");
+
+    private static PixelRect ParseRect(string x, string y, string w, string h)
     {
-        var windows = Native.Windows();
-        var anchor = Native.SelectWindow(windows, app);
-        var monitor = Native.Monitor(anchor.Hwnd);
-        Rectangle region = screen ? monitor.Bounds : anchor.Rect.Bounds;
-        var entries = new List<Entry>();
-        var passwordRects = new List<Rectangle>();
-        var seenWindows = new HashSet<long>();
-
-        foreach (var window in screen ? windows : [anchor])
-        {
-            Rectangle clip = Rectangle.Intersect(region, window.Rect.Bounds);
-            if (clip.Width < 3 || clip.Height < 3) continue;
-            if (automation.Collect(window, clip, entries, passwordRects))
-                seenWindows.Add(window.Handle);
-        }
-
-        try
-        {
-            foreach (var rect in Capture.Detect(screen ? monitor.Handle : anchor.Hwnd, screen, region, passwordRects))
-            {
-                if (passwordRects.Any(rect.IntersectsWith) || entries.Any(e => VisualEdges.Similar(rect, e.Target.Rect.Bounds)))
-                    continue;
-                var owner = screen ? windows.FirstOrDefault(w => w.Hwnd == Native.WindowAt(Native.Center(rect))) : anchor;
-                if (owner is null || !owner.Rect.Bounds.Contains(rect) || !Native.IsCurrent(owner))
-                    continue;
-                entries.Add(new Entry(new Target("", "visual", "Mögliche Taste", PixelRect.From(rect), true, "visual"),
-                    owner, null, 0));
-            }
-        }
-        catch (Exception e) when (e is COMException or NotSupportedException or InvalidOperationException or TimeoutException
-            or ArgumentException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine($"uimap: Windows Graphics Capture unavailable: {e.Message}");
-            if (seenWindows.Count == 0)
-                throw new InvalidOperationException("Neither UI Automation nor the visual fallback could scan the target.");
-        }
-
-        string generation = Guid.NewGuid().ToString("N");
-        return entries.OrderBy(e => e.Target.Rect.Y).ThenBy(e => e.Target.Rect.X)
-            .Select((entry, index) => entry with { Target = entry.Target with { Id = $"{generation}:{index + 1}" } })
-            .ToArray();
+        var numbers = new[] { Number(x), Number(y), Number(w), Number(h) };
+        return JsonSerializer.Deserialize<PixelRect>(JsonSerializer.SerializeToElement(numbers), Json);
     }
+
+    private static void Emit(Dictionary<string, object?> value)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(value, Json));
+        Console.Out.Flush();
+    }
+
+    internal static bool IsCommandError(Exception e) => e is ArgumentException or InvalidOperationException or IOException
+        or JsonException or UnauthorizedAccessException or NotSupportedException or COMException
+        or System.ComponentModel.Win32Exception or TimeoutException or OverflowException or ExternalException;
+
+    internal static string ErrorMessage(Exception e) =>
+        e is COMException ? $"Windows provider error (0x{e.HResult:X8})." : e.Message;
 }

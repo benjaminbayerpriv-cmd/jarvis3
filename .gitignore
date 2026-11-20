@@ -5,3 +5,5 @@ node_modules/
 speech/.venv/
 target/
 tools/uimap-mac/bin/
+workspace/
+core/node_modules/

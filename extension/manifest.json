@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "Web-Bildschirmmarker",
-  "description": "Umrandet und beschriftet sichtbare Bedienelemente auf Webseiten.",
-  "version": "1.0.0",
-  "minimum_chrome_version": "119",
+  "name": "Jarvis",
+  "description": "Verbindet Chrome mit Jarvis und markiert Bedienelemente auf Wunsch.",
+  "version": "1.1.0",
+  "minimum_chrome_version": "120",
   "permissions": [
-    "storage"
+    "storage",
+    "tabs",
+    "tabGroups",
+    "webNavigation",
+    "debugger"
   ],
   "action": {
-    "default_title": "Web-Bildschirmmarker ein- oder ausschalten",
+    "default_title": "Jarvis-Markierungen einschalten",
     "default_icon": {
       "16": "icons/16.png",
       "32": "icons/32.png"
