@@ -2,6 +2,11 @@
 
 mod services;
 
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem},
@@ -11,6 +16,10 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+// Manche Windows-Tastaturtreiber liefern für eine Betätigung zwei Pressed-Ereignisse.
+static LAST_DISPATCH: Mutex<Option<(Action, Instant)>> = Mutex::new(None);
+const DEBOUNCE: Duration = Duration::from_millis(150);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Show,
@@ -19,18 +28,23 @@ enum Action {
     Stop,
 }
 
-fn shortcuts() -> [(Shortcut, Action); 3] {
+fn shortcuts() -> Vec<(Shortcut, Action)> {
     let primary = if cfg!(target_os = "macos") {
         Modifiers::SUPER
     } else {
         Modifiers::CONTROL
     };
     let modifiers = Some(primary | Modifiers::SHIFT);
-    [
+    let mut keys = vec![
         (Shortcut::new(modifiers, Code::KeyJ), Action::ToggleWindow),
         (Shortcut::new(modifiers, Code::Space), Action::Voice),
-        (Shortcut::new(modifiers, Code::Escape), Action::Stop),
-    ]
+    ];
+    // Windows reserviert Ctrl+Shift+Escape für den Task-Manager; dort gilt der Ersatzhotkey.
+    #[cfg(windows)]
+    keys.push((windows_stop_fallback(), Action::Stop));
+    #[cfg(not(windows))]
+    keys.push((Shortcut::new(modifiers, Code::Escape), Action::Stop));
+    keys
 }
 
 #[cfg(windows)]
@@ -42,6 +56,18 @@ fn windows_stop_fallback() -> Shortcut {
 }
 
 fn dispatch(app: &AppHandle, action: Action) {
+    {
+        let mut last = LAST_DISPATCH.lock().unwrap();
+        let now = Instant::now();
+        if let Some((previous, at)) = *last {
+            if previous == action && now.duration_since(at) < DEBOUNCE {
+                eprintln!("Jarvis3: doppeltes Hotkey-Ereignis {action:?} ignoriert");
+                return;
+            }
+        }
+        *last = Some((action, now));
+    }
+    eprintln!("Jarvis3: Hotkey {action:?} ausgelöst");
     if action == Action::Stop {
         let endpoint = app.state::<services::Services>().endpoint().clone();
         tauri::async_runtime::spawn_blocking(move || match endpoint.stop() {
@@ -139,11 +165,6 @@ fn main() -> tauri::Result<()> {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    #[cfg(windows)]
-                    if *shortcut == windows_stop_fallback() {
-                        dispatch(app, Action::Stop);
-                        return;
-                    }
                     if let Some((_, action)) =
                         shortcuts().into_iter().find(|(key, _)| key == shortcut)
                     {
@@ -165,15 +186,6 @@ fn main() -> tauri::Result<()> {
                     }
                 }
             }
-            #[cfg(windows)]
-            match app.global_shortcut().register(windows_stop_fallback()) {
-                Ok(()) => eprintln!(
-                    "Jarvis3: Windows-Not-Aus zusätzlich auf Ctrl+Alt+Shift+Escape registriert"
-                ),
-                Err(error) => {
-                    eprintln!("Jarvis3: Windows-Ersatzhotkey für Not-Aus nicht verfügbar: {error}")
-                }
-            }
             if !background {
                 if let Some(window) = app.get_webview_window("main") {
                     window.show()?;
@@ -191,6 +203,15 @@ fn main() -> tauri::Result<()> {
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    // Live-Modus aktiv beenden: UI sendet damit "voice: off" an jarvisd,
+                    // bevor die Webview in den Hintergrund geht.
+                    let script = "(()=>{const live=document.getElementById('live'); \
+                                  if(live && !live.hidden) document.getElementById('liveEnd')?.click();})()";
+                    if let Some(webview) = window.webviews().first() {
+                        if let Err(error) = webview.eval(script) {
+                            eprintln!("Jarvis3: Sprachmodus beim Schließen nicht beendet: {error}");
+                        }
+                    }
                     let _ = window.hide();
                 }
             }
@@ -212,23 +233,36 @@ mod tests {
     #[test]
     fn shortcuts_have_distinct_ids_and_match_contract() {
         let mapping = shortcuts();
-        let expected = [
-            (Code::KeyJ, Action::ToggleWindow),
-            (Code::Space, Action::Voice),
-            (Code::Escape, Action::Stop),
-        ];
+        assert_eq!(mapping.len(), 3);
         let modifier = if cfg!(target_os = "macos") {
             Modifiers::SUPER
         } else {
             Modifiers::CONTROL
         };
-        for ((key, action), (expected_key, expected_action)) in mapping.into_iter().zip(expected) {
-            assert_eq!(action, expected_action);
-            assert_eq!(
-                key,
-                Shortcut::new(Some(modifier | Modifiers::SHIFT), expected_key)
-            );
-        }
+        assert_eq!(
+            mapping[0],
+            (
+                Shortcut::new(Some(modifier | Modifiers::SHIFT), Code::KeyJ),
+                Action::ToggleWindow
+            )
+        );
+        assert_eq!(
+            mapping[1],
+            (
+                Shortcut::new(Some(modifier | Modifiers::SHIFT), Code::Space),
+                Action::Voice
+            )
+        );
+        #[cfg(windows)]
+        assert_eq!(mapping[2], (windows_stop_fallback(), Action::Stop));
+        #[cfg(not(windows))]
+        assert_eq!(
+            mapping[2],
+            (
+                Shortcut::new(Some(modifier | Modifiers::SHIFT), Code::Escape),
+                Action::Stop
+            )
+        );
         assert_ne!(mapping[0].0.id(), mapping[1].0.id());
         assert_ne!(mapping[0].0.id(), mapping[2].0.id());
         assert_ne!(mapping[1].0.id(), mapping[2].0.id());
