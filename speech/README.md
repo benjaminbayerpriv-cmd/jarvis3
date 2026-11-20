@@ -43,7 +43,8 @@ Gemessen auf dem MacBook Pro M1 Pro mit warmen Modellen und laufendem WebSocket-
 | --- | --- | ---: | --- |
 | Letztes WAV-Sample mit Betrag ≥ 0,007 → empfangenes `final` | 199, 322, 279 | **279 ms** | < 300 ms, zwei von drei Läufen |
 | `final.ms` für dieselben Äußerungen | 134, 143, 91 | **134 ms** | STT-Dekodierung |
-| Gesendetes warmes `say` → erster nichtstiller PCM-Frame | 327, 278, 394 | **327 ms** | < 400 ms, drei von drei Läufen |
+| Gesendetes warmes `say` → erster nichtstiller PCM-Frame (2 Schritte, alt) | 327, 278, 394 | **327 ms** | < 400 ms |
+| dasselbe mit Stimme M1, 8 Schritten und Teilung am ersten Komma (aktuell) | 985, 788, 818 | **818 ms** | Qualität vor Tempo |
 
 Bei Barge-in und explizitem Stopp endeten die simulierte Ausgabe und das zugehörige `say_end` jeweils innerhalb von 100 ms. Der native Start des PortAudio-Ausgangs wurde zusätzlich mit 48 kHz und geschlossenem Mikrofoneingang geprüft.
 

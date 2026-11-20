@@ -40,9 +40,11 @@ def speakable(text):
 
 @dataclass(frozen=True)
 class Voice:
-    voice: str = "F1"
-    speed: float = 1.05
+    # Wie im alten Jarvis: männliche Stimme M1, volle Qualität (8 Diffusionsschritte).
+    voice: str = "M1"
+    speed: float = 1.0
     lofi: bool = False
+    steps: int = 8
 
 
 def fallback_name():
@@ -118,7 +120,7 @@ class Synthesizer:
             return np.empty(0, dtype=np.float32), self.model.sample_rate
         samples, _ = self.model.synthesize(
             text=text, lang="de", voice_style=self.styles[settings.voice],
-            speed=settings.speed, total_steps=2,
+            speed=settings.speed, total_steps=settings.steps,
         )
         return np.asarray(samples, dtype=np.float32).reshape(-1), self.model.sample_rate
 

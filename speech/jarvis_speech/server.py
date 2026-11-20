@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 import logging
 import math
+import re
 import time
 
 import numpy as np
@@ -18,6 +19,25 @@ from .recognition import FRAME, RATE, load_recognizer
 from .synthesis import Synthesizer, Voice
 
 LOG = logging.getLogger(__name__)
+
+
+def split_first_clause(text, min_len=12, max_first=60):
+    """Teilt einen langen Satz am ersten Komma/Semikolon/Doppelpunkt.
+
+    Das kurze erste Stück ist mit voller Qualität schnell berechnet und spielt schon,
+    während der Rest im Hintergrund entsteht (Vorgehen des alten Jarvis).
+    """
+    if len(text) < 2 * min_len:
+        return [text]
+    for match in re.finditer(r"[,;:]\s+", text):
+        cut = match.end()
+        if min_len <= cut <= max_first and len(text) - cut >= min_len:
+            return [text[:cut].rstrip(), text[cut:]]
+    # Kein frühes Satzzeichen: vor einem Bindewort teilen, damit die Satzmelodie natürlich bleibt.
+    for match in re.finditer(r"\s(?=(?:und|aber|oder|weil|dass|damit|wenn|sodass|mit|bei|für)\s)", text):
+        if 20 <= match.start() <= max_first and len(text) - match.start() >= min_len:
+            return [text[:match.start()], text[match.end():]]
+    return [text]
 
 
 class SpeechOutput:
@@ -34,7 +54,8 @@ class SpeechOutput:
 
     def say(self, ident, text, voice):
         try:
-            self.jobs.put_nowait((self.generation, ident, text, voice))
+            for chunk in split_first_clause(text):
+                self.jobs.put_nowait((self.generation, ident, chunk, voice))
         except asyncio.QueueFull:
             raise ValueError("Sprachausgabe-Warteschlange ist voll") from None
 
@@ -201,6 +222,11 @@ class Sidecar:
             if type(speed) not in (int, float) or not math.isfinite(speed) or not 0.5 <= speed <= 2.0:
                 raise ValueError("config.speed erwartet eine Zahl zwischen 0.5 und 2.0")
             settings["speed"] = speed
+        if "steps" in request:
+            steps = request["steps"]
+            if type(steps) is not int or not 1 <= steps <= 16:
+                raise ValueError("config.steps erwartet eine ganze Zahl zwischen 1 und 16")
+            settings["steps"] = steps
         if "lofi" in request:
             if type(request["lofi"]) is not bool:
                 raise ValueError("config.lofi erwartet true oder false")
