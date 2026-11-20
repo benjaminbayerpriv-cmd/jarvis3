@@ -339,7 +339,7 @@ function showFrame(m) {
   // Seitenverhältnis des Tabs übernehmen; kleine Schwankungen (z. B. Chromes Hinweisleiste) ignorieren
   if (m.w > 0 && m.h > 0) {
     const ratio = m.w / m.h;
-    if (m.tab !== viewTab || Math.abs(ratio - viewRatio) / viewRatio > 0.06) {
+    if (m.tab !== viewTab || Math.abs(ratio - viewRatio) / viewRatio > 0.10) {
       viewTab = m.tab; viewRatio = ratio;
       viewer.style.setProperty("--ar", `${m.w} / ${m.h}`);
     }
