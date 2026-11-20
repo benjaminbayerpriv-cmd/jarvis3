@@ -1,0 +1,602 @@
+"""Speech output, with fallbacks that keep Jarvis talking.
+
+Supertonic is the primary voice: a local, offline, unlimited neural TTS
+model that sounds far better than the old OS-builtin voice ever did, with
+no per-character cost or quota. If it can't load (e.g. first run with no
+internet to fetch the model), this falls back to ElevenLabs when a key is
+configured (free tier is 10k characters a month and runs dry without
+warning), and finally to the voice built into the operating system — worse
+sounding, but free, offline and always available: macOS's built-in `say`,
+the SAPI synthesizer (via PowerShell, no extra dependency needed) on
+Windows. Silence is the one outcome that makes Jarvis look broken.
+"""
+
+from __future__ import annotations
+
+import io
+import platform
+import re
+import subprocess
+import tempfile
+import threading
+import wave
+from pathlib import Path
+
+import numpy as np
+import requests
+from num2words import num2words
+from supertonic import TTS
+from supertonic.config import DEFAULT_SPEED, DEFAULT_TOTAL_STEPS
+
+from . import config, platform_utils
+
+ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+MACOS_VOICE = "Anna"
+
+IS_WINDOWS = platform.system() == "Windows"
+
+# Set once ElevenLabs reports quota exhaustion, so we stop paying the
+# latency of a doomed request on every single sentence.
+_elevenlabs_blocked = False
+
+# Supertonic loads a model from disk (slow-ish), so it's built once, lazily,
+# and reused for every request rather than per-call.
+_supertonic_lock = threading.Lock()
+_supertonic_tts: TTS | None = None
+_supertonic_style = None
+
+# File extension + mime type produced by each engine, so callers (the /tts
+# route, the filler cache) don't need their own platform checks.
+ENGINE_MEDIA = {
+    "supertonic": ("wav", "audio/wav"),
+    "elevenlabs": ("mp3", "audio/mpeg"),
+    "macos": ("m4a", "audio/mp4"),
+    "windows": ("wav", "audio/wav"),
+}
+
+
+class VoiceInfo:
+    """Which engine produced the last clip, for the UI to mention."""
+
+    engine = "elevenlabs"
+
+
+def _macos_say(text: str) -> bytes:
+    out = Path(tempfile.mkdtemp()) / "say.m4a"
+    subprocess.run(
+        ["say", "-v", MACOS_VOICE, "--file-format=m4af", "--data-format=aac",
+         "-o", str(out), text],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    data = out.read_bytes()
+    try:
+        out.unlink()
+        out.parent.rmdir()
+    except OSError:
+        pass
+    return data
+
+
+def _windows_say(text: str) -> bytes:
+    """Render text via the SAPI synthesizer built into Windows. The text is
+    piped over stdin (rather than interpolated into the script) so quotes
+    and special characters in it can't break out of the PowerShell command."""
+    out = Path(tempfile.mkdtemp()) / "say.wav"
+    script = (
+        # Without this, PowerShell reads stdin using the console's
+        # codepage (cp1252 on German Windows) regardless of what encoding
+        # Python used to write it below — mismatched, every ü/ö/ä/ß in the
+        # spoken text would come out corrupted rather than just failing.
+        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
+        "Add-Type -AssemblyName System.Speech; "
+        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+        f"$s.SetOutputToWaveFile('{out}'); "
+        "$s.Speak([Console]::In.ReadToEnd()); "
+        "$s.Dispose()"
+    )
+    subprocess.run(
+        platform_utils.powershell(script),
+        input=text,
+        check=True,
+        capture_output=True,
+        text=True,
+        # Matches [Console]::InputEncoding above; without an explicit
+        # encoding here, text=True encodes `input` using the OS locale's
+        # preferred codepage, not UTF-8 — this is the last-resort voice
+        # (Supertonic and ElevenLabs both already failed to get here), so
+        # a crash on an unencodable character means total silence, the one
+        # outcome this whole module exists to avoid.
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    data = out.read_bytes()
+    try:
+        out.unlink()
+        out.parent.rmdir()
+    except OSError:
+        pass
+    return data
+
+
+# Neither Supertonic nor the OS voices do any real number normalization —
+# they feed digits straight to the model's grapheme frontend, which reads
+# anything beyond a couple of digits one character at a time instead of as
+# a number ("eins-zwei-drei-vier..." instead of "eintausendzweihundert-
+# vierunddreißig"). ElevenLabs' API already handles this well on its own,
+# so this is only applied to the two engines that don't.
+#
+# Clock times ("14:30") used to be left alone on the assumption that they
+# already read fine digit-by-digit in German — true for ElevenLabs, but
+# Supertonic's frontend doesn't silently skip the colon: it reads it aloud
+# as the literal word "Doppelpunkt" ("vierzehn Uhr Doppelpunkt dreißig"
+# instead of "vierzehn Uhr dreißig"), observed live as the exact cause of
+# choppy-sounding time replies. Given its own expansion below (_spell_time)
+# instead. Math symbols get the same treatment for the same reason —
+# Supertonic's own normalizer either drops "/" silently or passes
+# "+ - * = %" straight through unpronounced.
+# The trailing "(?:\s*Uhr)?" absorbs a literal "Uhr" the model already
+# wrote right after the digits ("20:44 Uhr", the common phrasing) so
+# _spell_time's own "Uhr" doesn't end up doubled ("zwanzig Uhr
+# vierundvierzig Uhr") — works the same either way if it wasn't there.
+_TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b(?:\s*Uhr)?")
+
+
+def _spell_time(match: re.Match) -> str:
+    hour, minute, second = match.group(1), match.group(2), match.group(3)
+    words = f"{num2words(int(hour), lang='de')} Uhr"
+    # "zwanzig Uhr null" for :00 sounds robotic — natural German just says
+    # "zwanzig Uhr" and drops the minute entirely, same as clock speech
+    # normally works, and num2words(0) would emit an actual "null" here.
+    if int(minute) != 0:
+        words += f" {num2words(int(minute), lang='de')}"
+    if second is not None and int(second) != 0:
+        words += f" und {num2words(int(second), lang='de')} Sekunden"
+    return words
+_DATE_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b")
+# The two extra lookarounds (before/after) keep this off a dotted token
+# that isn't actually German thousands-grouping, like a version number
+# ("3.11") — without them, the grouped-thousands alternative fails (its
+# groups must be exactly 3 digits), the plain \d+ alternative matches "3"
+# and "11" as two separate numbers instead, and the result reads as
+# "drei.elf" with the bare dot still sitting in between.
+_NUMBER_RE = re.compile(r"(?<!\d\.)(?<!\w)(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d+))?(?!\w)(?!\.\d)")
+
+_MONTH_NAMES = {
+    1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
+    7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
+}
+
+# The model doesn't only write dates numerically ("07.09.2026") — writing
+# the day as "21. Januar 2025" (month spelled out, not a second number) is
+# just as common in natural German text, and _DATE_RE above doesn't match
+# it at all (it needs a numeric month). Left unhandled, that "21." falls
+# straight through to the plain cardinal-number pass below, which drops
+# the trailing dot's ordinal meaning entirely — observed live, exactly
+# this: "einundzwanzig. Januar" instead of "einundzwanzigste Januar".
+# The optional leading preposition decides the ending: "am 3. Oktober" is
+# "am dritten Oktober" — without it this read "am dritte Oktober".
+_DATE_WORDS_RE = re.compile(
+    r"\b(?:((?i:am|an|den|dem|vom|zum|ab|seit))\s+)?(\d{1,2})\.\s*("
+    + "|".join(_MONTH_NAMES.values())
+    + r")\b(?:\s+(\d{4}))?"
+)
+
+
+def _spell_date_words(match: re.Match) -> str:
+    lead = match.group(1)
+    day = int(match.group(2))
+    month_name = match.group(3)
+    year = match.group(4)
+    if not 1 <= day <= 31:
+        return match.group(0)
+    day_words = num2words(day, lang="de", to="ordinal")
+    if lead:
+        day_words = f"{lead} {day_words}n"
+    result = f"{day_words} {month_name}"
+    if year:
+        result += f" {num2words(int(year), lang='de')}"
+    return result
+
+_UNIT_PATTERNS = [
+    (re.compile(r"(?<=\d)\s*°\s*C\b"), " Grad"),
+    (re.compile(r"(?<=\d)\s*°\s*F\b"), " Grad Fahrenheit"),
+    (re.compile(r"(?<=\d)\s*°"), " Grad"),
+    (re.compile(r"(?<=\d)\s*km/h\b"), " Kilometer pro Stunde"),
+    (re.compile(r"(?<=\d)\s*€"), " Euro"),
+]
+
+_MATH_SYMBOL_PATTERNS = [
+    (re.compile(r"(?<=\d)\s*\+\s*(?=\d)"), " plus "),
+    (re.compile(r"\+(?=\d)"), "plus "),
+    (re.compile(r"(?<=\d)\s*-\s*(?=\d)"), " minus "),
+    (re.compile(r"(?<![\w.,])-(?=\d)"), "minus "),
+    (re.compile(r"(?<=\d)\s*[*xX]\s*(?=\d)"), " mal "),
+    (re.compile(r"(?<=\d)\s*/\s*(?=\d)"), " durch "),
+    (re.compile(r"(?<=\d)\s*=\s*(?=\d)"), " gleich "),
+    (re.compile(r"(?<=\d)\s*%"), " Prozent"),
+]
+
+
+# "9-17 Uhr", "Seiten 5-7": an unspaced hyphen between numbers is a range,
+# not a subtraction — unless the text is an actual equation ("17-5=12").
+_RANGE_RE = re.compile(r"(?<=\d)-(?=\d)")
+
+
+def _expand_math_symbols_for_speech(text: str) -> str:
+    if "=" not in text:
+        text = _RANGE_RE.sub(" bis ", text)
+    for pattern, replacement in _MATH_SYMBOL_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _spell_date(match: re.Match) -> str:
+    day, month, year = (int(g) for g in match.groups())
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return match.group(0)  # not actually a date (e.g. a version number)
+    day_words = num2words(day, lang="de", to="ordinal")
+    month_name = _MONTH_NAMES[month]
+    year_words = num2words(year, lang="de")
+    return f"{day_words} {month_name} {year_words}"
+
+
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def _spell_iso_date(match: re.Match) -> str:
+    year, month, day = (int(g) for g in match.groups())
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return match.group(0)
+    return f"{num2words(day, lang='de', to='ordinal')} {_MONTH_NAMES[month]} {num2words(year, lang='de')}"
+
+
+# "am 26.09." — a date without a year. Only after a word that introduces a
+# date (preposition/article/weekday), since a bare "3.11." could just as well
+# be a version number at the end of a sentence.
+_DATE_NO_YEAR_RE = re.compile(
+    r"\b(am|an|den|der|dem|vom|zum|bis|ab|seit|ist|Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)"
+    r"(,?\s+)(\d{1,2})\.(\d{1,2})\.(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _spell_date_no_year(match: re.Match) -> str:
+    lead, gap, day, month = match.group(1), match.group(2), int(match.group(3)), int(match.group(4))
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return match.group(0)
+    ordinal = num2words(day, lang="de", to="ordinal")
+    # "am sechsundzwanzigsten", not "am sechsundzwanzigste".
+    if lead.lower() in ("am", "an", "den", "dem", "vom", "zum", "ab", "seit"):
+        ordinal += "n"
+    return f"{lead}{gap}{ordinal} {_MONTH_NAMES[month]}"
+
+
+def _spell_number(match: re.Match) -> str:
+    integer_part = match.group(1).replace(".", "")
+    fraction = match.group(2)
+    try:
+        words = num2words(int(integer_part), lang="de")
+    except (ValueError, OverflowError):
+        return match.group(0)
+    if fraction:
+        digit_words = " ".join(num2words(int(d), lang="de") for d in fraction)
+        words += f" Komma {digit_words}"
+    return words
+
+
+# Two or more bare digit groups separated only by single spaces, with
+# nothing else marking them as one quantity (no thousands dot, no math
+# symbol) — read naturally as one gigantic cardinal number otherwise.
+# Observed: "030 1234567" (a plain phone number split into area code and
+# local number) turned into "dreißig eine Million
+# zweihundertvierunddreißigtausendfünfhundertsiebenundsechzig" instead of
+# being read digit by digit. Short runs (a couple of small numbers just
+# mentioned next to each other, e.g. "8 12") are left alone — under six
+# total digits reads fine as separate cardinal numbers via the normal pass
+# below, and is far more likely to be two unrelated numbers than a phone
+# number fragment.
+_DIGIT_GROUPS_RE = re.compile(r"(?<!\w)\d{1,15}(?: \d{1,15}){1,}(?!\w)")
+
+
+def _spell_digit_groups(match: re.Match) -> str:
+    digits = match.group(0).replace(" ", "")
+    if len(digits) < 6:
+        return match.group(0)
+    return " ".join(num2words(int(d), lang="de") for d in digits)
+
+
+
+# Jedes Komma/Semikolon/Doppelpunkt gefolgt von Leerraum ist ein möglicher
+# Schnittpunkt — echtes "Audio läuft schon, während der Rest noch generiert
+# wird" gibt es mit Supertonic nicht (kein Callback/Yield während der
+# internen Diffusions-Schritte), aber ein langer Satz in mehrere kleine
+# Häppchen zerlegt kommt dem so nah wie möglich: das erste Häppchen ("Zuerst
+# mache ich das,") synthetisiert praktisch sofort und spielt schon, während
+# die nächsten im Hintergrund nachrücken. Bewusst NICHT in llm_client.
+# _pop_complete_sentences gemacht: die dortige Satzgrenzen-Erkennung speist
+# auch die Tool-Leak- und Behauptungs-Prüfung (_call_prefix_verdict/
+# _is_pending_claim_risk), die auf vollständigen Sätzen arbeiten muss —
+# dieser Split hier passiert danach, rein für die Sprachausgabe eines
+# bereits geprüften Satzes.
+_SPEECH_CHUNK_SPLIT_RE = re.compile(r"(?<=[,;:])\s+")
+# Unter dieser Länge (Zeichen) lohnt sich ein eigener Chunk nicht: der feste
+# Overhead eines zusätzlichen Synthese-Aufrufs (Modell-Lock, WAV-Header,
+# Serialisierung) kostet mehr Zeit, als das frühere Losreden einspart, und
+# ein Ein-Wort-Häppchen ("Ja," / "gut.") klingt abgehackt statt schneller —
+# zu kurze Nachbar-Teile werden deshalb zusammengefasst statt einzeln
+# synthetisiert.
+_MIN_SPEECH_CHUNK_CHARS = 15
+
+
+def split_for_speech(text: str) -> list[str]:
+    """Split one already-vetted sentence into speakable chunks at its clause
+    boundaries (commas/semicolons/colons), so playback of a long sentence
+    can start on its first clause while the rest is still being
+    synthesized, and keep advancing chunk by chunk instead of one big wait.
+    A short sentence, or one with no clause break, comes back as a single
+    chunk — there is no meaningful synthesis time to hide behind a split
+    there anyway. Adjacent clauses under _MIN_SPEECH_CHUNK_CHARS are merged
+    together so no chunk ends up too short to sound natural on its own."""
+    parts: list[str] = []
+    start = 0
+    for m in _SPEECH_CHUNK_SPLIT_RE.finditer(text):
+        parts.append(text[start : m.start()])
+        start = m.end()
+    parts.append(text[start:])
+    if len(parts) == 1:
+        return [text]
+
+    chunks: list[str] = []
+    buf = ""
+    for part in parts:
+        buf = f"{buf} {part}".strip() if buf else part
+        if len(buf) >= _MIN_SPEECH_CHUNK_CHARS:
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        if chunks:
+            chunks[-1] = f"{chunks[-1]} {buf}"
+        else:
+            chunks.append(buf)
+    return chunks
+
+
+def _expand_numbers_for_speech(text: str) -> str:
+    # Every step below replaces digits with words, so none of them can be
+    # re-matched (and re-mangled) by a later step in the pipeline — no
+    # shielding/placeholder juggling needed, unlike when _TIME_RE used to
+    # just protect its match verbatim instead of actually expanding it.
+    expanded = _TIME_RE.sub(_spell_time, text)
+    expanded = _DATE_RE.sub(_spell_date, expanded)
+    expanded = _ISO_DATE_RE.sub(_spell_iso_date, expanded)
+    expanded = _DATE_NO_YEAR_RE.sub(_spell_date_no_year, expanded)
+    expanded = _DATE_WORDS_RE.sub(_spell_date_words, expanded)
+    # Units right after a number: every weather reply ("16,3°C bei 7,0 km/h
+    # Wind") was read as "sechzehn Komma drei°C" — Supertonic drops "°C"
+    # and spells "km/h" letter by letter.
+    for pattern, replacement in _UNIT_PATTERNS:
+        expanded = pattern.sub(replacement, expanded)
+    # Phone-number-shaped runs before the math pass — after conversion the
+    # result is words, not digits, so it can't be re-matched by _NUMBER_RE
+    # below either way.
+    expanded = _DIGIT_GROUPS_RE.sub(_spell_digit_groups, expanded)
+    # Math symbols expand to words before numbers do, so e.g. "12+34"
+    # becomes "12 plus 34" first — still cleanly digit-bounded for
+    # _NUMBER_RE right after, since "plus"/"minus"/etc. are word characters
+    # that its (?<!\w)/(?!\w) boundaries respect either way.
+    expanded = _expand_math_symbols_for_speech(expanded)
+    return _NUMBER_RE.sub(_spell_number, expanded)
+
+
+def _local_say(text: str) -> bytes:
+    text = _expand_numbers_for_speech(text)
+    if IS_WINDOWS:
+        VoiceInfo.engine = "windows"
+        return _windows_say(text)
+    VoiceInfo.engine = "macos"
+    return _macos_say(text)
+
+
+def _elevenlabs(text: str) -> bytes:
+    url = ELEVENLABS_URL.format(voice_id=config.ELEVENLABS_VOICE_ID)
+    resp = requests.post(
+        url,
+        headers={
+            "xi-api-key": config.ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        },
+        json={
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {
+                "stability": 0.65,
+                "similarity_boost": 0.75,
+                "speed": 0.9,
+            },
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
+def reset_elevenlabs() -> None:
+    """Lifts the quota/auth block when the key changes in Settings — it used
+    to stay set until the next restart, so a fresh key never got tried."""
+    global _elevenlabs_blocked
+    _elevenlabs_blocked = False
+
+
+def reset_supertonic_voice() -> None:
+    """Verwirft den geladenen Voice-Style, damit _get_supertonic() beim
+    nächsten Aufruf config.SUPERTONIC_VOICE frisch einliest — für die
+    Settings-UI, wenn die Stimme zur Laufzeit geändert wird. Das TTS-Modell
+    selbst (_supertonic_tts) bleibt geladen, nur der Style wird neu
+    geholt."""
+    global _supertonic_style
+    with _supertonic_lock:
+        if _supertonic_tts is not None:
+            _supertonic_style = _supertonic_tts.get_voice_style(voice_name=config.SUPERTONIC_VOICE)
+
+
+def _get_supertonic() -> tuple[TTS, object]:
+    """Load the Supertonic model and voice style once, then reuse them.
+    Thread-safe since FastAPI's sync endpoints run each request in a
+    worker thread."""
+    global _supertonic_tts, _supertonic_style
+    if _supertonic_tts is None:
+        with _supertonic_lock:
+            if _supertonic_tts is None:
+                tts = TTS(auto_download=True)
+                _supertonic_style = tts.get_voice_style(voice_name=config.SUPERTONIC_VOICE)
+                _supertonic_tts = tts
+    return _supertonic_tts, _supertonic_style
+
+
+def _sanitize_for_supertonic(text: str, tts: TTS) -> str:
+    """Drop any character outside Supertonic's ~8000-character supported
+    set instead of letting synthesize() raise ValueError over it.
+
+    Observed live: a lone U+FFFD replacement character appearing mid-word
+    in ordinary German text, which crashed Supertonic entirely for that
+    whole reply and cascaded into ElevenLabs (also broken — no real key
+    configured) and finally the noticeably worse Windows SAPI voice. Most
+    plausible source is upstream: LM Studio's streaming token output can
+    split a multi-byte UTF-8 character (ü/ö/ä/ß are all multi-byte) across
+    two token chunks, and if the inference server decodes each chunk's
+    bytes independently rather than buffering incomplete sequences, the
+    orphaned half becomes U+FFFD before it ever reaches us. Nothing on
+    this end can fix that at the source, but one garbled character
+    shouldn't take down the whole sentence's voice quality — stripping it
+    keeps everything else intact instead.
+    """
+    is_valid, unsupported = tts.model.text_processor.validate_text(text)
+    if not is_valid:
+        print(f"[tts] Entferne nicht unterstützte Zeichen vor der Synthese: {unsupported}")
+        for ch in unsupported:
+            text = text.replace(ch, "")
+    return text
+
+
+def _pcm_to_wav_bytes(wav, sample_rate: int) -> bytes:
+    samples = np.clip(np.asarray(wav).squeeze(), -1.0, 1.0)
+    pcm16 = (samples * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _stream_chunks(text: str, mode: str) -> list[str]:
+    """mode "sentence": ein Modellaufruf pro ganzem Satz (gleichmäßigste
+    Stimme). mode "clause": zusätzlich an Kommas geteilt (früherer erster
+    Ton, aber hörbar unterschiedliche Betonung pro Stück)."""
+    chunks: list[str] = []
+    for sentence in _SENTENCE_SPLIT_RE.split(text.strip()):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        chunks.extend(split_for_speech(sentence) if mode == "clause" else [sentence])
+    return chunks
+
+
+def synthesize_stream(text: str, mode: str = "sentence", seed: int | None = None, steps: int = DEFAULT_TOTAL_STEPS):
+    """Yield (wav_bytes, chunk_text) per chunk, each as soon as the model
+    finished it. Supertonic denoises the WHOLE chunk at once (all `steps`
+    passes run over the complete latent, ~92% of the time) and only then
+    runs the vocoder, so there is no audio of a chunk before the chunk is
+    done — the finest possible streaming granularity is one model call.
+
+    `seed` fixes the noise the diffusion starts from; without it every call
+    draws fresh random noise, which is what makes consecutive chunks differ
+    audibly in prosody/timbre. Supertonic only, no fallback engines."""
+    text = _expand_numbers_for_speech(text)
+    tts, style = _get_supertonic()
+    text = _sanitize_for_supertonic(text, tts)
+    lang = config.SUPERTONIC_LANG if tts.is_multilingual else None
+    for chunk in _stream_chunks(text, mode):
+        with _supertonic_lock:
+            if seed is not None:
+                np.random.seed(seed)
+            wav, _dur = tts.model([chunk], style, steps, DEFAULT_SPEED, lang)
+        yield _pcm_to_wav_bytes(wav, tts.sample_rate), chunk
+
+
+def _supertonic_say(text: str) -> bytes:
+    text = _expand_numbers_for_speech(text)
+    tts, style = _get_supertonic()
+    text = _sanitize_for_supertonic(text, tts)
+    # FastAPI runs sync endpoints in a thread pool, and it's undocumented
+    # whether one Supertonic engine tolerates concurrent synthesize() calls
+    # from different threads — e.g. the startup filler-generation pass
+    # overlapping a live chat reply. Observed live: intermittent silent
+    # failures here that fell through to the macOS voice. Serializing every
+    # call through the one shared engine costs nothing perceptible (each
+    # call is already sub-second) and removes the race entirely.
+    with _supertonic_lock:
+        wav, _duration = tts.synthesize(text=text, lang=config.SUPERTONIC_LANG, voice_style=style)
+    samples = np.clip(np.asarray(wav).squeeze(), -1.0, 1.0)
+    pcm16 = (samples * 32767).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(tts.sample_rate)
+        wf.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
+def synthesize_with_mime(text: str) -> tuple[bytes, str]:
+    """Like synthesize(), but also returns the mime type of exactly this clip.
+    Reading VoiceInfo.engine after the fact races with any concurrent
+    synthesis (a /tts notice during a streamed reply) and could label a WAV
+    as MP3 or vice versa."""
+    audio, engine = _synthesize(text)
+    return audio, ENGINE_MEDIA.get(engine, ("mp3", "audio/mpeg"))[1]
+
+
+def synthesize(text: str) -> bytes:
+    """Return spoken audio for `text`. Never raises for ordinary failures —
+    silence is the one outcome that makes Jarvis look broken."""
+    return _synthesize(text)[0]
+
+
+def _synthesize(text: str) -> tuple[bytes, str]:
+    global _elevenlabs_blocked
+
+    try:
+        audio = _supertonic_say(text)
+        VoiceInfo.engine = "supertonic"
+        return audio, "supertonic"
+    except Exception as exc:  # noqa: BLE001 - fall through to ElevenLabs/OS
+        print(f"[tts] Supertonic nicht verfügbar, nutze Ausweich-Stimme: {exc}")
+
+    if config.ELEVENLABS_API_KEY and not _elevenlabs_blocked:
+        try:
+            audio = _elevenlabs(text)
+            VoiceInfo.engine = "elevenlabs"
+            return audio, "elevenlabs"
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            body = (exc.response.text if exc.response is not None else "")[:200]
+            # 401 = bad key, 429 = rate limited. Quota exhaustion arrives as
+            # a 401 with quota_exceeded in the body.
+            if status in (401, 402, 429) or "quota" in body.lower():
+                _elevenlabs_blocked = True
+                print(f"[tts] ElevenLabs nicht verfügbar ({status}), nutze lokale Stimme. {body}")
+        except requests.RequestException as exc:
+            print(f"[tts] ElevenLabs Netzwerkfehler, nutze lokale Stimme: {exc}")
+
+    return _local_say(text), ("windows" if IS_WINDOWS else "macos")
