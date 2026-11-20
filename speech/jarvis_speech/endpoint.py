@@ -14,9 +14,9 @@ from .recognition import FRAME, FRAME_MS, RATE, Silero
 LOG = logging.getLogger(__name__)
 
 PRE_ROLL = 5
-END_SILENCE = 11
-FAST_END_SILENCE = 8
-SPECULATION_SILENCE = 2
+END_SILENCE = 9
+FAST_END_SILENCE = 7
+SPECULATION_SILENCE = 1
 PARTIAL_EVERY = 9
 MAX_FRAMES = 20 * 1000 // FRAME_MS
 
@@ -108,7 +108,12 @@ class Endpoint:
 
     def request(self, utterance, end, speculative=False):
         if self.future is not None and not self.future.done():
-            return
+            if not speculative:
+                return
+            # Ein Zwischendecode beim Sprechen darf die finale Spekulation nicht
+            # blockieren: Sein Ergebnis wäre veraltet und verzögert `final`.
+            self.future.cancel()
+            utterance.latest_decode = None
         # A little real quiet audio at the end helps pronounce trailing consonants.
         padding = 2 if speculative else 0
         sample_count = min(len(utterance.frames), end + padding)

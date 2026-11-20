@@ -119,6 +119,12 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rate, 24000)
         self.assertGreater(float(np.max(np.abs(pcm))), 0.01)
 
+    @unittest.skipUnless(platform.system() == "Windows", "Windows system voice")
+    def test_windows_fallback_pcm(self):
+        pcm, rate = native_voice("Das ist ein Test.", Voice())
+        self.assertGreater(rate, 8000)
+        self.assertGreater(float(np.max(np.abs(pcm))), 0.01)
+
     async def test_real_models_and_protocol(self):
         sidecar = Sidecar(FakeAudio)
         final_ms, stt_ms, say_ms = [], [], []
@@ -143,7 +149,7 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
     async def exercise(self, client, audio, url, final_ms, stt_ms, say_ms):
         now, ready = await client.wait("ready")
         self.assertIn(ready["stt"], {"parakeet-tdt-0.6b-v3", "faster-whisper-large-v3-turbo"})
-        self.assertEqual(ready["tts"], "supertonic")
+        self.assertIn(ready["tts"], {"supertonic", "sapi", "say"})
         self.assertEqual(ready["devices"], audio.devices())
         _, level = await client.wait("level", now)
         self.assertEqual((level["mic"], level["out"]), (0, 0))
