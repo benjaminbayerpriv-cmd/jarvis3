@@ -170,7 +170,8 @@ async function frames(tab, request, { requireTop = true } = {}) {
   const root = entries.find(frame => frame.frameId === 0);
   if (!root && requireTop) throw new Error("Seite ist noch nicht geladen");
   const results = await Promise.all(entries.map(async frame => {
-    const result = await page(tab, request, frame).catch(error => {
+    const command = typeof request === "function" ? request(frame) : request;
+    const result = await page(tab, command, frame).catch(error => {
       if (requireTop && frame === root) throw error;
       return null;
     });
@@ -179,7 +180,7 @@ async function frames(tab, request, { requireTop = true } = {}) {
   return results.filter(Boolean);
 }
 
-let nextId = Math.floor(Date.now() * 1024);
+let nextId = 1;
 
 async function scan(tab, request) {
   const start = performance.now();
@@ -190,8 +191,8 @@ async function scan(tab, request) {
   for (const { frame, result } of entries) {
     for (const { localId, ...target } of result.targets) {
       const id = nextId++;
-      locations.set(id, { frame, localId, target: { id, ...target } });
-      targets.push(locations.get(id).target);
+      locations.set(id, { frame, localId });
+      targets.push({ id, ...target });
     }
   }
   targets.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
@@ -254,17 +255,22 @@ async function wait(tab, request) {
 
 async function navigate(tab, url) {
   const initial = await chrome.tabs.get(tab);
-  const history = [];
-  const onUpdate = (id, change, state) => {
-    if (id === tab && (change.status || change.url)) history.push({ change, state });
+  let completed = false;
+  let failure;
+  const onUpdate = (id, change) => {
+    if (id === tab && change.status === "complete") completed = true;
+  };
+  const onError = event => {
+    if (event.tabId === tab && event.frameId === 0 && event.error !== "net::ERR_ABORTED") failure = event.error;
   };
   chrome.tabs.onUpdated.addListener(onUpdate);
+  chrome.webNavigation.onErrorOccurred.addListener(onError);
   try {
     await chrome.tabs.update(tab, { url });
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + 25000;
     while (Date.now() < deadline) {
       const current = await chrome.tabs.get(tab);
-      const completed = history.some(({ change }) => change.status === "complete");
+      if (failure) throw new Error("Navigation fehlgeschlagen: " + failure);
       const moved = current.url !== initial.url && !current.pendingUrl;
       if (current.status === "complete" && (completed || moved)) return {};
       await sleep(100);
@@ -272,7 +278,28 @@ async function navigate(tab, url) {
     throw new Error("Zeitüberschreitung beim Laden des Tabs");
   } finally {
     chrome.tabs.onUpdated.removeListener(onUpdate);
+    chrome.webNavigation.onErrorOccurred.removeListener(onError);
   }
+}
+
+async function withDebugger(tab, operation) {
+  const debuggee = { tabId: tab };
+  await chrome.debugger.attach(debuggee, "1.3");
+  try {
+    return await operation((method, params) => chrome.debugger.sendCommand(debuggee, method, params));
+  } finally {
+    await chrome.debugger.detach(debuggee).catch(() => {});
+  }
+}
+
+async function back(tab) {
+  await withDebugger(tab, async send => {
+    const { currentIndex, entries } = await send("Page.getNavigationHistory");
+    const previous = entries[currentIndex - 1];
+    if (!previous) throw new Error("Kein vorheriger Verlaufseintrag");
+    await send("Page.navigateToHistoryEntry", { entryId: previous.id });
+  });
+  return {};
 }
 
 function bounds(requested, [, , vw, vh]) {
@@ -326,23 +353,26 @@ async function renderShot(data, viewport, rect, targets, passwords) {
 }
 
 async function shot(tab, request) {
-  const viewports = await frames(tab, { cmd: "viewport" });
-  const { rect: viewport } = viewports.find(({ frame }) => frame.frameId === 0).result;
+  const marksByDocument = new Map();
+  if (request.marks) {
+    for (const [id, { frame, localId }] of scans.get(tab) ?? []) {
+      if (!marksByDocument.has(frame.documentId)) marksByDocument.set(frame.documentId, []);
+      marksByDocument.get(frame.documentId).push({ id, localId });
+    }
+  }
+  const viewports = await frames(tab, frame => ({ cmd: "viewport", marks: marksByDocument.get(frame.documentId) }));
+  const top = viewports.find(({ frame }) => frame.frameId === 0);
+  const viewport = top.result.rect;
   const rect = bounds(request.rect, viewport);
   const passwords = viewports.flatMap(({ result }) => result.passwords);
-  const targets = request.marks ? Array.from(scans.get(tab)?.values() ?? [], ({ target }) => target) : [];
-  const debuggee = { tabId: tab };
+  const targets = viewports.flatMap(({ result }) => result.marks);
   try {
     await frames(tab, { cmd: "overlay", hide: true });
-    await chrome.debugger.attach(debuggee, "1.3");
-    let data;
-    try {
-      ({ data } = await chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
-        format: "png", fromSurface: true,
-      }));
-    } finally {
-      await chrome.debugger.detach(debuggee).catch(() => {});
-    }
+    const { data } = await withDebugger(tab, send => send("Page.captureScreenshot", {
+      format: "png", fromSurface: true,
+    }));
+    const current = await chrome.webNavigation.getFrame({ tabId: tab, frameId: 0 });
+    if (current?.documentId !== top.frame.documentId) throw new Error("Seite hat sich während des Screenshots geändert");
     return { rect, dataUrl: await renderShot(data, viewport, rect, targets, passwords) };
   } finally {
     await frames(tab, { cmd: "overlay", hide: false }, { requireTop: false }).catch(() => {});
@@ -361,7 +391,7 @@ async function dispatch(request) {
   switch (cmd) {
     case "tab_close": await chrome.tabs.remove(tab); return {};
     case "navigate": return navigate(tab, urlFor(request.url));
-    case "back": await chrome.tabs.goBack(tab); return {};
+    case "back": return back(tab);
     case "wait": return wait(tab, request);
     case "scan": return scan(tab, request);
     case "shot": return shot(tab, request);

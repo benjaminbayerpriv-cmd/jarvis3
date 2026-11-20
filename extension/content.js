@@ -52,10 +52,15 @@
     return clean.length > 90 ? clean.slice(0, 89) + "…" : clean;
   }
 
+  const passwordFields = new WeakSet();
+
   function isPassword(element) {
-    return (element instanceof HTMLInputElement && element.type === "password")
+    if (passwordFields.has(element)) return true;
+    const masked = (element instanceof HTMLInputElement && element.type === "password")
       || /(?:^|\s)(?:current-password|new-password)(?:\s|$)/i.test(element.getAttribute("autocomplete") ?? "")
       || getComputedStyle(element).webkitTextSecurity !== "none";
+    if (masked) passwordFields.add(element);
+    return masked;
   }
 
   function itemName(element, role, custom) {
@@ -63,11 +68,11 @@
     const root = element.getRootNode();
     const references = (element.getAttribute("aria-labelledby") ?? "").trim().split(/\s+/);
     const referenced = references.map(id => root.getElementById?.(id) ?? document.getElementById(id));
-    const labelledBy = shortText(referenced.map(node => node?.innerText || node?.textContent || "").join(" "));
+    const labelledBy = shortText(referenced.map(node => node && !isPassword(node) ? readText(node) : "").join(" "));
     if (labelledBy) return labelledBy;
     const ariaLabel = shortText(element.getAttribute("aria-label"));
     if (ariaLabel) return ariaLabel;
-    const nativeLabel = shortText(Array.from(element.labels ?? [], label => label.innerText).join(" "));
+    const nativeLabel = shortText(Array.from(element.labels ?? [], label => readText(label)).join(" "));
     if (nativeLabel) return nativeLabel;
 
     if (element.tagName === "INPUT") {
@@ -82,7 +87,7 @@
     }
     const isField = fields.has(role);
     if (!isField) {
-      const text = shortText(element.innerText);
+      const text = shortText(readText(element));
       if (text) return text;
       const icon = element.querySelector("img[alt], svg[aria-label], svg > title");
       const iconName = shortText(icon?.getAttribute("alt") || icon?.getAttribute("aria-label") || icon?.textContent);
@@ -95,7 +100,7 @@
   const host = document.createElement("web-bildschirmmarker-overlay");
   host.setAttribute("aria-hidden", "true");
   host.setAttribute("popover", "manual");
-  const shadow = host.attachShadow({ mode: "open" });
+  const shadow = host.attachShadow({ mode: "closed" });
   const canvas = document.createElement("canvas");
   const style = document.createElement("style");
   style.textContent = `
@@ -165,7 +170,7 @@
       for (const root of roots) root.removeEventListener("scroll", onLayout, true);
       roots.clear();
     }
-    for (const root of activeRoots) registerRoot(root);
+    if (enabled) for (const root of activeRoots) registerRoot(root);
     targets = candidates;
   }
 
@@ -433,21 +438,19 @@
       ["text", "email", "search", "password", "tel", "url", "number"].includes(element.type));
   }
 
-  function readRect(rect) {
-    const region = { x: rect[0], y: rect[1], right: rect[0] + rect[2], bottom: rect[1] + rect[3] };
+  function readText(container, region) {
+    if (container instanceof Element && isPassword(container)) return "";
     const parts = [];
     const range = new Range();
-    const activeRoots = new Set([document]);
+    const activeRoots = new Set([container]);
     for (const root of activeRoots) {
       const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
           if (node.nodeType === Node.TEXT_NODE) {
             return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
-          if (node === host || node.matches("script, style, noscript, template, textarea, select, input[type=hidden]")
-            || isPassword(node)) {
-            return node.matches("textarea, select") && !isPassword(node)
-              ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          if (node === host || node.matches("script, style, noscript, template, input[type=hidden]") || isPassword(node)) {
+            return NodeFilter.FILTER_REJECT;
           }
           return NodeFilter.FILTER_ACCEPT;
         }
@@ -456,17 +459,18 @@
         if (node.nodeType === Node.ELEMENT_NODE) {
           const inner = nestedRoot(node);
           if (inner) activeRoots.add(inner);
-          if ((isTextInput(node) || node instanceof HTMLSelectElement)
+          if (region && (isTextInput(node) || node instanceof HTMLSelectElement)
             && getComputedStyle(node).visibility === "visible"
             && overlaps(region, box(node.getBoundingClientRect()))) {
             parts.push(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value);
           }
           continue;
         }
-        if (node.parentElement && getComputedStyle(node.parentElement).visibility !== "visible") continue;
-        if (node.parentElement?.closest("textarea, select")) continue;
+        const parent = node.parentElement;
+        if (parent && (getComputedStyle(parent).visibility !== "visible" || parent.closest("textarea, select"))) continue;
         range.selectNodeContents(node);
-        if ([...range.getClientRects()].some(bounds => overlaps(region, box(bounds)))) parts.push(node.data.trim());
+        if ([...range.getClientRects()].some(bounds => bounds.width > 0 && bounds.height > 0
+          && (!region || overlaps(region, box(bounds))))) parts.push(node.data.trim());
       }
     }
     return parts.filter(Boolean).join(" ");
@@ -558,7 +562,16 @@
         const passwords = targets.filter(({ element }) => isPassword(element))
           .map(({ element }) => translate(box(element.getBoundingClientRect())))
           .filter(rect => rect.x < rect.right && rect.y < rect.bottom).map(rectArray);
-        return { rect: [0, 0, innerWidth, innerHeight], passwords };
+        const marks = [];
+        if (request.marks?.length) {
+          const byElement = new Map(request.marks.map(({ id, localId }) => [commandTargets.get(localId), id]));
+          for (const item of locate(frameViewport())) {
+            if (!byElement.has(item.element)) continue;
+            const rect = translate(item.rect);
+            if (rect.x < rect.right && rect.y < rect.bottom) marks.push({ id: byElement.get(item.element), rect: rectArray(rect) });
+          }
+        }
+        return { rect: [0, 0, innerWidth, innerHeight], passwords, marks };
       }
       commandTargets = new Map();
       const items = [];
@@ -576,10 +589,10 @@
       const region = intersect(frame.clip, { x, y, right: x + width, bottom: y + height });
       const local = { x: region.x - frame.x, y: region.y - frame.y,
         right: region.right - frame.x, bottom: region.bottom - frame.y };
-      return { text: region.x < region.right && region.y < region.bottom ? readRect(rectArray(local)) : "" };
+      return { text: region.x < region.right && region.y < region.bottom ? readText(document, local) : "" };
     }
     if (cmd === "wait") {
-      return { found: (document.body?.innerText ?? "").includes(request.for) };
+      return { found: readText(document).includes(request.for) };
     }
     if (cmd === "scroll" && id === undefined) {
       scroll(null, dy);
@@ -602,7 +615,7 @@
         if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
         return { text: isTextInput(element) ? element.value
           : element instanceof HTMLSelectElement ? element.selectedOptions[0]?.label ?? ""
-          : element.innerText ?? element.textContent ?? "" };
+          : element instanceof HTMLOptionElement ? element.label : readText(element) };
       default: throw new Error("Unbekannter Seitenbefehl");
     }
   }
