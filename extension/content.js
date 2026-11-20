@@ -438,10 +438,20 @@
       ["text", "email", "search", "password", "tel", "url", "number"].includes(element.type));
   }
 
-  function readText(container, region) {
+  function readText(container, region, limit) {
     if (container instanceof Element && isPassword(container)) return "";
+    for (let ancestor = container instanceof Element ? container : null; ancestor; ancestor = parentOf(ancestor)) {
+      if (getComputedStyle(ancestor).opacity === "0") return "";
+    }
     const parts = [];
     const range = new Range();
+    let length = 0;
+    const append = value => {
+      if (!value) return false;
+      parts.push(limit === undefined ? value : value.slice(0, limit - length));
+      length += value.length + 1;
+      return limit !== undefined && length >= limit;
+    };
     const activeRoots = new Set([container]);
     for (const root of activeRoots) {
       const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
@@ -449,7 +459,8 @@
           if (node.nodeType === Node.TEXT_NODE) {
             return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
-          if (node === host || node.matches("script, style, noscript, template, input[type=hidden]") || isPassword(node)) {
+          if (node === host || node.matches("script, style, noscript, template, input[type=hidden]")
+            || getComputedStyle(node).opacity === "0" || isPassword(node)) {
             return NodeFilter.FILTER_REJECT;
           }
           return NodeFilter.FILTER_ACCEPT;
@@ -459,10 +470,12 @@
         if (node.nodeType === Node.ELEMENT_NODE) {
           const inner = nestedRoot(node);
           if (inner) activeRoots.add(inner);
-          if (region && (isTextInput(node) || node instanceof HTMLSelectElement)
+          if ((region || limit !== undefined) && (isTextInput(node) || node instanceof HTMLSelectElement)
             && getComputedStyle(node).visibility === "visible"
-            && overlaps(region, box(node.getBoundingClientRect()))) {
-            parts.push(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value);
+            && node.getClientRects().length && (!region || overlaps(region, box(node.getBoundingClientRect())))) {
+            if (append(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value)) {
+              return parts.join(" ");
+            }
           }
           continue;
         }
@@ -470,10 +483,12 @@
         if (parent && (getComputedStyle(parent).visibility !== "visible" || parent.closest("textarea, select"))) continue;
         range.selectNodeContents(node);
         if ([...range.getClientRects()].some(bounds => bounds.width > 0 && bounds.height > 0
-          && (!region || overlaps(region, box(bounds))))) parts.push(node.data.trim());
+          && (!region || overlaps(region, box(bounds))))) {
+          if (append(node.data.trim())) return parts.join(" ");
+        }
       }
     }
-    return parts.filter(Boolean).join(" ");
+    return parts.join(" ");
   }
 
   // Force links and forms to use this tab for the duration of native activation.
@@ -482,44 +497,74 @@
     const form = element.closest("button, input")?.form;
     const submitter = form && element.closest("button, input");
     const attributes = link ? [[link, "target"]] : form ? [[form, "target"], [submitter, "formtarget"]] : [];
-    const previous = attributes.map(([node, attribute]) => node.getAttribute(attribute));
+    let submitted = false;
+    const onSubmit = () => { submitted = true; };
+    form?.addEventListener("submit", onSubmit, true);
+    const restore = targetThisTab(attributes);
     try {
-      for (const [node, attribute] of attributes) node.setAttribute(attribute, "_self");
       if (element instanceof HTMLElement) element.click();
       else element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
     } finally {
-      attributes.forEach(([node, attribute], index) => {
-        if (previous[index] === null) node.removeAttribute(attribute);
-        else node.setAttribute(attribute, previous[index]);
-      });
+      restore();
+      form?.removeEventListener("submit", onSubmit, true);
+    }
+    return Boolean(link) || submitted;
+  }
+
+  function targetThisTab(attributes) {
+    const previous = attributes.map(([node, attribute]) => node.getAttribute(attribute));
+    for (const [node, attribute] of attributes) node.setAttribute(attribute, "_self");
+    return () => attributes.forEach(([node, attribute], index) => {
+      if (node.getAttribute(attribute) !== "_self") return;
+      if (previous[index] === null) node.removeAttribute(attribute);
+      else node.setAttribute(attribute, previous[index]);
+    });
+  }
+
+  function checkWritable(element) {
+    if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
+    if (!element.isConnected || element.matches(":disabled, [aria-disabled='true']")
+      || !(isTextInput(element) && !element.readOnly || element.isContentEditable)) {
+      throw new Error("Element ist kein beschreibbares Textfeld");
+    }
+    if (element.isContentEditable && element.querySelector("input, [autocomplete], [contenteditable]")) {
+      throw new Error("Das Textfeld enthält weitere Eingabefelder");
     }
   }
 
-  function type(element, text) {
-    if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
-    const valueField = isTextInput(element) && !element.readOnly;
-    if (!valueField && !element.isContentEditable) throw new Error("Element ist kein beschreibbares Textfeld");
+  function checkTypeFocus(element) {
+    checkWritable(element);
+    for (let current = element; current; current = current.getRootNode().host) {
+      if (current.getRootNode().activeElement !== current) throw new Error("Textfeld hat den Fokus verloren");
+    }
+    for (let view = window; view !== view.top; view = view.parent) {
+      if (view.parent.document.activeElement !== view.frameElement) throw new Error("Textfeld hat den Fokus verloren");
+    }
+  }
+
+  function prepareType(element) {
+    checkWritable(element);
     element.focus({ preventScroll: true });
-    // A site's focus handler may mutate the target.
-    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
-    const eventOptions = { bubbles: true, composed: true, inputType: "insertReplacementText", data: text };
-    if (!element.dispatchEvent(new InputEvent("beforeinput", { ...eventOptions, cancelable: true }))) {
-      throw new Error("Die Seite hat die Eingabe abgelehnt");
+    checkTypeFocus(element);
+    if (isTextInput(element)) element.select();
+    else {
+      const selection = element.getRootNode().getSelection?.() ?? window.getSelection();
+      const range = new Range();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
     }
-    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
-    if (valueField && isTextInput(element) && !element.readOnly) {
-      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, text);
-    } else if (element.isContentEditable) {
-      if (element.querySelector("input, [autocomplete], [contenteditable]")) {
-        throw new Error("Das Textfeld enthält weitere Eingabefelder");
-      }
-      element.textContent = text;
-    } else {
-      throw new Error("Das Textfeld ist nicht mehr beschreibbar");
-    }
-    element.dispatchEvent(new InputEvent("input", eventOptions));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
+    checkTypeFocus(element);
+  }
+
+  let restoreSubmit;
+  function prepareSubmit(element) {
+    checkTypeFocus(element);
+    const form = element.form ?? element.closest("form");
+    if (!form) return;
+    const submitters = [...form.elements, ...form.querySelectorAll("input[type=image]")]
+      .filter(node => node.type === "submit" || node.type === "image");
+    restoreSubmit = targetThisTab([[form, "target"], ...submitters.map(node => [node, "formtarget"])]);
   }
 
   function scroll(element, dy) {
@@ -543,8 +588,28 @@
     return { role: category, axRole: "AX" + axRole, label: name, enabled, source: "dom" };
   }
 
+  function priority({ element, role, enabled, name }) {
+    if (!enabled || isPassword(element)) return 7;
+    if (role === "searchbox" || (fields.has(role) && /such|search/i.test(name))
+      || (isTextInput(element) && element.closest("search, [role=search]"))) return 0;
+    if (role === "textbox" || isTextInput(element)) return 1;
+    const main = element.closest("main, [role=main]");
+    const peripheral = element.closest("nav, footer, [role=navigation], [role=contentinfo], [role=banner]")
+      || (!main && element.closest("header"));
+    if (peripheral) return 6;
+    if (role === "button" && (main || element.type === "submit" || element.type === "image")) return 2;
+    if (role === "button" || fields.has(role)) return 3;
+    return 4;
+  }
+
   function handle(request) {
-    const { cmd, id, dy, text } = request;
+    const { cmd, id, dy } = request;
+    if (cmd === "ready") return { loaded: document.readyState === "complete" };
+    if (cmd === "finishType") {
+      restoreSubmit?.();
+      restoreSubmit = undefined;
+      return {};
+    }
     const frame = placement();
     if (cmd === "overlay") {
       capturePending = request.hide;
@@ -580,11 +645,12 @@
         if (rect.x >= rect.right || rect.y >= rect.bottom) continue;
         const localId = items.length;
         commandTargets.set(localId, item.element);
-        items.push({ localId, ...describe(item), rect: rectArray(rect) });
+        items.push({ localId, ...describe(item), priority: priority(item), rect: rectArray(rect) });
       }
       return { targets: items };
     }
     if (cmd === "read" && id === undefined) {
+      if (request.rect === undefined) return { text: readText(document.body ?? document, undefined, request.limit) };
       const [x, y, width, height] = request.rect;
       const region = intersect(frame.clip, { x, y, right: x + width, bottom: y + height });
       const local = { x: region.x - frame.x, y: region.y - frame.y,
@@ -604,8 +670,12 @@
       throw new Error("Element ist deaktiviert");
     }
     switch (cmd) {
-      case "click": click(element); return { via: "dom" };
-      case "type": type(element, text); return { via: "dom" };
+      case "click":
+        // Native typing leaves transient activation that a site's click handler could use for popups.
+        if (navigator.userActivation.isActive) return { activationPending: true };
+        return { via: "dom", invalidates: click(element) };
+      case "prepareType": prepareType(element); return {};
+      case "prepareSubmit": prepareSubmit(element); return {};
       case "focus":
         element.focus({ preventScroll: true });
         if (element.getRootNode().activeElement !== element) throw new Error("Element ist nicht fokussierbar");
