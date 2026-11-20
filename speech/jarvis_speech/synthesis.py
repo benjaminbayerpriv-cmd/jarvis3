@@ -19,8 +19,10 @@ from .normalize import expand_numbers
 
 LOG = logging.getLogger(__name__)
 MARKDOWN = MarkdownIt("commonmark")
-URL = re.compile(r"\b(?:https?://|ftp://|www\.)[^\s<>]+", re.IGNORECASE)
+URL = re.compile(r"\b(?:https?://|ftp://)[^\s<>]+", re.IGNORECASE)
 TAG = re.compile(r"</?[a-zA-Z][^>]*>")
+# Domainnamen wie news.ycombinator.com ("news Punkt ycombinator Punkt com"), sonst werden sie verschluckt
+DOMAIN = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+(?:com|de|org|net|io|dev|ai|app|eu|tv|co|uk|at|ch|info|me)\b", re.IGNORECASE)
 
 
 def speakable(text):
@@ -35,6 +37,8 @@ def speakable(text):
         )
         paragraphs.append(line)
     text = URL.sub(" ", TAG.sub(" ", " ".join(paragraphs)))
+    text = re.sub(r"\bwww\.", "", text, flags=re.IGNORECASE)
+    text = DOMAIN.sub(lambda m: m.group(0).replace(".", " Punkt "), text)
     return expand_numbers(" ".join(emoji.replace_emoji(text, replace=" ").split()))
 
 
@@ -139,11 +143,12 @@ class Synthesizer:
         else:
             samples, source = native_voice(text, settings)
 
-        audible = np.flatnonzero(np.abs(samples) > 0.002)
+        # Weiche Wortanfänge liegen unter 0.002: niedrige Schwelle und ~30 ms Vorlauf behalten.
+        audible = np.flatnonzero(np.abs(samples) > 0.0005)
         if not len(audible):
             return np.empty(0, dtype=np.float32)
         # Remove generated lead-in so the first callback contains speech.
-        lead = source // 250
+        lead = source // 33
         samples = samples[max(0, audible[0] - lead):]
         if settings.lofi:
             # Aliasing and sample-and-hold, intentionally yielding the lo-fi effect.

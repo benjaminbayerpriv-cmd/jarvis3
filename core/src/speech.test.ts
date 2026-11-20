@@ -14,3 +14,11 @@ test("liest keinen Code und kein Markdown vor", () => {
   expect(out.join(" ")).toContain("fett");
   expect(clean("Siehe [Link](https://x.de) 🙂 und https://y.de")).toBe("Siehe Link und");
 });
+
+test("gibt einen fertigen Satz ohne folgendes Leerzeichen frei, sobald der Strom pausiert", () => {
+  const s = new SentenceSplitter();
+  expect(s.push("Ich öffne Gemini, einen Moment.")).toEqual([]);       // wartet auf ein Leerzeichen danach
+  expect(s.flushIfSentence()).toEqual(["Ich öffne Gemini, einen Moment."]);
+  expect(s.push("Ich bin noch mitten im")).toEqual([]);
+  expect(s.flushIfSentence()).toEqual([]);                             // unvollständig: nicht zerhacken
+});

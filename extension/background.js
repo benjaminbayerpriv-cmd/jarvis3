@@ -3,6 +3,8 @@
 const endpoint = "ws://127.0.0.1:7777/browser";
 const manifest = chrome.runtime.getManifest();
 const scans = new Map();
+const changedPage = "Seite hat gewechselt, bitte neu scannen";
+const textLimit = 8000;
 const queues = new Map();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -94,9 +96,27 @@ chrome.tabs.onRemoved.addListener(tab => {
 chrome.tabGroups.onRemoved.addListener(({ id }) => {
   void chrome.storage.session.remove(groupKey(id));
 });
-chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => {
-  if (frameId === 0) scans.delete(tabId);
+function invalidateScan(tab) {
+  const scan = scans.get(tab);
+  if (scan) scan.stale = true;
+}
+
+chrome.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId }) => {
+  if (frameId === 0) invalidateScan(tabId);
 });
+
+const pageChanges = [
+  chrome.webNavigation.onCommitted,
+  chrome.webNavigation.onHistoryStateUpdated,
+  chrome.webNavigation.onReferenceFragmentUpdated,
+];
+for (const event of pageChanges) {
+  event.addListener(({ tabId, frameId, documentId, url }) => {
+    const frame = scans.get(tabId)?.documents.get(frameId);
+    if (frame && (frame.documentId !== documentId || frame.url !== url
+      || event === chrome.webNavigation.onCommitted)) invalidateScan(tabId);
+  });
+}
 
 function urlFor(value) {
   if (typeof value !== "string") throw new Error("url fehlt");
@@ -123,7 +143,7 @@ async function openTab(request) {
     const groupId = await chrome.tabs.group(group ? { tabIds: tab, groupId: group.id } : { tabIds: tab });
     if (!group) await chrome.tabGroups.update(groupId, { title, color: "blue" });
     await chrome.storage.session.set({ [tabKey(tab)]: true, [groupKey(groupId)]: true });
-    await chrome.tabs.update(tab, { url });
+    await navigate(tab, url);
     return { tab };
   } catch (error) {
     // The user may have selected the tab since it was created.
@@ -131,6 +151,41 @@ async function openTab(request) {
     if (current && !current.active) await chrome.tabs.remove(tab);
     throw error;
   }
+}
+
+// Vorhandenen Tab des Nutzers in die Jarvis-Gruppe seines eigenen Fensters holen (nur auf ausdrückliche Bitte).
+async function adoptTab(request) {
+  const tabId = request.tab;
+  if (!Number.isInteger(tabId)) throw new Error("tab fehlt");
+  const tab = await chrome.tabs.get(tabId).catch(() => { throw new Error("Tab nicht gefunden"); });
+  const url = tab.url || tab.pendingUrl || "";
+  if (!/^(https?|file):/.test(url)) throw new Error("Dieser Tab (z. B. chrome://, Erweiterungsseite, Neuer Tab) kann nicht übernommen werden");
+  const key = tabKey(tabId);
+  if ((await chrome.storage.session.get(key))[key] && tab.groupId >= 0) return { tab: tabId, url, active: tab.active, already: true };
+  // Tabs, die vor dem Laden/Neuladen der Erweiterung geöffnet wurden, haben noch kein Content-Script.
+  const alive = await chrome.tabs.sendMessage(tabId, { cmd: "ready" }).catch(() => null);
+  if (!alive) {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["content.js"] })
+      .catch(() => { throw new Error("Dieser Tab erlaubt keine Steuerung (z. B. Chrome Web Store oder geschützte Seite)"); });
+  }
+  const title = groupTitle(request.group);
+  // Nur Gruppen im selben Fenster: der Tab soll das Fenster des Nutzers nicht wechseln.
+  const groups = await chrome.tabGroups.query({ windowId: tab.windowId, title, color: "blue" });
+  const owned = await chrome.storage.session.get(groups.map(group => groupKey(group.id)));
+  const group = groups.find(group => owned[groupKey(group.id)] === true);
+  const groupId = await chrome.tabs.group(group ? { tabIds: tabId, groupId: group.id } : { tabIds: tabId });
+  if (!group) await chrome.tabGroups.update(groupId, { title, color: "blue" });
+  await chrome.storage.session.set({ [key]: "adopted", [groupKey(groupId)]: true });
+  return { tab: tabId, url, active: tab.active };
+}
+
+// Übernommenen Tab wieder freigeben: aus der Gruppe nehmen, nicht mehr steuerbar.
+async function releaseTab(request) {
+  await requireManaged(request.tab);
+  await chrome.tabs.ungroup(request.tab);
+  await chrome.storage.session.remove(tabKey(request.tab));
+  scans.delete(request.tab);
+  return {};
 }
 
 async function listTabs() {
@@ -149,7 +204,11 @@ async function requireManaged(tabId, background = false) {
   const group = groupKey(tab.groupId);
   const groups = await chrome.storage.session.get(group);
   if (!groups[group]) throw new Error("Tab gehört nicht zu einer Jarvis-Tab-Gruppe");
-  if (background && (await chrome.tabs.get(tabId)).active) throw new Error("Jarvis-Tab ist gerade aktiv");
+  // Eigene Jarvis-Tabs dürfen bedient werden, auch wenn der Nutzer gerade zusieht. Übernommene Tabs des Nutzers
+  // bleiben gesperrt, solange sie der aktive Tab sind (dort arbeitet der Nutzer selbst).
+  if (background && owned[key] === "adopted" && (await chrome.tabs.get(tabId)).active) {
+    throw new Error("Dieser übernommene Tab ist gerade der aktive Tab des Nutzers. Bitte den Nutzer, kurz einen anderen Tab zu öffnen.");
+  }
   return tab;
 }
 
@@ -159,7 +218,7 @@ async function page(tab, request, frame = { frameId: 0 }) {
     const options = frame.documentId ? { documentId: frame.documentId } : { frameId: frame.frameId };
     response = await chrome.tabs.sendMessage(tab, request, options);
   } catch {
-    throw new Error("Seite nicht erreichbar. Bei neuen Tabs zuerst wait verwenden.");
+    throw new Error("Seite nicht erreichbar");
   }
   if (!response?.ok) throw new Error(response?.error ?? "Keine Antwort von der Seite");
   return response;
@@ -186,21 +245,22 @@ async function scan(tab, request) {
   const start = performance.now();
   scans.delete(tab);
   const entries = await frames(tab, { cmd: "scan", all: request.all });
-  const targets = [];
+  const candidates = entries.flatMap(({ frame, result }) => result.targets.map(target => ({ frame, ...target })));
+  candidates.sort((a, b) => a.priority - b.priority || a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
+  const total = candidates.length;
   const locations = new Map();
-  for (const { frame, result } of entries) {
-    for (const { localId, ...target } of result.targets) {
-      const id = nextId++;
-      locations.set(id, { frame, localId });
-      targets.push({ id, ...target });
-    }
-  }
-  targets.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
-  scans.set(tab, locations);
-  const reply = { targets, ms: Math.round(performance.now() - start) };
+  const documents = new Map(entries.map(({ frame }) => [frame.frameId, frame]));
+  const targets = candidates.slice(0, 150).map(({ frame, localId, priority, ...target }) => {
+    const id = nextId++;
+    locations.set(id, { frame, localId });
+    return { id, ...target };
+  });
+  scans.set(tab, { documents, locations, stale: false });
+  await checkScanFrame(tab, documents.get(0));
+  const reply = { targets, total, ms: Math.round(performance.now() - start) };
   if (request.text) {
-    reply.text = targets.map(({ id, axRole, label, rect: [x, y, width, height], enabled }) =>
-      `${id} ${axRole.slice(2)} „${label}“ @${Math.round(x + width / 2)},${Math.round(y + height / 2)}${enabled ? "" : " (aus)"}`).join("\n");
+    reply.text = [`${targets.length} von ${total} Elementen`, ...targets.map(({ id, axRole, label, rect: [x, y, width, height], enabled }) =>
+      `${id} ${axRole.slice(2)} „${label}“ @${Math.round(x + width / 2)},${Math.round(y + height / 2)}${enabled ? "" : " (aus)"}`)].join("\n");
   }
   return reply;
 }
@@ -212,27 +272,74 @@ function checkRect(rect) {
 }
 
 async function targetCommand(tab, request) {
-  const { cmd, id, rect, text, dy } = request;
+  const { cmd, id, rect, text, dy, submit } = request;
   if (cmd === "type" && typeof text !== "string") throw new Error("text fehlt");
+  if (cmd === "type" && submit !== undefined && typeof submit !== "boolean") throw new Error("submit muss ein Boolean sein");
   if (cmd === "scroll" && !Number.isFinite(dy)) throw new Error("dy fehlt oder ist ungültig");
   if (cmd === "read") {
-    if ((id === undefined) === (rect === undefined)) throw new Error("read erwartet entweder id oder rect");
-    if (rect !== undefined) {
-      checkRect(rect);
-      const results = await frames(tab, { cmd, rect });
-      return { text: results.map(({ result }) => result.text).filter(Boolean).join("\n"), via: "dom" };
+    if (id !== undefined && rect !== undefined) throw new Error("read erwartet höchstens id oder rect");
+    if (id === undefined) {
+      if (rect !== undefined) checkRect(rect);
+      const results = await frames(tab, { cmd, rect, limit: rect === undefined ? textLimit : undefined });
+      const text = results.map(({ result }) => result.text).filter(Boolean).join("\n");
+      return { text: rect === undefined ? text.slice(0, textLimit) : text, via: "dom" };
     }
   }
   if (cmd === "scroll" && id === undefined) {
     await page(tab, { cmd, dy });
     return {};
   }
-  const location = scans.get(tab)?.get(id);
+  const scan = scans.get(tab);
+  if (scan?.stale) throw new Error(changedPage);
+  const location = scan?.locations.get(id);
   if (!location) throw new Error("Unbekannte oder abgelaufene ID. Erst scan ausführen.");
-  const result = await page(tab, { cmd, id: location.localId, text, dy }, location.frame);
+  await checkScanFrame(tab, scan.documents.get(0));
+  if (location.frame.frameId !== 0) await checkScanFrame(tab, location.frame);
+  const send = request => page(tab, { id: location.localId, ...request }, location.frame);
+  // Jarvis-Cursor zum Ziel bewegen; bei laufender Live-Ansicht kurz warten, damit man ihn ankommen sieht.
+  const moveCursor = async () => {
+    const { rect } = await send({ cmd: "rect" }).catch(() => ({}));
+    if (!rect) return;
+    await page(tab, { cmd: "agentCursor", x: rect[0] + rect[2] / 2, y: rect[1] + rect[3] / 2 }).catch(() => {});
+    if (streams.has(tab)) await sleep(450);
+  };
+  if (cmd === "type") {
+    await moveCursor();
+    if (submit) {
+      return observeNavigation(tab, navigating => typeAndSubmit(tab, send, text, navigating), false, location.frame.frameId);
+    }
+    await typeInTab(tab, send, text, false);
+    return { via: "cdp" };
+  }
+  if (cmd === "click") {
+    await moveCursor();
+    return observeNavigation(tab, async () => {
+      const deadline = Date.now() + 6000;
+      do {
+        await requireManaged(tab, true);
+        await checkScanFrame(tab, location.frame);
+        const result = await send({ cmd });
+        if (!result.activationPending) {
+          if (result.invalidates) invalidateScan(tab);
+          return { via: result.via };
+        }
+        await sleep(150);
+      } while (Date.now() < deadline);
+      throw new Error("Klick wartet auf das Ende der Chrome-Benutzeraktivierung");
+    }, false);
+  }
+  const result = await send({ cmd, dy }).catch(async error => {
+    await checkScanFrame(tab, location.frame);
+    throw error;
+  });
   if (cmd === "read") return { text: result.text, via: "dom" };
-  if (cmd === "click" || cmd === "type") return { via: result.via };
   return {};
+}
+
+async function checkScanFrame(tab, frame) {
+  const current = await chrome.webNavigation.getFrame({ tabId: tab, frameId: frame.frameId }).catch(() => null);
+  if (current?.documentId !== frame.documentId || current?.url !== frame.url) invalidateScan(tab);
+  if (scans.get(tab)?.stale) throw new Error(changedPage);
 }
 
 async function wait(tab, request) {
@@ -254,36 +361,69 @@ async function wait(tab, request) {
 }
 
 async function navigate(tab, url) {
-  const initial = await chrome.tabs.get(tab);
-  let completed = false;
+  invalidateScan(tab);
+  return observeNavigation(tab, async () => {
+    await chrome.tabs.update(tab, { url });
+    return {};
+  });
+}
+
+async function observeNavigation(tab, action, required = true, targetFrame = 0) {
+  const initial = await chrome.webNavigation.getFrame({ tabId: tab, frameId: 0 });
+  const deadline = Date.now() + 25000;
+  const isObserved = event => event.tabId === tab && (event.frameId === 0 || event.frameId === targetFrame);
+  let frameId = targetFrame;
+  let started = false;
+  let changed = false;
   let failure;
-  const onUpdate = (id, change) => {
-    if (id === tab && change.status === "complete") completed = true;
+  const onStart = event => {
+    if (!isObserved(event)) return;
+    frameId = event.frameId;
+    started = true;
+    changed = false;
+    failure = undefined;
+  };
+  const onChange = event => {
+    if (!isObserved(event)) return;
+    frameId = event.frameId;
+    changed = true;
   };
   const onError = event => {
-    if (event.tabId === tab && event.frameId === 0 && event.error !== "net::ERR_ABORTED") failure = event.error;
+    if (isObserved(event) && event.error !== "net::ERR_ABORTED") failure = event.error;
   };
-  chrome.tabs.onUpdated.addListener(onUpdate);
+  chrome.webNavigation.onBeforeNavigate.addListener(onStart);
+  for (const event of pageChanges) event.addListener(onChange);
   chrome.webNavigation.onErrorOccurred.addListener(onError);
   try {
-    await chrome.tabs.update(tab, { url });
-    const deadline = Date.now() + 25000;
+    const result = await action(() => started || changed);
+    const grace = Date.now() + 400;
     while (Date.now() < deadline) {
       const current = await chrome.tabs.get(tab);
       if (failure) throw new Error("Navigation fehlgeschlagen: " + failure);
-      const moved = current.url !== initial.url && !current.pendingUrl;
-      if (current.status === "complete" && (completed || moved)) return {};
+      const moved = changed || current.url !== initial?.url;
+      const loading = current.status === "loading" || current.pendingUrl;
+      if (!required && !started && !moved && !loading && Date.now() >= grace) return result;
+      if (moved && !loading) {
+        const frame = await chrome.webNavigation.getFrame({ tabId: tab, frameId });
+        const ready = frame && await page(tab, { cmd: "ready" }, frame).catch(() => null);
+        if (ready?.loaded && (frameId !== 0 || current.url === frame.url) && !failure && changed) return result;
+      }
       await sleep(100);
     }
     throw new Error("Zeitüberschreitung beim Laden des Tabs");
   } finally {
-    chrome.tabs.onUpdated.removeListener(onUpdate);
+    chrome.webNavigation.onBeforeNavigate.removeListener(onStart);
+    for (const event of pageChanges) event.removeListener(onChange);
     chrome.webNavigation.onErrorOccurred.removeListener(onError);
   }
 }
 
+// Live-Ansicht: Tabs, deren Bild gerade an Jarvis gestreamt wird (Debugger bleibt angehängt).
+const streams = new Map();
+
 async function withDebugger(tab, operation) {
   const debuggee = { tabId: tab };
+  if (streams.has(tab)) return operation((method, params) => chrome.debugger.sendCommand(debuggee, method, params));
   await chrome.debugger.attach(debuggee, "1.3");
   try {
     return await operation((method, params) => chrome.debugger.sendCommand(debuggee, method, params));
@@ -292,14 +432,135 @@ async function withDebugger(tab, operation) {
   }
 }
 
-async function back(tab) {
+function sendFrame(message) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+async function streamStart(tab) {
+  if (streams.has(tab)) return { already: true };
+  const target = { tabId: tab };
+  await chrome.debugger.attach(target, "1.3");
+  const state = { target, stopped: false };
+  streams.set(tab, state);
+  void streamLoop(tab, state);
+  return {};
+}
+
+async function streamStop(tab, reason = "gestoppt") {
+  const state = streams.get(tab);
+  if (!state) return;
+  state.stopped = true;
+  streams.delete(tab);
+  await chrome.debugger.detach(state.target).catch(() => {});
+  sendFrame({ type: "stream_ended", tab, reason });
+}
+
+// Bild ohne clip/scale aufnehmen: Ein Ausschnitt mit Skalierungsfaktor lässt Chrome die Seite kurz umrechnen,
+// das flackert im echten Fenster. Verkleinert wird stattdessen hier in der Erweiterung.
+async function downscale(base64, maxWidth) {
+  const blob = await (await fetch("data:image/jpeg;base64," + base64)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+  const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.6 })).arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { data: btoa(binary), w: width, h: height };
+}
+
+async function streamLoop(tab, state) {
+  while (!state.stopped && streams.get(tab) === state) {
+    const started = Date.now();
+    try {
+      const { data } = await chrome.debugger.sendCommand(state.target, "Page.captureScreenshot", {
+        format: "jpeg", quality: 70, fromSurface: true, optimizeForSpeed: true,
+      });
+      const frame = await downscale(data, 1280);
+      const current = await chrome.tabs.get(tab);
+      if (!state.stopped) sendFrame({ type: "frame", tab, ...frame, url: current.url ?? "", title: current.title ?? "" });
+    } catch {
+      if (!(await chrome.tabs.get(tab).catch(() => null))) { await streamStop(tab, "Tab geschlossen"); return; }
+    }
+    await sleep(Math.max(0, 250 - (Date.now() - started)));
+  }
+}
+
+chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
+  const state = streams.get(tabId);
+  if (!state || state.stopped) return;
+  state.stopped = true;
+  streams.delete(tabId);
+  sendFrame({ type: "stream_ended", tab: tabId, reason: reason === "canceled_by_user" ? "Vom Nutzer beendet" : reason });
+});
+
+async function typeInTab(tab, pageCommand, text, submit) {
   await withDebugger(tab, async send => {
+    const key = async (key, windowsVirtualKeyCode, text) => {
+      const params = { key, code: key, windowsVirtualKeyCode };
+      await send("Input.dispatchKeyEvent", { type: "keyDown", ...params, text });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
+    };
+    await requireManaged(tab, true);
+    await pageCommand({ cmd: "prepareType" });
+    if (text) await send("Input.insertText", { text });
+    else await key("Backspace", 8);
+    if (submit) {
+      await requireManaged(tab, true);
+      await pageCommand({ cmd: "prepareSubmit" });
+      try {
+        await key("Enter", 13, "\r");
+      } finally {
+        // A navigating document can be frozen in the back-forward cache.
+        void pageCommand({ cmd: "finishEnter" }).catch(() => {});
+      }
+    }
+  });
+}
+
+async function typeAndSubmit(tab, pageCommand, text, navigating) {
+  const changed = async () => {
+    const deadline = Date.now() + 1500;
+    do {
+      if (navigating()) return true;
+      const state = await pageCommand({ cmd: "submitProgress" }).catch(() => null);
+      if (state?.changed || navigating()) return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(150, deadline - Date.now()));
+    } while (true);
+  };
+  const success = via => {
+    invalidateScan(tab);
+    return { via };
+  };
+  try {
+    await typeInTab(tab, pageCommand, text, true);
+    if (await changed()) return success("cdp");
+    await requireManaged(tab, true);
+    if (navigating()) return success("cdp");
+    const fallback = await pageCommand({ cmd: "submitForm" }).catch(error => {
+      if (!navigating()) throw error;
+    });
+    if (fallback?.changed || (!fallback?.attempted && navigating())) return success("cdp");
+    if (!fallback?.attempted) return { via: "cdp", submitted: false };
+    if (await changed()) return success("cdp+form");
+    return { via: "cdp+form", submitted: false };
+  } finally {
+    void pageCommand({ cmd: "finishType" }).catch(() => {});
+  }
+}
+
+async function back(tab) {
+  return observeNavigation(tab, () => withDebugger(tab, async send => {
     const { currentIndex, entries } = await send("Page.getNavigationHistory");
     const previous = entries[currentIndex - 1];
     if (!previous) throw new Error("Kein vorheriger Verlaufseintrag");
     await send("Page.navigateToHistoryEntry", { entryId: previous.id });
-  });
-  return {};
+    return {};
+  }));
 }
 
 function bounds(requested, [, , vw, vh]) {
@@ -355,7 +616,8 @@ async function renderShot(data, viewport, rect, targets, passwords) {
 async function shot(tab, request) {
   const marksByDocument = new Map();
   if (request.marks) {
-    for (const [id, { frame, localId }] of scans.get(tab) ?? []) {
+    const scan = scans.get(tab);
+    for (const [id, { frame, localId }] of (scan?.stale ? [] : scan?.locations ?? [])) {
       if (!marksByDocument.has(frame.documentId)) marksByDocument.set(frame.documentId, []);
       marksByDocument.get(frame.documentId).push({ id, localId });
     }
@@ -383,18 +645,26 @@ async function dispatch(request) {
   const { cmd, tab } = request;
   if (cmd === "tab_open") return openTab(request);
   if (cmd === "tab_list") return listTabs();
-  if (!["tab_close", "navigate", "back", "wait", "scan", "shot", "click", "type", "focus", "scroll", "read"].includes(cmd)) {
+  if (cmd === "tab_adopt") return adoptTab(request);
+  if (cmd === "tab_release") return releaseTab(request);
+  if (!["tab_close", "navigate", "back", "wait", "scan", "shot", "preview", "click", "type", "focus", "scroll", "read", "stream_start", "stream_stop"].includes(cmd)) {
     throw new Error("Unbekannter Befehl");
   }
 
-  await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot"].includes(cmd));
+  await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot", "preview"].includes(cmd));
   switch (cmd) {
-    case "tab_close": await chrome.tabs.remove(tab); return {};
+    case "tab_close": await streamStop(tab); await chrome.tabs.remove(tab); return {};
+    case "stream_start": return streamStart(tab);
+    case "stream_stop": await streamStop(tab); return {};
     case "navigate": return navigate(tab, urlFor(request.url));
     case "back": return back(tab);
     case "wait": return wait(tab, request);
     case "scan": return scan(tab, request);
     case "shot": return shot(tab, request);
+    case "preview": {
+      const [{ data }] = await withDebugger(tab, send => send("Page.captureScreenshot", { format: "jpeg", quality: 55, fromSurface: true }));
+      return { dataUrl: "data:image/jpeg;base64," + data, tab };
+    }
     default: return targetCommand(tab, request);
   }
 }

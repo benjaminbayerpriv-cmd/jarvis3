@@ -1,5 +1,8 @@
 (() => {
   "use strict";
+  // Mehrfaches Einfügen (Übernehmen eines schon offenen Tabs) darf keine zweite Kopie anlegen.
+  if (globalThis.__jarvisContent) return;
+  globalThis.__jarvisContent = true;
 
   const roles = new Map([
     ["button", "Taste"], ["link", "Link"], ["checkbox", "Kontrollkästchen"],
@@ -126,10 +129,12 @@
   const context = canvas.getContext("2d");
 
   let enabled = false;
+  let showMarks = false; // Rahmen+Beschriftung nur, wenn der Nutzer sie einschaltet; der Jarvis-Cursor läuft auch ohne
   let targets = [];
   let refreshTimer;
   let scanPending = true;
   let pointer = null;
+  let agentCursor = null;
   const roots = new Set();
   const observer = new MutationObserver(records => {
     if (records.some(record => record.target !== host && ![
@@ -280,7 +285,7 @@
     }
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.clearRect(0, 0, width, height);
-    const items = locate({ x: 0, y: 0, right: width, bottom: height });
+    const items = showMarks ? locate({ x: 0, y: 0, right: width, bottom: height }) : [];
     const area = ({ rect }) => (rect.right - rect.x) * (rect.bottom - rect.y);
     items.sort((a, b) => Number(inside(pointer, b.rect)) - Number(inside(pointer, a.rect)) || area(a) - area(b));
 
@@ -327,6 +332,44 @@
       context.fillStyle = color;
       context.fillText(caption, left + 5, top + h / 2 + 0.5);
     }
+    if (agentCursor) {
+      const { x, y, active } = agentCursor;
+      const time = performance.now() - agentCursor.started;
+      const progress = Math.min(1, time / 420);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const px = agentCursor.fromX + (x - agentCursor.fromX) * eased;
+      const py = agentCursor.fromY + (y - agentCursor.fromY) * eased;
+      context.save();
+      context.translate(px, py);
+      const k = Math.max(1, width / 900); // sichtbar bleiben, auch wenn das Live-Bild stark verkleinert ist
+      context.scale(k, k);
+      context.shadowColor = "rgba(0, 0, 0, .55)";
+      context.shadowBlur = 8;
+      context.fillStyle = "#a78bfa";
+      context.strokeStyle = "#fff";
+      context.lineWidth = 1.6;
+      context.beginPath();
+      context.moveTo(0, 0);
+      context.lineTo(0, 23);
+      context.lineTo(6, 17);
+      context.lineTo(11, 27);
+      context.lineTo(15, 25);
+      context.lineTo(10, 15);
+      context.lineTo(19, 15);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      if (active && time < 420) {
+        context.beginPath();
+        context.arc(5, 5, 7 + Math.min(time, 180) / 12, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(167, 139, 250, ${1 - Math.min(time, 420) / 420})`;
+        context.lineWidth = 2;
+        context.stroke();
+      }
+      context.restore();
+      if (time < 450) schedule(false, 33); // setTimeout statt requestAnimationFrame: läuft auch im Hintergrund-Tab
+      if (active && time > 550) { agentCursor.active = false; schedule(); }
+    }
   }
 
   let capturePending = false;
@@ -341,20 +384,21 @@
     }
   }
 
-  function schedule(rescan = false) {
+  function schedule(rescan = false, delay = 65) {
     if (!enabled) return;
     scanPending ||= rescan;
     if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
-      if (!enabled || capturePending || document.hidden) return;
+      // Der Jarvis-Cursor muss auch in Hintergrund-Tabs gezeichnet werden (dort ist document.hidden wahr).
+      if (!enabled || capturePending || (document.hidden && !agentCursor)) return;
       ensureOverlay();
       if (scanPending) {
         scanPending = false;
         scan();
       }
       draw();
-    }, 65);
+    }, delay);
   }
 
   function onLayout() { schedule(); }
@@ -386,6 +430,7 @@
 
   function setEnabled(value) {
     enabled = value;
+    showMarks = value;
     if (enabled) {
       schedule(true);
       return;
@@ -438,10 +483,20 @@
       ["text", "email", "search", "password", "tel", "url", "number"].includes(element.type));
   }
 
-  function readText(container, region) {
+  function readText(container, region, limit, skip) {
     if (container instanceof Element && isPassword(container)) return "";
+    for (let ancestor = container instanceof Element ? container : null; ancestor; ancestor = parentOf(ancestor)) {
+      if (getComputedStyle(ancestor).opacity === "0") return "";
+    }
     const parts = [];
     const range = new Range();
+    let length = 0;
+    const append = value => {
+      if (!value) return false;
+      parts.push(limit === undefined ? value : value.slice(0, limit - length));
+      length += value.length + 1;
+      return limit !== undefined && length >= limit;
+    };
     const activeRoots = new Set([container]);
     for (const root of activeRoots) {
       const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
@@ -449,7 +504,8 @@
           if (node.nodeType === Node.TEXT_NODE) {
             return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
-          if (node === host || node.matches("script, style, noscript, template, input[type=hidden]") || isPassword(node)) {
+          if (node === host || skip?.(node) || node.matches("script, style, noscript, template, input[type=hidden]")
+            || getComputedStyle(node).opacity === "0" || isPassword(node)) {
             return NodeFilter.FILTER_REJECT;
           }
           return NodeFilter.FILTER_ACCEPT;
@@ -459,10 +515,12 @@
         if (node.nodeType === Node.ELEMENT_NODE) {
           const inner = nestedRoot(node);
           if (inner) activeRoots.add(inner);
-          if (region && (isTextInput(node) || node instanceof HTMLSelectElement)
+          if ((region || limit !== undefined) && (isTextInput(node) || node instanceof HTMLSelectElement)
             && getComputedStyle(node).visibility === "visible"
-            && overlaps(region, box(node.getBoundingClientRect()))) {
-            parts.push(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value);
+            && node.getClientRects().length && (!region || overlaps(region, box(node.getBoundingClientRect())))) {
+            if (append(node instanceof HTMLSelectElement ? node.selectedOptions[0]?.label : node.value)) {
+              return parts.join(" ");
+            }
           }
           continue;
         }
@@ -470,10 +528,12 @@
         if (parent && (getComputedStyle(parent).visibility !== "visible" || parent.closest("textarea, select"))) continue;
         range.selectNodeContents(node);
         if ([...range.getClientRects()].some(bounds => bounds.width > 0 && bounds.height > 0
-          && (!region || overlaps(region, box(bounds))))) parts.push(node.data.trim());
+          && (!region || overlaps(region, box(bounds))))) {
+          if (append(node.data.trim())) return parts.join(" ");
+        }
       }
     }
-    return parts.filter(Boolean).join(" ");
+    return parts.join(" ");
   }
 
   // Force links and forms to use this tab for the duration of native activation.
@@ -482,44 +542,118 @@
     const form = element.closest("button, input")?.form;
     const submitter = form && element.closest("button, input");
     const attributes = link ? [[link, "target"]] : form ? [[form, "target"], [submitter, "formtarget"]] : [];
-    const previous = attributes.map(([node, attribute]) => node.getAttribute(attribute));
+    let submitted = false;
+    const onSubmit = () => { submitted = true; };
+    form?.addEventListener("submit", onSubmit, true);
+    const restore = targetThisTab(attributes);
     try {
-      for (const [node, attribute] of attributes) node.setAttribute(attribute, "_self");
       if (element instanceof HTMLElement) element.click();
       else element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
     } finally {
-      attributes.forEach(([node, attribute], index) => {
-        if (previous[index] === null) node.removeAttribute(attribute);
-        else node.setAttribute(attribute, previous[index]);
-      });
+      restore();
+      form?.removeEventListener("submit", onSubmit, true);
+    }
+    return Boolean(link) || submitted;
+  }
+
+  function targetThisTab(attributes) {
+    const previous = attributes.map(([node, attribute]) => node.getAttribute(attribute));
+    for (const [node, attribute] of attributes) node.setAttribute(attribute, "_self");
+    return () => attributes.forEach(([node, attribute], index) => {
+      if (node.getAttribute(attribute) !== "_self") return;
+      if (previous[index] === null) node.removeAttribute(attribute);
+      else node.setAttribute(attribute, previous[index]);
+    });
+  }
+
+  function checkWritable(element) {
+    if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
+    if (!element.isConnected || element.matches(":disabled, [aria-disabled='true']")
+      || !(isTextInput(element) && !element.readOnly || element.isContentEditable)) {
+      throw new Error("Element ist kein beschreibbares Textfeld");
+    }
+    if (element.isContentEditable && element.querySelector("input, [autocomplete], [contenteditable]")) {
+      throw new Error("Das Textfeld enthält weitere Eingabefelder");
     }
   }
 
-  function type(element, text) {
-    if (isPassword(element)) throw new Error("Passwortfelder sind gesperrt");
-    const valueField = isTextInput(element) && !element.readOnly;
-    if (!valueField && !element.isContentEditable) throw new Error("Element ist kein beschreibbares Textfeld");
+  function checkTypeFocus(element) {
+    checkWritable(element);
+    for (let current = element; current; current = current.getRootNode().host) {
+      if (current.getRootNode().activeElement !== current) throw new Error("Textfeld hat den Fokus verloren");
+    }
+    for (let view = window; view !== view.top; view = view.parent) {
+      if (view.parent.document.activeElement !== view.frameElement) throw new Error("Textfeld hat den Fokus verloren");
+    }
+  }
+
+  function prepareType(element) {
+    checkWritable(element);
     element.focus({ preventScroll: true });
-    // A site's focus handler may mutate the target.
-    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
-    const eventOptions = { bubbles: true, composed: true, inputType: "insertReplacementText", data: text };
-    if (!element.dispatchEvent(new InputEvent("beforeinput", { ...eventOptions, cancelable: true }))) {
-      throw new Error("Die Seite hat die Eingabe abgelehnt");
+    checkTypeFocus(element);
+    if (isTextInput(element)) element.select();
+    else {
+      const selection = element.getRootNode().getSelection?.() ?? window.getSelection();
+      const range = new Range();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
     }
-    if (!element.isConnected || isPassword(element)) throw new Error("Das Textfeld ist nicht mehr beschreibbar");
-    if (valueField && isTextInput(element) && !element.readOnly) {
-      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, text);
-    } else if (element.isContentEditable) {
-      if (element.querySelector("input, [autocomplete], [contenteditable]")) {
-        throw new Error("Das Textfeld enthält weitere Eingabefelder");
-      }
-      element.textContent = text;
-    } else {
-      throw new Error("Das Textfeld ist nicht mehr beschreibbar");
+    checkTypeFocus(element);
+  }
+
+  const formFor = element => element.form ?? element.closest("form");
+  const submittersFor = form => [...form.getRootNode().querySelectorAll("button, input[type=submit], input[type=image]")]
+    .filter(node => node.form === form && (node.type === "submit" || node.type === "image"));
+
+  function submissionContent(element) {
+    // Typing and opening or dismissing suggestions do not count as a result.
+    const popupIds = ["aria-controls", "aria-owns"].flatMap(name => (element.getAttribute(name) ?? "").split(/\s+/));
+    const text = readText(document.body ?? document, undefined, undefined, node =>
+      node === element || node.matches('[role="listbox"], [role="option"]') || (node.id && popupIds.includes(node.id)));
+    return JSON.stringify([location.href, document.title, text]);
+  }
+
+  let submission;
+  function prepareSubmit(element) {
+    checkTypeFocus(element);
+    const form = formFor(element);
+    const before = submissionContent(element);
+    const restore = form && targetThisTab([[form, "target"], ...submittersFor(form).map(node => [node, "formtarget"])]);
+    submission = { element, form, before, restore };
+  }
+
+  function finishEnter() {
+    submission?.restore?.();
+    if (submission) submission.restore = null;
+  }
+
+  function finishType() {
+    finishEnter();
+    submission = undefined;
+  }
+  window.addEventListener("pagehide", finishType);
+
+  function submitProgress() {
+    return { changed: Boolean(submission && submissionContent(submission.element) !== submission.before) };
+  }
+
+  function submitForm() {
+    const { changed } = submitProgress();
+    if (changed) return { changed };
+    if (!submission) return { attempted: false };
+    const { element, form } = submission;
+    if (!form?.isConnected || !element.isConnected || formFor(element) !== form) return { attempted: false };
+    checkWritable(element);
+    const [submitter] = submittersFor(form);
+    if (submitter?.matches(":disabled, [aria-disabled='true']")) return { attempted: false };
+    const restore = targetThisTab(submitter ? [[form, "target"], [submitter, "formtarget"]] : [[form, "target"]]);
+    try {
+      HTMLFormElement.prototype.requestSubmit.call(form, submitter);
+    } finally {
+      restore();
     }
-    element.dispatchEvent(new InputEvent("input", eventOptions));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
+    return { attempted: true };
   }
 
   function scroll(element, dy) {
@@ -543,9 +677,48 @@
     return { role: category, axRole: "AX" + axRole, label: name, enabled, source: "dom" };
   }
 
+  function priority({ element, role, enabled, name }) {
+    if (!enabled || isPassword(element)) return 7;
+    if (role === "searchbox" || (fields.has(role) && /such|search/i.test(name))
+      || (isTextInput(element) && element.closest("search, [role=search]"))) return 0;
+    if (role === "textbox" || isTextInput(element)) return 1;
+    const main = element.closest("main, [role=main]");
+    const peripheral = element.closest("nav, footer, [role=navigation], [role=contentinfo], [role=banner]")
+      || (!main && element.closest("header"));
+    if (peripheral) return 6;
+    if (role === "button" && (main || element.type === "submit" || element.type === "image")) return 2;
+    if (role === "button" || fields.has(role)) return 3;
+    return 4;
+  }
+
   function handle(request) {
-    const { cmd, id, dy, text } = request;
+    const { cmd, id, dy } = request;
+    if (cmd === "ready") return { loaded: document.readyState === "complete" };
+    if (cmd === "finishType") {
+      finishType();
+      return {};
+    }
+    if (cmd === "finishEnter") {
+      finishEnter();
+      return {};
+    }
+    if (cmd === "submitProgress") return submitProgress();
+    if (cmd === "submitForm") return submitForm();
     const frame = placement();
+    if (cmd === "agentCursor") {
+      const x = Math.max(0, Math.min(innerWidth, Number(request.x)));
+      const y = Math.max(0, Math.min(innerHeight, Number(request.y)));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("Ungültige Cursorposition");
+      const fromX = agentCursor?.x ?? pointer?.x ?? x;
+      const fromY = agentCursor?.y ?? pointer?.y ?? y;
+      agentCursor = { x, y, fromX, fromY, started: performance.now(), active: true };
+      enabled = true;
+      scanPending = false;
+      ensureOverlay();
+      draw();
+      schedule(false, 33);
+      return {};
+    }
     if (cmd === "overlay") {
       capturePending = request.hide;
       if (capturePending) host.remove();
@@ -580,11 +753,12 @@
         if (rect.x >= rect.right || rect.y >= rect.bottom) continue;
         const localId = items.length;
         commandTargets.set(localId, item.element);
-        items.push({ localId, ...describe(item), rect: rectArray(rect) });
+        items.push({ localId, ...describe(item), priority: priority(item), rect: rectArray(rect) });
       }
       return { targets: items };
     }
     if (cmd === "read" && id === undefined) {
+      if (request.rect === undefined) return { text: readText(document.body ?? document, undefined, request.limit) };
       const [x, y, width, height] = request.rect;
       const region = intersect(frame.clip, { x, y, right: x + width, bottom: y + height });
       const local = { x: region.x - frame.x, y: region.y - frame.y,
@@ -604,8 +778,17 @@
       throw new Error("Element ist deaktiviert");
     }
     switch (cmd) {
-      case "click": click(element); return { via: "dom" };
-      case "type": type(element, text); return { via: "dom" };
+      case "click":
+        // Native typing leaves transient activation that a site's click handler could use for popups.
+        if (navigator.userActivation.isActive) return { activationPending: true };
+        return { via: "dom", invalidates: click(element) };
+      case "rect": {
+        // Position des Elements im Koordinatensystem des obersten Fensters (für den Jarvis-Cursor)
+        const r = translate(box(element.getBoundingClientRect()));
+        return { rect: r.x < r.right && r.y < r.bottom ? rectArray(r) : null };
+      }
+      case "prepareType": prepareType(element); return {};
+      case "prepareSubmit": prepareSubmit(element); return {};
       case "focus":
         element.focus({ preventScroll: true });
         if (element.getRootNode().activeElement !== element) throw new Error("Element ist nicht fokussierbar");

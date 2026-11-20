@@ -52,6 +52,10 @@ server.tool("desktop_open_app", "Öffnet ein Programm per Name.", { name: z.stri
 server.tool("browser_tab_open", "Öffnet eine Seite im Hintergrund in der Tab-Gruppe Jarvis.", { url: z.string() },
   async a => result(await call("browser", { cmd: "tab_open", ...a })));
 server.tool("browser_tab_list", "Listet die Tabs.", {}, async () => result(await call("browser", { cmd: "tab_list" })));
+server.tool("browser_tab_adopt", "Übernimmt einen bereits offenen Tab des Nutzers in die Gruppe Jarvis, damit du ihn bedienen kannst. NUR auf ausdrückliche Bitte des Nutzers. Tab-ID aus browser_tab_list. Ist der Tab gerade der aktive, kannst du ihn nur lesen/scannen, nicht klicken oder tippen (dann den Nutzer bitten, kurz einen anderen Tab zu öffnen).",
+  { tab }, async a => result(await call("browser", { cmd: "tab_adopt", ...a })));
+server.tool("browser_tab_release", "Gibt einen übernommenen Tab wieder frei (aus der Gruppe Jarvis nehmen).", { tab },
+  async a => result(await call("browser", { cmd: "tab_release", ...a })));
 server.tool("browser_tab_close", "Schließt einen Jarvis-Tab.", { tab }, async a => result(await call("browser", { cmd: "tab_close", ...a })));
 server.tool("browser_navigate", "Lädt eine URL im Tab.", { tab, url: z.string() },
   async a => result(await call("browser", { cmd: "navigate", ...a })));
@@ -61,12 +65,19 @@ server.tool("browser_wait", "Wartet (ms) oder bis Text erscheint.", { tab, ms: z
 server.tool("browser_scan", "Bedienelemente der Seite als nummerierte Textliste.", { tab },
   async a => result({ ...(await call("browser", { cmd: "scan", text: true, ...a })), targets: undefined }));
 server.tool("browser_click", "Klickt ein Element der Seite.", { tab, id }, async a => result(await call("browser", { cmd: "click", ...a })));
-server.tool("browser_type", "Schreibt in ein Feld der Seite.", { tab, id, text: z.string() },
+server.tool("browser_type", "Schreibt in ein Feld der Seite. submit=true drückt danach Enter (z. B. Suchfeld absenden).",
+  { tab, id, text: z.string(), submit: z.boolean().optional() },
   async a => result(await call("browser", { cmd: "type", ...a })));
 server.tool("browser_scroll", "Scrollt die Seite oder ein Element.", { tab, id: id.optional(), dy: z.number().int() },
   async a => result(await call("browser", { cmd: "scroll", ...a })));
-server.tool("browser_read", "Liest Text eines Elements oder Bereichs der Seite.", { tab, id: id.optional(), rect: rect.optional() },
-  async a => result(await call("browser", { cmd: "read", ...a })));
+server.tool("browser_read", "Liest Text der Seite: ohne id/rect den gesamten sichtbaren Seitentext, sonst ein Element (id) oder einen Bereich (rect).",
+  { tab, id: id.optional(), rect: rect.optional() },
+  async a => {
+    const whole = a.id === undefined && a.rect === undefined;
+    const r = await call("browser", { cmd: "read", ...a, ...(whole ? { rect: [0, 0, 6000, 6000] } : {}) });
+    if (r.ok && typeof r.text === "string" && r.text.length > 8000) r.text = r.text.slice(0, 8000) + "\n[… gekürzt]";
+    return result(r);
+  });
 server.tool("browser_look", "Screenshot des Tabs, NUR wenn nötig.", { tab, rect: rect.optional(), marks: z.boolean().optional() },
   async a => image(await call("browser", { cmd: "shot", ...a })));
 

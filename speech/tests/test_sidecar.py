@@ -1,6 +1,7 @@
 """Exercise the real models and WebSocket protocol without using audio hardware."""
 
 import asyncio
+import json
 from collections import deque
 from pathlib import Path
 import logging
@@ -15,7 +16,7 @@ import numpy as np
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from jarvis_speech.audio import resample
+from jarvis_speech.audio import Playback, resample
 from jarvis_speech.recognition import RATE
 from jarvis_speech.server import Sidecar
 from jarvis_speech.synthesis import Voice, native_voice, speakable
@@ -106,6 +107,32 @@ class FakeAudio:
 
 
 class SpeechTests(unittest.IsolatedAsyncioTestCase):
+    def test_preroll_wakes_device_after_pause(self):
+        """Nach einer Pause läuft erst ein unhörbarer Vorlauf (Bluetooth-Aufwecken), dann die Sprache."""
+        async def run(idle):
+            loop = asyncio.get_running_loop()
+            events, refs = [], []
+            playback = Playback(loop, lambda kind, id=None, **_: events.append(kind), lambda *args: refs.append(args))
+            playback.last_active = time.monotonic() - idle
+            playback.play(1, np.full(4800, 0.3, dtype=np.float32))  # 0,1 s Sprache bei 48 kHz
+            blocks = []
+            for _ in range(40):  # 0,4 s
+                out = np.zeros(480, dtype=np.float32)
+                playback.render(out, 0.0, 48000)
+                blocks.append(out)
+            await asyncio.sleep(0.01)
+            return np.concatenate(blocks), events
+
+        pcm, events = asyncio.run(run(idle=10))
+        preroll, speech = pcm[:14400], pcm[14400:19200]  # 0,3 s Vorlauf, danach Sprache
+        self.assertGreater(float(np.abs(preroll).max()), 0.0)       # Signal liegt an, Gerät wacht auf
+        self.assertLess(float(np.abs(preroll).max()), 0.001)         # unhörbar und unter der say_start-Schwelle
+        self.assertTrue(np.allclose(speech, 0.3))                    # Sprache beginnt vollständig, nichts abgeschnitten
+        self.assertEqual(events.count("say_start"), 1)
+
+        pcm, events = asyncio.run(run(idle=0.2))                     # mitten im Gespräch: kein Vorlauf
+        self.assertTrue(np.allclose(pcm[:4800], 0.3))
+
     def test_normalization(self):
         self.assertEqual(
             speakable("**Am 3. Oktober** um 14:30 Uhr: 16,3°C [Info](https://example.test) 😄"),
@@ -153,10 +180,6 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready["devices"], audio.devices())
         _, level = await client.wait("level", now)
         self.assertEqual((level["mic"], level["out"]), (0, 0))
-        async with connect(url) as other:
-            with self.assertRaises(ConnectionClosed):
-                await other.recv()
-
         await client.send("mode", value="off")
         _, drained = audio.feed(wav(4))
         await drained
@@ -238,6 +261,11 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         await client.wait("say_end", first, id="second")
         self.assertTrue(any(m["type"] == "level" and m["mic"] > 0 for _, m in client.messages))
         self.assertTrue(any(m["type"] == "level" and m["out"] > 0 for _, m in client.messages))
+
+        # Neue Daemon-Verbindung ersetzt die alte (auch eine tote), statt abgelehnt zu werden.
+        async with connect(url) as other:
+            ready = json.loads(await asyncio.wait_for(other.recv(), 5))
+            self.assertEqual(ready["type"], "ready")
 
 
 if __name__ == "__main__":

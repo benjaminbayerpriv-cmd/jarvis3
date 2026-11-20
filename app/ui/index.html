@@ -37,6 +37,7 @@
           <span data-icon="chevron-down" class="chev"></span>
         </button>
         <div class="topbar-right">
+          <button class="icon-btn view-toggle" id="viewToggle" data-icon="eye" aria-pressed="true" title="Live-Ansicht des Tabs"></button>
           <span class="status-pill" id="browserPill" title="Chrome-Erweiterung"><span data-icon="world"></span><span>Browser</span></span>
           <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" title="Computer übernehmen">
             <span data-icon="device-desktop"></span><span class="mode-label">Computer</span><span class="toggle"><span class="knob"></span></span>
@@ -70,6 +71,17 @@
       </footer>
     </main>
   </div>
+
+  <!-- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet -->
+  <aside class="viewer" id="viewer" hidden aria-label="Live-Ansicht">
+    <header class="viewer-head" id="viewerHead">
+      <span class="viewer-dot"></span>
+      <span class="viewer-title" id="viewerTitle">Tab</span>
+      <span class="viewer-host" id="viewerHost"></span>
+      <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Live-Ansicht schließen"></button>
+    </header>
+    <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
+  </aside>
 
   <!-- Sprachmodus (Gemini-Live-Stil) -->
   <div class="live" id="live" hidden>
@@ -105,7 +117,7 @@
   </dialog>
 
   <template id="tplUser"><div class="turn user"><div class="bubble"></div></div></template>
-  <template id="tplJarvis"><div class="turn jarvis"><div class="loader" aria-label="Jarvis denkt nach"><svg viewBox="0 0 24 24" aria-hidden="true"><g class="orbit"><circle class="d d1" cx="12" cy="4.5" r="2.1"/><circle class="d d2" cx="19" cy="14" r="1.5"/><circle class="d d3" cx="6" cy="17" r="1.2"/></g><circle class="d core" cx="12" cy="12" r="1.7"/></svg></div><div class="body"><div class="actions-feed"></div><div class="md"></div><div class="meta"></div></div></div></template>
+  <template id="tplJarvis"><div class="turn jarvis"><div class="loader" aria-label="Jarvis denkt nach"><svg viewBox="0 0 24 24" aria-hidden="true"><g class="orbit"><circle class="d d1" cx="12" cy="4.5" r="2.1"/><circle class="d d2" cx="19" cy="14" r="1.5"/><circle class="d d3" cx="6" cy="17" r="1.2"/></g><circle class="d core" cx="12" cy="12" r="1.7"/></svg></div><div class="body"><div class="blocks"></div><div class="meta"></div></div></div></template>
 
   <script type="module" src="app.js"></script>
 </body>

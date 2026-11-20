@@ -90,6 +90,11 @@ class Clip:
     started: bool = False
 
 
+PREROLL_IDLE = 2.0      # Sekunden Stille, ab denen das Ausgabegerät als eingeschlafen gilt
+PREROLL_SECONDS = 0.3   # Länge des unhörbaren Vorlaufs
+PREROLL_LEVEL = 0.0005  # Rauschpegel des Vorlaufs (16-Bit-fest, aber unhörbar)
+
+
 class Playback:
     """A single clip shared by the event loop and the audio callback thread."""
 
@@ -99,6 +104,11 @@ class Playback:
         self.reference = reference
         self.lock = threading.Lock()
         self.clip = None
+        # Bluetooth-Geräte schlafen nach Stille ein und brauchen beim Aufwachen 100–500 ms.
+        # Nach einer Pause läuft deshalb ein unhörbares Vorlaufsignal, bevor die Sprache beginnt.
+        self.last_active = 0.0
+        self.preroll_left = None
+        self.noise = np.random.default_rng(1)
 
     def play(self, ident, pcm):
         clip = Clip(ident, pcm, self.loop.create_future())
@@ -110,6 +120,8 @@ class Playback:
 
     def stop(self):
         with self.lock:
+            self.preroll_left = None
+            self.last_active = time.monotonic()
             clip, self.clip = self.clip, None
             if clip is not None:
                 self.loop.call_soon(self.finish, clip)
@@ -125,6 +137,17 @@ class Playback:
         with self.lock:
             clip = self.clip
             if clip is None:
+                self.preroll_left = None
+                return
+            if self.preroll_left is None:
+                idle = time.monotonic() - self.last_active
+                self.preroll_left = int(PREROLL_SECONDS * rate) if idle > PREROLL_IDLE else 0
+            if self.preroll_left > 0:
+                # Pegel weit unter der say_start-Schwelle (0.001) und unter der Hörgrenze
+                count = min(len(out), self.preroll_left)
+                out[:count] = self.noise.uniform(-PREROLL_LEVEL, PREROLL_LEVEL, size=out[:count].shape).astype(out.dtype)
+                self.preroll_left -= count
+                self.loop.call_soon_threadsafe(self.reference, start, out.copy(), rate)
                 return
             length = min(len(out), len(clip.pcm) - clip.offset)
             out[:length] = clip.pcm[clip.offset:clip.offset + length]
@@ -135,6 +158,8 @@ class Playback:
             clip.offset += length
             if clip.offset >= len(clip.pcm):
                 self.clip = None
+                self.preroll_left = None
+                self.last_active = time.monotonic()
                 self.loop.call_soon_threadsafe(self.finish, clip)
 
 

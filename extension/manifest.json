@@ -9,7 +9,8 @@
     "tabs",
     "tabGroups",
     "webNavigation",
-    "debugger"
+    "debugger",
+    "scripting"
   ],
   "action": {
     "default_title": "Jarvis-Markierungen einschalten",
@@ -41,5 +42,10 @@
     "32": "icons/32.png",
     "48": "icons/48.png",
     "128": "icons/128.png"
-  }
+  },
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "file:///*"
+  ]
 }

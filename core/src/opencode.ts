@@ -22,15 +22,16 @@ export async function listModels(): Promise<ModelInfo[]> {
 export type BrainEvent =
   | { kind: "text"; delta: string }
   | { kind: "reasoning"; delta: string }
-  | { kind: "tool"; name: string; status: string; title?: string }
+  | { kind: "tool"; id: string; name: string; status: string; title?: string; input?: Record<string, unknown> }
   | { kind: "done" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; retry?: boolean };
 
 export class OpenCode {
   url: string;
   private proc?: ReturnType<typeof Bun.spawn>;
   private partKinds = new Map<string, string>();
   private listeners = new Map<string, (e: BrainEvent) => void>();
+  private started = new Set<string>(); // Sitzungen, in denen der aktuelle Lauf schon Ereignisse geliefert hat
 
   constructor(public port = 4096, public workspace = join(import.meta.dir, "../../workspace")) {
     this.url = `http://127.0.0.1:${port}`;
@@ -62,6 +63,7 @@ export class OpenCode {
                images: { mime: string; url: string }[] = []) {
     const [providerID, ...rest] = model.split("/");
     this.listeners.set(session, onEvent);
+    this.started.delete(session); // ein spätes "idle" des vorherigen (abgebrochenen) Laufs darf diesen nicht beenden
     const parts: unknown[] = [{ type: "text", text }];
     for (const img of images) parts.push({ type: "file", mime: img.mime, url: img.url });
     const r = await fetch(`${this.url}/session/${session}/prompt_async`, {
@@ -100,13 +102,15 @@ export class OpenCode {
 
   private dispatch(e: any) {
     const p = e.properties ?? {};
-    const cb = this.listeners.get(p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID);
+    const sid = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID;
+    const cb = this.listeners.get(sid);
     if (!cb) return;
+    if (e.type === "message.part.delta" || (e.type === "message.part.updated" && p.part?.type !== "text") || (e.type === "session.status" && p.status?.type === "busy")) this.started.add(sid); // die Nutzer-Nachricht (Textteil) zählt nicht
     switch (e.type) {
       case "message.part.updated": {
         const part = p.part;
         this.partKinds.set(part.id, part.type);
-        if (part.type === "tool") cb({ kind: "tool", name: part.tool, status: part.state?.status, title: part.state?.title });
+        if (part.type === "tool") cb({ kind: "tool", id: part.id, name: part.tool, status: part.state?.status, title: part.state?.title, input: part.state?.input });
         break;
       }
       case "message.part.delta": {
@@ -116,10 +120,17 @@ export class OpenCode {
         else if (kind === "reasoning") cb({ kind: "reasoning", delta: p.delta });
         break;
       }
+      case "session.status": {
+        // OpenCode wiederholt endlos, wenn das Gratis-Kontingent leer ist -> als Fehler melden
+        const st = p.status;
+        if (st?.type === "retry") cb({ kind: "error", message: String(st.message ?? "Wiederholung"), retry: true });
+        break;
+      }
       case "session.error":
         cb({ kind: "error", message: p.error?.data?.message ?? p.error?.name ?? "Fehler" });
         break;
       case "session.idle":
+        if (!this.started.has(p.sessionID)) break; // veraltetes Ereignis eines früheren Laufs
         cb({ kind: "done" });
         this.listeners.delete(p.sessionID);
         break;

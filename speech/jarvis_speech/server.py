@@ -284,13 +284,20 @@ class Sidecar:
             await client.send(json.dumps(await events.get(), ensure_ascii=False))
 
     async def connection(self, client):
-        if self.client is not None:
-            await client.close(1013, "Jarvis-Daemon bereits verbunden")
-            return
+        old = self.client
+        if old is not None:
+            # Neuer Daemon-Start: die alte (oft tote) Verbindung ersetzen statt die neue abzulehnen.
+            self.client = None
+            try:
+                await asyncio.wait_for(old.close(1012, "durch neue Verbindung ersetzt"), 1)
+            except Exception:
+                pass
+            self.speech.stop()
+            self.set_mode("off")
         self.client = client
-        self.events = asyncio.Queue(maxsize=256)
+        events = self.events = asyncio.Queue(maxsize=256)
         self.emit("ready", stt=self.stt.name, tts=self.tts.name, devices=self.audio.devices())
-        sender = self.loop.create_task(self.send_events(client, self.events))
+        sender = self.loop.create_task(self.send_events(client, events))
         try:
             async for message in client:
                 try:
@@ -300,14 +307,13 @@ class Sidecar:
         except ConnectionClosed:
             pass
         finally:
-            self.events = None
-            try:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            if self.client is client:  # nur aufräumen, wenn nicht schon ersetzt
+                self.events = None
+                self.client = None
                 self.speech.stop()
                 self.set_mode("off")
-            finally:
-                self.client = None
-                sender.cancel()
-                await asyncio.gather(sender, return_exceptions=True)
 
     def serve(self, port=7778):
         # The local daemon uses a native client without a browser Origin.

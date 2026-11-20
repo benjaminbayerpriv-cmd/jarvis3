@@ -37,6 +37,8 @@ Verbindung: Erweiterung öffnet `ws://127.0.0.1:7777/browser` und meldet sich mi
 |---|---|---|
 | `tab_open` | `url`, `group?` (Standard `"Jarvis"`) | `{ok, tab}` – öffnet im Hintergrund (`active:false`) in der Tab-Gruppe |
 | `tab_list` | – | `{ok, tabs:[{tab,url,title,group,active}]}` |
+| `tab_adopt` | `tab`, `group?` | `{ok, tab, url, active}` – holt einen **vorhandenen** Tab (nur http/https/file) in die Jarvis-Gruppe **seines eigenen Fensters**; danach steuerbar. Nur auf ausdrückliche Bitte des Nutzers. Aktive Tabs bleiben für click/type/scroll/focus gesperrt, scan/read gehen |
+| `tab_release` | `tab` | `{ok}` – nimmt einen übernommenen Tab wieder aus der Gruppe, nicht mehr steuerbar |
 | `tab_close` | `tab` | `{ok}` |
 | `navigate` | `tab`, `url` | `{ok}` (wartet auf load) |
 | `wait` | `tab`, `ms?`, `for?` (Text) | `{ok}` |
@@ -44,3 +46,8 @@ Verbindung: Erweiterung öffnet `ws://127.0.0.1:7777/browser` und meldet sich mi
 
 Regeln: Der aktive Tab und das Fenster des Nutzers wechseln **nie**. Gruppen-Farbe blau, Titel „Jarvis".
 Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`chrome.debugger`, kein OS-Mausklick).
+
+- `scan` liefert höchstens 150 Elemente und zusätzlich `total` mit der Anzahl vor der Kürzung. Such- und Textfelder sowie wichtige Buttons stehen zuerst, gewöhnliche Navigation und Fußzeile zuletzt. Die optionale Kurzliste nennt die Gesamtzahl ebenfalls.
+- `tab_open` und `navigate` antworten nach dem Laden und sobald das Content-Script der Zielseite erreichbar ist. Bei Links und Formularen wartet die Erweiterung auch auf eine unmittelbar ausgelöste Navigation. Nach einem Seitenwechsel sind die alten IDs ungültig. Die Fehlermeldung lautet „Seite hat gewechselt, bitte neu scannen“.
+- `read` ohne `id` und ohne `rect` liest den gerenderten Seitentext einschließlich der Bereiche außerhalb des Viewports (maximal 8000 Zeichen insgesamt). Passwortfelder werden ausgelassen.
+- `type` ersetzt den Inhalt eines Textfelds mit nativer Chrome-Eingabe (`via:"cdp"`). Mit `submit:true` folgt ein Enter-Tastendruck.

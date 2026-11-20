@@ -62,6 +62,18 @@ Gemessen auf Windows mit demselben Test (CUDA/`int8_float16`, Supertonic M1/5 Sc
 
 Mit echter Hardware (JLAB-Headset als Mikrofon und Lautsprecher, Sidecar per `uv run --project speech python -m jarvis_speech`) wurden zusätzlich geprüft: Gerätewahl per Namen, `say` → erster Ton nach 286 ms, kein `speech_start` während und nach der Wiedergabe (Echo-Schutz), `stop_speaking` → `say_end` nach 1 ms, `mode live` ohne Sprechen ohne Fehlalarm.
 
+### Satzanfang abgeschnitten (Bluetooth)
+
+Ausgabegeräte (AirPods, Bluetooth-Lautsprecher) schlafen nach Stille ein und brauchen beim Aufwachen 100–500 ms; genau diese Zeit fehlte am Satzanfang. Seit 2026-11-20 gilt:
+
+- Beginnt ein Satz nach mehr als 2 s Stille, läuft zuerst 300 ms lang ein unhörbares Vorlaufsignal (Rauschen mit Pegel 0,0005, weit unter der `say_start`-Schwelle 0,001), danach die Sprache. Mitten im Gespräch entfällt der Vorlauf. Der erste Satz nach einer Pause beginnt dadurch um 0,3 s später.
+- Der Zuschnitt des Synthese-Vorlaufs nutzt die Schwelle 0,0005 und behält ca. 30 ms vor dem ersten Ton (vorher 0,002 und 4 ms), damit weiche Wortanfänge nicht verloren gehen.
+- Test: `test_preroll_wakes_device_after_pause`. Mit physischem Bluetooth-Gerät noch nicht gehört.
+
+### Unterbrechung beim Sprechen (Barge-in)
+
+Solange Jarvis spricht, löst nur klare Sprache eine Unterbrechung aus: Wahrscheinlichkeit ≥ 0,75, Pegel ≥ 0,012 und acht Bilder in Folge (ca. 256 ms). Vorher genügten drei Bilder (ca. 100 ms), sodass Husten, Tastaturgeräusche und Reste der eigenen Stimme die Ausgabe zu früh abbrachen. Weil der Start dadurch später erkannt wird, puffert die Erkennung 16 Bilder (ca. 0,5 s) vor dem Start, damit der Satzanfang nicht fehlt.
+
 ## Offene Punkte
 
 - Die Abnahmemessung mit **menschlicher** Stimme, wechselnden Raum- und Bluetooth-Latenzen steht aus. Der Agent kann nicht selbst sprechen; ein akustischer Ersatzaufbau mit SAPI-Schallquelle war nicht aussagekräftig, weil die verfügbaren Mikrofone im Leerlauf nur ~0,0005 RMS (JLAB/USB-Camera, MME) bzw. ~0,008 RMS (WDM-KS, kollidiert mit Ausgabestreams) liefern. Bitte Mikrofon freigeben/positionieren und die zehn Sätze selbst sprechen.
