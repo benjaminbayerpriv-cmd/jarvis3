@@ -149,7 +149,13 @@ class Synthesizer:
             return np.empty(0, dtype=np.float32)
         # Remove generated lead-in so the first callback contains speech.
         lead = source // 33
-        samples = samples[max(0, audible[0] - lead):]
+        # Die Synthese hängt ca. 0,5 s Stille an jeden Schnipsel. Das machte mitten im Satz (Teilung am Komma) eine
+        # halbe Sekunde Pause. Ende auf ~150 ms nach dem letzten hörbaren Sample kürzen, letzte 40 ms ausblenden.
+        end = min(len(samples), audible[-1] + source * 150 // 1000)
+        samples = samples[max(0, audible[0] - lead):end].copy()
+        fade = min(len(samples), source * 40 // 1000)
+        if fade > 1:
+            samples[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
         if settings.lofi:
             # Aliasing and sample-and-hold, intentionally yielding the lo-fi effect.
             levels = np.clip(np.rint(samples[::8] * 8), -8, 7) / 8
