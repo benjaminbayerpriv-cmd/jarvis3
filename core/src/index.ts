@@ -49,7 +49,7 @@ let splitter: SentenceSplitter | undefined;
 const speech = new Speech(e => {
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); if (voice !== "off") speech.mode(voice); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
-  broadcast({ type: "speech", event: e.type, ...e });
+  broadcast({ ...e, type: "speech", event: e.type });
   if (e.type === "speech_start" && busy && voice === "live") stop(); // Barge-in: Nutzer unterbricht
   if (e.type === "final" && voice === "live" && String(e.text ?? "").trim()) chat(String(e.text), settings.voiceModel, true);
 });
