@@ -16,7 +16,7 @@ const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
 interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean }
-const defaults: Settings = { model: "opencode/big-pickle", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false };
+const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false };
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
 
