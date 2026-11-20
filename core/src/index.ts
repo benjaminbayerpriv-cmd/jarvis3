@@ -47,16 +47,23 @@ const state = () => ({ type: "state", model: settings.model, voiceModel: setting
 let voice: "off" | "live" | "dictate" | "muted" = "off";
 let splitter: SentenceSplitter | undefined;
 const speech = new Speech(e => {
-  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); if (voice !== "off") speech.mode(voice); broadcast(state()); return; }
+  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   broadcast({ ...e, type: "speech", event: e.type });
   if (e.type === "speech_start" && busy && voice === "live") stop(); // Barge-in: Nutzer unterbricht
-  if (e.type === "final" && voice === "live" && String(e.text ?? "").trim()) chat(String(e.text), settings.voiceModel, true);
+  if (e.type === "final" && voice === "live" && worthAnswering(String(e.text ?? ""))) chat(String(e.text), settings.voiceModel, true);
 });
+// Rauschen und Fehlerkennungen ("Untertitel…", einzelne Silben) nicht beantworten.
+function worthAnswering(text: string) {
+  const t = text.trim().replace(/[.!?…,\s]+$/g, "");
+  if (t.length < 4) return false;
+  if (/^(ja|nein|äh|ähm|hm+|mhm|okay|ok|ne|na)$/i.test(t)) return false;
+  return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(t);
+}
 function setVoice(mode: typeof voice) {
   voice = mode;
   speech.mode(mode);
-  if (mode === "off") speech.stopSpeaking();
+  if (mode === "off" || mode === "muted") { splitter = undefined; speech.stopSpeaking(); }
   broadcast(state());
 }
 
@@ -144,7 +151,12 @@ Bun.serve<{ kind: string }, {}>({
       else { uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s }))); }
     },
     close(ws) {
-      if (ws.data.kind === "browser") { browser.detach(ws); broadcast(state()); } else uis.delete(ws);
+      if (ws.data.kind === "browser") { browser.detach(ws); broadcast(state()); }
+      else {
+        uis.delete(ws);
+        // Keine Oberfläche mehr offen: Mikrofon zu, nichts mehr sprechen.
+        if (uis.size === 0 && voice !== "off") setVoice("off");
+      }
     },
     async message(ws, raw) {
       if (ws.data.kind === "browser") return browser.receive(String(raw));

@@ -40,7 +40,11 @@ function setOffline(off) {
 
 function handle(m) {
   switch (m.type) {
-    case "state": Object.assign(state, m); renderState(); break;
+    case "state":
+      Object.assign(state, m); renderState();
+      // Zustand abgleichen: Daemon denkt "live", die Oberfläche aber nicht -> Mikrofon schließen
+      if (state.voice === "live" && !live.on && !dictating) send({ type: "voice", mode: "off" });
+      break;
     case "delta": appendText(m.text); break;
     case "tool": toolEvent(m); break;
     case "action": break; // Details kommen über "tool"
