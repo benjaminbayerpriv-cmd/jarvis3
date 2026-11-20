@@ -271,19 +271,25 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
   transition: opacity var(--d-m1) linear; }
 .turn.jarvis.done .meta { opacity: 1; }
 
-/* Werkzeug-Aktionen als kleine Zeilen */
-.actions-feed { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.actions-feed:empty { display: none; }
-.act {
-  display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--on-surface-low);
-  animation: greet-in var(--d-m1) var(--ease-decel) both;
+
+/* Werkzeug-Gruppen: eingeklappte Zeile, aufgeklappt alle Aufrufe (wie bei Claude) */
+.tools { margin: 0 0 12px; }
+.tools summary {
+  list-style: none; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+  color: var(--on-surface-low); font-size: 14px; line-height: 20px; padding: 2px 0; border-radius: var(--r-s);
+  transition: color var(--d-s3) var(--ease);
 }
-.act svg { width: 16px; height: 16px; }
-.act .ring { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--outline-variant); border-top-color: var(--on-surface);
-  animation: spin .8s linear infinite; }
-.act.ok .ring { animation: none; border-color: var(--success); }
-.act.err { color: var(--error); }
-.act.err .ring { animation: none; border-color: var(--error); }
+.tools summary::-webkit-details-marker { display: none; }
+.tools summary:hover { color: var(--on-surface-variant); }
+.tools .chev { width: 18px; height: 18px; transition: transform var(--d-m1) var(--ease); }
+.tools[open] .chev { transform: rotate(180deg); }
+.tool-list { margin: 6px 0 4px 3px; padding-left: 14px; border-left: 2px solid var(--outline-variant); display: flex; flex-direction: column; gap: 8px; }
+.tool-row { display: flex; align-items: baseline; gap: 10px; font-size: 13px; line-height: 18px; color: var(--on-surface-low); min-width: 0; }
+.tool-name { color: var(--on-surface-variant); flex: none; }
+.tool-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.tool-row.running .tool-name { animation: pulse 1.4s var(--ease) infinite; }
+.tool-row.err .tool-name, .tool-row.err .tool-detail { color: var(--error); }
+.tools[open] .tool-list { animation: fade-in-text var(--d-m1) var(--ease) both; }
 
 /* Markdown */
 .md { overflow-wrap: anywhere; font-size: 17px; line-height: 24px; font-variation-settings: "wdth" 92; }
@@ -302,6 +308,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .md .cursor { display: none; }
 @keyframes pulse { 50% { opacity: .25; transform: scale(.7); } }
 .error-text { color: var(--error); }
+.notice { margin: 0 0 12px; font-size: 13px; line-height: 18px; color: var(--on-surface-low); animation: fade-in-text var(--d-m1) var(--ease) both; }
 
 /* ---------- Eingabe ---------- */
 .composer-wrap { padding: 0 24px 12px; }

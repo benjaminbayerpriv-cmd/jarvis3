@@ -86,18 +86,45 @@ async function openSession(id: string) {
     .filter(m => m.text);
 }
 
-async function chat(text: string, model = settings.model, spoken = false) {
+// Reihenfolge, in der ersatzweise andere Modelle probiert werden (Stand der Messung 2026-11-20).
+const FALLBACKS = ["opencode/nemotron-3.5-lightning-free", "nvidia/minimaxai/minimax-m3.1-flash", "opencode/big-pickle",
+  "opencode/longcat-2.5-free", "opencode/deepseek-v4.1-flash-free", "opencode/mimo-v2.6-flash-free"];
+const limited = new Map<string, number>(); // Modell -> gesperrt bis (ms)
+const isLimit = (msg: string) => /free usage exceeded|rate.?limit|quota|too many requests|subscribe/i.test(msg);
+function nextModel(tried: string[]) {
+  const now = Date.now();
+  return FALLBACKS.find(m => !tried.includes(m) && (limited.get(m) ?? 0) < now);
+}
+
+async function chat(text: string, model = settings.model, spoken = false, tried: string[] = []) {
   if (busy && session) await brain.abort(session);
+  // Ein Modell, das gerade am Limit ist, gar nicht erst anfragen
+  if ((limited.get(model) ?? 0) > Date.now()) {
+    const alt = nextModel([...tried, model]);
+    if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model]); }
+  }
   session ??= await brain.createSession();
   busy = true; broadcast(state());
   const started = performance.now();
-  let first = true;
+  let first = true, switching = false;
   splitter = spoken ? new SentenceSplitter() : undefined;
   const system = spoken ? SYSTEM_PROMPT + "\n\nDu bist gerade im Sprachmodus: antworte in höchstens zwei kurzen Sätzen, ohne Listen." : SYSTEM_PROMPT;
   await brain.prompt(session, text, model, system, (e: BrainEvent) => {
+    if (switching) return;
+    if (e.kind === "error" && isLimit(e.message)) {
+      limited.set(model, Date.now() + 30 * 60_000);
+      const alt = nextModel([...tried, model]);
+      if (alt) {
+        switching = true;
+        broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` });
+        brain.abort(session!).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model]); });
+        return;
+      }
+      e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
+    }
     if (splitter && e.kind === "text") for (const s of splitter.push(e.delta)) speech.say(s);
     if (splitter && e.kind === "done") { for (const s of splitter.flush()) speech.say(s); splitter = undefined; }
-    if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started) }); }
+    if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") { busy = false; broadcast(state()); }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }
       : { type: e.kind, ...e });

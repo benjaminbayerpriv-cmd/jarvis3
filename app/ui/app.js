@@ -49,7 +49,8 @@ function handle(m) {
     case "delta": appendText(m.text); break;
     case "tool": toolEvent(m); break;
     case "action": break; // Details kommen über "tool"
-    case "latency": if (current) current.firstMs = m.firstTokenMs; break;
+    case "latency": if (current) { current.firstMs = m.firstTokenMs; if (m.model) current.model = m.model; } break;
+    case "notice": showNotice(m.text); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -93,12 +94,27 @@ function startJarvis() {
   const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
   n.classList.add("busy", "empty");
   turns.append(n);
-  current = { el: n, text: "", started: performance.now(), tools: new Map() };
+  current = { el: n, blocks: [], text: "", started: performance.now(), calls: new Map() };
   conv.scrollTop = conv.scrollHeight;
+}
+const blocksOf = () => current.el.querySelector(".blocks");
+
+// Textblock: Fortsetzung des letzten Textblocks, sonst neuer (nach einer Werkzeug-Gruppe beginnt ein neuer)
+function textBlock() {
+  let b = current.blocks.at(-1);
+  if (b?.kind !== "text") {
+    b = { kind: "text", text: "", el: document.createElement("div"), faded: new Set() };
+    b.el.className = "md";
+    blocksOf().append(b.el);
+    current.blocks.push(b);
+  }
+  return b;
 }
 let rafPending = false;
 function appendText(t) {
   if (!current) startJarvis();
+  const b = textBlock();
+  b.text += t;
   current.text += t;
   current.el.classList.remove("empty");
   if (!rafPending) {
@@ -106,63 +122,123 @@ function appendText(t) {
     setTimeout(() => { // Timer statt rAF: läuft auch, wenn das Fenster im Hintergrund ist
       rafPending = false;
       if (!current) return;
-      const md = current.el.querySelector(".md");
-      const before = md.children.length;
-      md.innerHTML = renderMarkdown(current.text);
-      // neue Blöcke sanft einblenden (Gemini: fade-in-text 400 ms)
-      [...md.children].forEach((el, i) => { if (i >= Math.max(0, before - 1) && !current.faded?.has(i)) { el.classList.add("fade"); (current.faded ??= new Set()).add(i); } });
+      for (const blk of current.blocks) if (blk.kind === "text" && blk.dirty !== false) paintText(blk);
       stickToBottom();
     }, 33);
   }
   if (live.on) liveCaption(current.text, false);
 }
+function paintText(b) {
+  const before = b.el.children.length;
+  b.el.innerHTML = renderMarkdown(b.text);
+  [...b.el.children].forEach((el, i) => { if (i >= Math.max(0, before - 1) && !b.faded.has(i)) { el.classList.add("fade"); b.faded.add(i); } });
+}
+
 const TOOL_LABEL = {
-  desktop_scan: "Sieht sich den Bildschirm an", desktop_click: "Klickt", desktop_type: "Tippt", desktop_scroll: "Scrollt",
-  desktop_read: "Liest Text", desktop_look: "Macht einen Screenshot", desktop_key: "Drückt Tasten", desktop_open_app: "Öffnet ein Programm",
-  browser_tab_open: "Öffnet Tab in „Jarvis“", browser_tab_list: "Prüft Tabs", browser_tab_close: "Schließt Tab",
-  browser_navigate: "Lädt Seite", browser_back: "Geht zurück", browser_wait: "Wartet auf Seite", browser_scan: "Liest Seitenelemente",
-  browser_click: "Klickt auf der Seite", browser_type: "Schreibt auf der Seite", browser_scroll: "Scrollt Seite",
-  browser_read: "Liest Seite", browser_look: "Screenshot vom Tab",
-  webfetch: "Ruft Webseite ab", bash: "Führt Befehl aus", read: "Liest Datei", write: "Schreibt Datei", edit: "Bearbeitet Datei",
+  desktop_scan: "Bildschirm ansehen", desktop_click: "Klicken", desktop_type: "Tippen", desktop_scroll: "Scrollen",
+  desktop_read: "Text lesen", desktop_look: "Screenshot", desktop_key: "Tasten drücken", desktop_open_app: "Programm öffnen",
+  browser_tab_open: "Tab öffnen", browser_tab_list: "Tabs prüfen", browser_tab_close: "Tab schließen",
+  browser_navigate: "Seite laden", browser_back: "Zurück", browser_wait: "Auf Seite warten", browser_scan: "Seite ansehen",
+  browser_click: "Auf Seite klicken", browser_type: "Auf Seite schreiben", browser_scroll: "Seite scrollen",
+  browser_read: "Seite lesen", browser_look: "Screenshot vom Tab",
+  webfetch: "Webseite abrufen", bash: "Befehl ausführen", read: "Datei lesen", write: "Datei schreiben", edit: "Datei bearbeiten",
+  glob: "Dateien suchen", grep: "Text suchen", list: "Ordner lesen",
 };
+// Laufzeitform für die Kopfzeile ("Öffnet Tab …")
+const TOOL_RUNNING = {
+  desktop_scan: "Sieht sich den Bildschirm an", desktop_click: "Klickt", desktop_type: "Tippt", desktop_read: "Liest Text",
+  desktop_look: "Macht einen Screenshot", browser_tab_open: "Öffnet einen Tab", browser_navigate: "Lädt die Seite",
+  browser_wait: "Wartet auf die Seite", browser_scan: "Sieht sich die Seite an", browser_click: "Klickt auf der Seite",
+  browser_type: "Schreibt auf der Seite", browser_read: "Liest die Seite", browser_scroll: "Scrollt", bash: "Führt einen Befehl aus",
+  webfetch: "Ruft eine Webseite ab", read: "Liest eine Datei", edit: "Bearbeitet eine Datei", write: "Schreibt eine Datei",
+};
+const baseName = n => n.replace(/^jarvis_/, "");
+function detail(input = {}, title) {
+  const v = input.url ?? (typeof input.text === "string" ? `„${input.text.slice(0, 60)}“` : undefined)
+    ?? input.combo ?? input.name ?? input.command ?? input.filePath ?? input.pattern
+    ?? (input.id !== undefined ? `Element ${input.id}` : undefined) ?? title;
+  return v === undefined ? "" : String(v).slice(0, 90);
+}
+
+function toolsBlock() {
+  let b = current.blocks.at(-1);
+  if (b?.kind !== "tools") {
+    const el = document.createElement("details");
+    el.className = "tools";
+    el.innerHTML = `<summary><span class="tools-label"></span>${icon("chevron-down", "ic chev")}</summary><div class="tool-list"></div>`;
+    blocksOf().append(el);
+    b = { kind: "tools", el, rows: new Map() };
+    current.blocks.push(b);
+  }
+  return b;
+}
+function paintToolsHeader(b) {
+  const rows = [...b.rows.values()];
+  const running = rows.filter(r => r.status === "pending" || r.status === "running").at(-1);
+  const label = b.el.querySelector(".tools-label");
+  if (running) {
+    label.textContent = (TOOL_RUNNING[baseName(running.name)] ?? TOOL_LABEL[baseName(running.name)] ?? baseName(running.name)) + " …";
+    label.classList.add("shimmer");
+  } else {
+    const n = rows.length, failed = rows.filter(r => r.status === "error").length;
+    label.textContent = `${n} ${n === 1 ? "Schritt" : "Schritte"} ausgeführt` + (failed ? `, ${failed} fehlgeschlagen` : "");
+    label.classList.remove("shimmer");
+  }
+}
 function toolEvent(m) {
   if (!current) startJarvis();
   current.el.classList.remove("empty");
-  const key = m.name + "#" + (m.status === "pending" ? current.tools.size : [...current.tools.keys()].filter(k => k.startsWith(m.name + "#")).pop()?.split("#")[1] ?? current.tools.size);
-  let row = current.tools.get(key);
-  if (!row) {
-    row = document.createElement("div");
-    row.className = "act";
-    const base = m.name.replace(/^jarvis_/, "");
-    row.innerHTML = `<span class="ring"></span><span></span>`;
-    row.lastElementChild.textContent = TOOL_LABEL[base] ?? base;
-    current.el.querySelector(".actions-feed").append(row);
-    current.tools.set(key, row);
+  const b = toolsBlock();
+  let r = b.rows.get(m.id);
+  if (!r) {
+    const el = document.createElement("div");
+    el.className = "tool-row";
+    el.innerHTML = `<span class="tool-name"></span><span class="tool-detail"></span>`;
+    b.el.querySelector(".tool-list").append(el);
+    r = { el, name: m.name };
+    b.rows.set(m.id, r);
   }
-  if (m.title) row.lastElementChild.textContent = (TOOL_LABEL[m.name.replace(/^jarvis_/, "")] ?? m.name) + " · " + m.title;
-  row.classList.toggle("ok", m.status === "completed");
-  row.classList.toggle("err", m.status === "error");
+  r.status = m.status;
+  r.el.querySelector(".tool-name").textContent = TOOL_LABEL[baseName(m.name)] ?? baseName(m.name);
+  r.el.querySelector(".tool-detail").textContent = detail(m.input, m.title);
+  r.el.classList.toggle("err", m.status === "error");
+  r.el.classList.toggle("running", m.status === "pending" || m.status === "running");
+  paintToolsHeader(b);
   stickToBottom();
 }
 function finishTurn(note) {
   if (!current) return;
-  const { el, text, started, firstMs } = current;
+  const { el, started, firstMs } = current;
   el.classList.remove("busy", "empty");
   el.classList.add("done");
-  el.querySelector(".md").innerHTML = renderMarkdown(text || (note ? "" : "…"));
-  el.querySelectorAll(".act:not(.ok):not(.err)").forEach(r => r.classList.add(note ? "err" : "ok"));
+  for (const b of current.blocks) {
+    if (b.kind === "text") b.el.innerHTML = renderMarkdown(b.text);
+    else if (b.kind === "tools") { for (const r of b.rows.values()) if (r.status === "pending" || r.status === "running") { r.status = note ? "error" : "completed"; r.el.classList.remove("running"); } paintToolsHeader(b); }
+  }
+  if (!current.blocks.some(b => b.kind === "text") && !note && !current.blocks.length) textBlock().el.textContent = "…";
   const secs = ((performance.now() - started) / 1000).toFixed(1);
-  el.querySelector(".meta").textContent = [note, short(state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
+  el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
     .filter(Boolean).join(" · ");
   current = null;
   send({ type: "history" });
 }
+function showNotice(text) {
+  if (!current) startJarvis();
+  const p = document.createElement("p");
+  p.className = "notice";
+  p.textContent = text;
+  blocksOf().append(p);
+  current.blocks.push({ kind: "notice", el: p });
+  stickToBottom();
+}
 function showError(msg) {
   if (!current) startJarvis();
+  current.el.classList.remove("empty");
   const p = document.createElement("p");
   p.className = "error-text";
   p.textContent = `Fehler: ${msg}`;
-  current.el.querySelector(".md").after(p);
+  blocksOf().append(p);
+  current.blocks.push({ kind: "error", el: p });
 }
 
 function ask(text) {
@@ -242,7 +318,8 @@ function renderMessages(msgs = []) {
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");
-      n.querySelector(".md").innerHTML = renderMarkdown(m.text);
+      const md = document.createElement("div"); md.className = "md"; md.innerHTML = renderMarkdown(m.text);
+      n.querySelector(".blocks").append(md);
       turns.append(n);
     }
   }
