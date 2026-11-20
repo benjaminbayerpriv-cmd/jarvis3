@@ -139,11 +139,12 @@ class Synthesizer:
         else:
             samples, source = native_voice(text, settings)
 
-        audible = np.flatnonzero(np.abs(samples) > 0.002)
+        # Weiche Wortanfänge liegen unter 0.002: niedrige Schwelle und ~30 ms Vorlauf behalten.
+        audible = np.flatnonzero(np.abs(samples) > 0.0005)
         if not len(audible):
             return np.empty(0, dtype=np.float32)
         # Remove generated lead-in so the first callback contains speech.
-        lead = source // 250
+        lead = source // 33
         samples = samples[max(0, audible[0] - lead):]
         if settings.lofi:
             # Aliasing and sample-and-hold, intentionally yielding the lo-fi effect.

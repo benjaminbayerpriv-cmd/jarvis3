@@ -48,6 +48,14 @@ Gemessen auf dem MacBook Pro M1 Pro mit warmen Modellen und laufendem WebSocket-
 
 Bei Barge-in und explizitem Stopp endeten die simulierte Ausgabe und das zugehörige `say_end` jeweils innerhalb von 100 ms. Der native Start des PortAudio-Ausgangs wurde zusätzlich mit 48 kHz und geschlossenem Mikrofoneingang geprüft.
 
+### Satzanfang abgeschnitten (Bluetooth)
+
+Ausgabegeräte (AirPods, Bluetooth-Lautsprecher) schlafen nach Stille ein und brauchen beim Aufwachen 100–500 ms; genau diese Zeit fehlte am Satzanfang. Seit 2026-11-20 gilt:
+
+- Beginnt ein Satz nach mehr als 2 s Stille, läuft zuerst 300 ms lang ein unhörbares Vorlaufsignal (Rauschen mit Pegel 0,0005, weit unter der `say_start`-Schwelle 0,001), danach die Sprache. Mitten im Gespräch entfällt der Vorlauf. Der erste Satz nach einer Pause beginnt dadurch um 0,3 s später.
+- Der Zuschnitt des Synthese-Vorlaufs nutzt die Schwelle 0,0005 und behält ca. 30 ms vor dem ersten Ton (vorher 0,002 und 4 ms), damit weiche Wortanfänge nicht verloren gehen.
+- Test: `test_preroll_wakes_device_after_pause`. Mit physischem Bluetooth-Gerät noch nicht gehört.
+
 ## Offene Punkte
 
 - Die Abnahmemessung mit physischem Mikrofon, Lautsprecher und wechselnden Raum- oder Bluetooth-Latenzen steht aus. Der Test belegt Echo-Schutz und Unterbrechung für das simulierte PCM-Signal.
