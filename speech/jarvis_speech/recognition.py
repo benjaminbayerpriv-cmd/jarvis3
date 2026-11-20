@@ -1,7 +1,9 @@
 """Silero VAD and the two local transcription engines."""
 
+import ctypes
 from pathlib import Path
 import logging
+import os
 import platform
 
 import numpy as np
@@ -11,6 +13,22 @@ RATE = 16000
 FRAME = 512
 FRAME_MS = FRAME * 1000 // RATE
 LOG = logging.getLogger(__name__)
+
+
+def register_cuda_dlls():
+    """Windows: cuBLAS liegt im pip-Paket, nicht auf PATH – vor dem Laden von ctranslate2 registrieren."""
+    if platform.system() != "Windows" or not hasattr(os, "add_dll_directory"):
+        return
+    try:
+        import nvidia.cublas.bin
+
+        directory = Path(nvidia.cublas.bin.__file__).resolve().parent
+        os.add_dll_directory(str(directory))
+        # ctranslate2 ruft LoadLibrary("cublas64_12.dll") ohne User-Directory auf.
+        # Ein explizites Laden legt die DLL unter diesem Namen in den Prozess.
+        ctypes.WinDLL(str(directory / "cublas64_12.dll"))
+    except Exception:
+        LOG.debug("nvidia-cublas-Paket nicht registrierbar", exc_info=True)
 
 
 class Silero:
@@ -60,10 +78,33 @@ class Parakeet:
 class Whisper:
     name = "faster-whisper-large-v3-turbo"
 
-    def __init__(self):
+    def __init__(self, device=None, compute_type=None):
+        if device == "cuda":
+            register_cuda_dlls()
         from faster_whisper import WhisperModel
 
-        self.model = WhisperModel("large-v3-turbo", device="cpu", compute_type="int8", cpu_threads=4)
+        if device is None:
+            device, compute_type = self.preferred_device()
+        self.device = device
+        self.compute_type = compute_type
+        options = {"device": device, "compute_type": compute_type}
+        if device == "cpu":
+            options["cpu_threads"] = 4
+        self.model = WhisperModel("large-v3-turbo", **options)
+        LOG.info("faster-whisper: %s / %s", device, compute_type)
+
+    @staticmethod
+    def preferred_device():
+        """CUDA nutzen, wenn ctranslate2 ein Gerät meldet – sonst CPU mit int8."""
+        try:
+            register_cuda_dlls()
+            import ctranslate2
+
+            if ctranslate2.get_cuda_device_count() > 0:
+                return "cuda", "int8_float16"
+        except Exception:
+            LOG.exception("CUDA konnte nicht abgefragt werden. Verwende die CPU.")
+        return "cpu", "int8"
 
     def decode(self, samples):
         segments, _ = self.model.transcribe(
@@ -72,14 +113,20 @@ class Whisper:
         return " ".join(segment.text.strip() for segment in segments).strip()
 
 
+def warm(model):
+    """Erste Inferenz erzwingen: Sie lädt Kernel und prüft das Rechenwerk."""
+    model.decode(np.zeros(RATE // 2, dtype=np.float32))
+    return model
+
+
 def load_recognizer():
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         try:
-            model = Parakeet()
-            model.decode(np.zeros(RATE // 2, dtype=np.float32))
-            return model
+            return warm(Parakeet())
         except Exception:
             LOG.exception("Parakeet konnte nicht starten. Verwende faster-whisper.")
-    model = Whisper()
-    model.decode(np.zeros(RATE // 2, dtype=np.float32))
-    return model
+    try:
+        return warm(Whisper())
+    except Exception:
+        LOG.exception("faster-whisper konnte nicht auf der bevorzugten Einheit starten. Verwende CPU/int8.")
+        return warm(Whisper("cpu", "int8"))

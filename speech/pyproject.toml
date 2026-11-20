@@ -15,6 +15,9 @@ dependencies = [
   "parakeet-mlx; sys_platform == 'darwin'",
   "mlx-whisper; sys_platform == 'darwin'",
   "faster-whisper==1.2.1",
+  # ctranslate2 bringt die CUDA-DLLs unter Windows nicht mit; das Paket liefert
+  # cublas64_12.dll, sonst greift der CPU-Fallback trotz vorhandener GPU.
+  "nvidia-cublas-cu12==12.6.4.1; sys_platform == 'win32'",
 ]
 
 [build-system]
