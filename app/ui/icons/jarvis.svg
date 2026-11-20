@@ -1,18 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
   <defs>
     <linearGradient id="jv-ring" x1="6" y1="42" x2="42" y2="6" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#346bf1"/>
-      <stop offset=".45" stop-color="#4fa0ff"/>
-      <stop offset=".75" stop-color="#00a5b7"/>
-      <stop offset="1" stop-color="#d8627e"/>
+      <stop offset="0" stop-color="#9168c0"/>
+      <stop offset=".5" stop-color="#5684d1"/>
+      <stop offset="1" stop-color="#1ba1e3"/>
     </linearGradient>
     <radialGradient id="jv-core" cx="24" cy="24" r="9" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#e7f2ff"/>
-      <stop offset="1" stop-color="#4fa0ff"/>
+      <stop offset="1" stop-color="#5684d1"/>
     </radialGradient>
   </defs>
   <!-- offener Ring: Lücke oben rechts, dort kreist der Punkt -->
   <path d="M36.7 11.3A18 18 0 1 0 42 24" stroke="url(#jv-ring)" stroke-width="4.5" stroke-linecap="round"/>
-  <circle cx="40.2" cy="15.6" r="3" fill="#d8627e"/>
+  <circle cx="40.2" cy="15.6" r="3" fill="#1ba1e3"/>
   <circle cx="24" cy="24" r="6.5" fill="url(#jv-core)"/>
 </svg>

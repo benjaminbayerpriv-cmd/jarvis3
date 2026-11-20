@@ -154,7 +154,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .mode-switch[aria-checked="true"] .knob { transform: translateX(14px); background: var(--primary-container); }
 
 /* ---------- Gespräch ---------- */
-.conversation { overflow-y: auto; scroll-behavior: smooth; padding: 0 24px; }
+.conversation { overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; padding: 0 24px; }
 .conversation { display: flex; flex-direction: column; }
 .zero { max-width: 760px; width: 100%; margin: auto auto 0; padding-bottom: 32px; transition: opacity var(--d-m1) var(--ease); }
 /* Startzustand wie Gemini: Eingabe mittig unter der Begrüßung, gleitet bei der ersten Nachricht nach unten */
@@ -164,14 +164,8 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .main.is-zero .zero { text-align: left; }
 .zero.gone { display: none; }
 .greeting { margin: 0 0 32px; font-weight: 320; font-size: 36px; line-height: 44px; font-variation-settings: "wdth" 100, "ROND" 100; }
-.greeting-hi {
-  background: linear-gradient(74deg, var(--brand-blue-1) 0%, var(--brand-blue-2) 22%, var(--brand-teal) 46%, var(--brand-pink) 80%);
-  background-size: 200% auto; -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: greet-in var(--d-l2) var(--ease-decel) both, gradient-drift 9s linear infinite;
-}
-.greeting-q { color: var(--on-surface-low); animation: greet-in var(--d-l2) var(--ease-decel) 80ms both; display: inline-block; }
+.greeting-q { color: var(--on-surface); animation: greet-in var(--d-l2) var(--ease-decel) both; display: inline-block; }
 @keyframes greet-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-@keyframes gradient-drift { from { background-position: 0% center; } to { background-position: 200% center; } }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: var(--r-full);
@@ -189,13 +183,81 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
   max-width: 80%; padding: 12px 16px; background: var(--surface-high);
   border-radius: 24px 4px 24px 24px; white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.turn.jarvis { display: grid; grid-template-columns: 32px 1fr; gap: 16px; align-items: start; }
-.avatar { width: 32px; height: 32px; margin-top: -2px; }
-.turn.jarvis.busy .avatar { animation: spin 2s linear infinite; }
+.turn.jarvis { position: relative; isolation: isolate; min-height: 24px; }
 @keyframes spin { to { transform: rotate(1turn); } }
+
+/* ---------- Gemini-Ladeanimation (chat-loading-animation, Werte 1:1 aus gemini.google.com) ---------- */
+.nl {
+  --scroll-speed: 1.5s; --gradient-zoom: 714; --uv-rotation: -36deg;
+  --bg-center-x: 38%; --bg-radius-x: 720px; --bg-center-y: -290px; --bg-radius-y: 383px; --bg-opacity: .29; --bg-blur: 146px;
+  --fg-center-x: 41%; --fg-radius-x: 528px; --fg-center-y: -440px; --fg-radius-y: 460px; --fg-opacity: .8; --fg-blur: 116px;
+  --morph: 17%; --morph-speed: 7.3s; --fg-rotate-min: 58deg; --fg-rotate-max: 106deg; --fg-rotate-speed: 11.7s;
+  --shape-scale-min: .87; --shape-scale-max: 1; --canvas-opacity: 0; --canvas-y: 100px;
+  position: absolute; top: 0; left: -120px; right: -120px; height: 500px; pointer-events: none; z-index: -1;
+  opacity: var(--canvas-opacity); transform: translateY(var(--canvas-y));
+  transition: opacity .5s var(--ease), transform .5s var(--ease);
+}
+.nl-layer { position: absolute; inset: 0; }
+.nl-bg { opacity: var(--bg-opacity); }
+.nl-fg { opacity: var(--fg-opacity); mix-blend-mode: screen; }
+.nl-blob { position: absolute; overflow: hidden; will-change: border-radius, transform; }
+.nl-bg .nl-blob {
+  left: calc(var(--bg-center-x) - var(--bg-radius-x)); top: calc(var(--bg-center-y) - var(--bg-radius-y));
+  width: calc(var(--bg-radius-x) * 2); height: calc(var(--bg-radius-y) * 2); filter: blur(var(--bg-blur));
+  animation: morphBG var(--morph-speed) ease-in-out infinite, scaleBG calc(var(--morph-speed) * 1.3) ease-in-out infinite,
+             sweepBG 6s cubic-bezier(.76, 0, .24, 1) infinite;
+}
+.nl-fg .nl-blob {
+  left: calc(var(--fg-center-x) - var(--fg-radius-x)); top: calc(var(--fg-center-y) - var(--fg-radius-y));
+  width: calc(var(--fg-radius-x) * 2); height: calc(var(--fg-radius-y) * 2); filter: blur(var(--fg-blur));
+  animation: morphFG var(--morph-speed) ease-in-out infinite, rotateFG var(--fg-rotate-speed) ease-in-out infinite,
+             scaleFG 9.1s ease-in-out -5.5s infinite, sweepFG 4.3s cubic-bezier(.45, 0, .55, 1) -1.2s infinite;
+}
+.nl-strip {
+  position: absolute; inset: -150% -100%; width: 400%; height: 500%; transform: rotate(var(--uv-rotation));
+  background: repeating-linear-gradient(#336ef3 0, #9254ea 9%, #f63bb3 18%, #ed3733 27%, #ff6b2b 38%, #fec700 47%,
+              #ffdb0f 56%, #57c200 65%, #00af57 74%, #009aaa 83%, #3279f9 92%, #336ef3);
+  background-size: 100% calc(var(--gradient-zoom) * 10px);
+  animation: gradientScroll calc(var(--scroll-speed) * 999) linear infinite;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .nl-strip {
+  background: repeating-linear-gradient(#3c90ff 0, #ad72ff 10%, #f96bd6 20%, #ff5a59 30%, #ff9238 40%, #ffcf03 50%,
+              #88de42 60%, #60d673 70%, #00bdd2 80%, #4fa0ff 90%, #3c90ff);
+  background-size: 100% calc(var(--gradient-zoom) * 10px); } }
+@keyframes gradientScroll { from { background-position: 0 0; } to { background-position: 0 calc(var(--gradient-zoom) * 999 * 1px); } }
+@keyframes morphBG {
+  0%, 100% { border-radius: calc(50% - var(--morph)) calc(50% + var(--morph)) calc(50% + var(--morph)*.6) calc(50% - var(--morph)*.6) / calc(50% + var(--morph)*.8) calc(50% - var(--morph)*.3) calc(50% + var(--morph)*.5) calc(50% - var(--morph)*.7); }
+  25% { border-radius: calc(50% + var(--morph)*.7) calc(50% - var(--morph)*.5) calc(50% - var(--morph)) calc(50% + var(--morph)*.8) / calc(50% - var(--morph)*.6) calc(50% + var(--morph)) calc(50% - var(--morph)*.4) calc(50% + var(--morph)*.6); }
+  50% { border-radius: calc(50% + var(--morph)*.4) calc(50% - var(--morph)*.8) calc(50% + var(--morph)*.7) calc(50% - var(--morph)*.3) / calc(50% + var(--morph)*.5) calc(50% - var(--morph)*.7) calc(50% + var(--morph)) calc(50% - var(--morph)*.5); }
+  75% { border-radius: calc(50% - var(--morph)*.6) calc(50% + var(--morph)*.4) calc(50% - var(--morph)*.5) calc(50% + var(--morph)) / calc(50% + var(--morph)*.3) calc(50% - var(--morph)*.8) calc(50% + var(--morph)*.6) calc(50% - var(--morph)*.4); }
+}
+@keyframes morphFG {
+  0%, 100% { border-radius: calc(50% + var(--morph)*.5) calc(50% - var(--morph)*.7) calc(50% + var(--morph)*.3) calc(50% - var(--morph)) / calc(50% - var(--morph)*.4) calc(50% + var(--morph)*.6) calc(50% - var(--morph)*.8) calc(50% + var(--morph)*.5); }
+  33% { border-radius: calc(50% - var(--morph)*.8) calc(50% + var(--morph)*.6) calc(50% - var(--morph)*.4) calc(50% + var(--morph)*.7) / calc(50% + var(--morph)) calc(50% - var(--morph)*.5) calc(50% + var(--morph)*.3) calc(50% - var(--morph)*.6); }
+  66% { border-radius: calc(50% + var(--morph)*.6) calc(50% - var(--morph)*.3) calc(50% + var(--morph)) calc(50% - var(--morph)*.5) / calc(50% - var(--morph)*.7) calc(50% + var(--morph)*.4) calc(50% - var(--morph)*.6) calc(50% + var(--morph)*.8); }
+}
+@keyframes sweepBG { 0%, 100% { translate: -200px; } 50% { translate: 200px; } }
+@keyframes sweepFG { 0%, 100% { translate: 140px -30px; } 25% { translate: -60px 20px; } 50% { translate: -130px -10px; } 75% { translate: 50px 25px; } }
+@keyframes rotateFG { 0%, 100% { transform: rotate(var(--fg-rotate-min)); } 50% { transform: rotate(var(--fg-rotate-max)); } }
+@keyframes scaleBG { 0%, 100% { scale: var(--shape-scale-min); } 50% { scale: var(--shape-scale-max); } }
+@keyframes scaleFG { 0%, 100% { scale: var(--shape-scale-max); } 50% { scale: var(--shape-scale-min); } }
+/* Ladezeichen: klein, einfarbig, am Anfang der Antwort (Prinzip wie Gemini, eigene Form) */
+.loader { display: none; width: 24px; height: 24px; color: var(--on-surface); }
+.turn.jarvis.busy.empty .loader { display: block; animation: fade-in-text 250ms var(--ease) both; }
+.loader svg { width: 24px; height: 24px; overflow: visible; }
+.loader .d { fill: currentColor; transform-box: fill-box; transform-origin: center; }
+.loader .orbit { transform-origin: 12px 12px; animation: orbit 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+.loader .d1 { animation: twinkle 1.2s var(--ease) infinite; }
+.loader .d2 { animation: twinkle 1.2s var(--ease) -.4s infinite; }
+.loader .d3 { animation: twinkle 1.2s var(--ease) -.8s infinite; }
+.loader .core { animation: breathe 1.8s ease-in-out infinite; opacity: .9; }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes twinkle { 0%, 100% { scale: 1; opacity: 1; } 50% { scale: .35; opacity: .45; } }
+@keyframes breathe { 0%, 100% { scale: .7; } 50% { scale: 1.15; } }
+/* neuer Text blendet ein wie bei Gemini (fade-in-text) */
+.md > .fade { animation: fade-in-text 400ms var(--ease) both; }
+@keyframes fade-in-text { from { opacity: 0; } to { opacity: 1; } }
 .body { min-width: 0; }
-.thinking { color: var(--on-surface-low); display: none; }
-.turn.jarvis.busy.empty .thinking { display: block; }
 .shimmer {
   background: linear-gradient(90deg, var(--on-surface-low) 0%, var(--on-surface-low) 40%, var(--on-surface) 50%, var(--on-surface-low) 60%, var(--on-surface-low) 100%);
   background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -214,7 +276,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
   animation: greet-in var(--d-m1) var(--ease-decel) both;
 }
 .act svg { width: 16px; height: 16px; }
-.act .ring { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--outline-variant); border-top-color: var(--primary);
+.act .ring { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--outline-variant); border-top-color: var(--on-surface);
   animation: spin .8s linear infinite; }
 .act.ok .ring { animation: none; border-color: var(--success); }
 .act.err { color: var(--error); }
@@ -234,8 +296,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .md a { color: var(--primary); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
 .md blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--outline-variant); color: var(--on-surface-variant); }
-.md .cursor { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); margin-left: 4px;
-  vertical-align: middle; animation: pulse 1s var(--ease) infinite; }
+.md .cursor { display: none; }
 @keyframes pulse { 50% { opacity: .25; transform: scale(.7); } }
 .error-text { color: var(--error); }
 
@@ -310,20 +371,11 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
   color: var(--on-surface); position: relative; z-index: 2; transition: color var(--d-m1) linear;
 }
 .live-caption.user { color: var(--on-surface-low); }
-.live-glow {
-  position: absolute; left: -10%; right: -10%; bottom: -38vh; height: 70vh; z-index: 1; pointer-events: none;
-  --lvl: 0; filter: blur(60px); opacity: calc(.55 + var(--lvl) * .45);
-  transform: translateY(calc(var(--lvl) * -8vh)) scaleY(calc(1 + var(--lvl) * .35));
-  transform-origin: bottom center; transition: opacity 120ms linear, transform 120ms linear;
-}
-.blob { position: absolute; bottom: 0; width: 55%; height: 100%; border-radius: 50%; mix-blend-mode: screen; }
-.b1 { left: 0; background: radial-gradient(closest-side, var(--brand-blue-1), transparent); animation: drift1 7s ease-in-out infinite alternate; }
-.b2 { left: 25%; background: radial-gradient(closest-side, var(--brand-teal), transparent); animation: drift2 9s ease-in-out infinite alternate; }
-.b3 { right: 0; background: radial-gradient(closest-side, var(--brand-pink), transparent); animation: drift1 8s ease-in-out infinite alternate-reverse; }
-.live[data-state="listening"] .b3 { opacity: .6; }
-.live[data-state="speaking"] .b1 { background: radial-gradient(closest-side, var(--brand-blue-2), transparent); }
-@keyframes drift1 { to { transform: translateX(8%) scale(1.08); } }
-@keyframes drift2 { to { transform: translateX(-10%) scale(.92); } }
+.live-glow { position: absolute; inset: auto 0 0 0; height: 60vh; z-index: 1; pointer-events: none; --lvl: 0; }
+.live-glow .nl { top: auto; bottom: 0; left: -10%; right: -10%; transform: rotate(180deg) translateY(calc(var(--lvl) * -60px)) scale(calc(1 + var(--lvl) * .15));
+  --canvas-opacity: calc(.75 + var(--lvl) * .25); transition: opacity 120ms linear, transform 160ms linear; }
+.live[data-state="speaking"] .live-glow .nl { --fg-opacity: 1; }
+.live-glow .nl { --bg-center-x: 50%; --fg-center-x: 50%; --bg-center-y: -60px; --fg-center-y: -170px; --bg-opacity: .45; }
 .live-controls { display: flex; justify-content: center; gap: 20px; padding: 0 0 48px; position: relative; z-index: 2; }
 .round-btn {
   width: 64px; height: 64px; border-radius: var(--r-full); display: grid; place-items: center;

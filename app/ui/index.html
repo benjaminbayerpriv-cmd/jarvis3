@@ -14,7 +14,7 @@
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <linearGradient id="live-grad" x1="0" y1="0" x2="24" y2="0" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#4fa0ff"/><stop offset=".55" stop-color="#00a5b7"/><stop offset="1" stop-color="#d8627e"/>
+        <stop offset="0" stop-color="#ffaee4"/><stop offset=".5" stop-color="#ad72ff"/><stop offset="1" stop-color="#c597ff"/>
       </linearGradient>
     </defs>
   </svg>
@@ -48,7 +48,7 @@
 
       <section class="conversation" id="conversation" aria-live="polite">
         <div class="zero" id="zero">
-          <h1 class="greeting"><span class="greeting-hi">Hallo</span><br><span class="greeting-q">Womit kann ich helfen?</span></h1>
+          <h1 class="greeting"><span class="greeting-q">Womit fangen wir an?</span></h1>
           <div class="chips" id="suggestions"></div>
         </div>
         <div class="turns" id="turns"></div>
@@ -79,9 +79,7 @@
       <span class="live-badge"><span class="live-dot"></span>Live</span>
     </div>
     <div class="live-caption" id="liveCaption">Ich höre zu …</div>
-    <div class="live-glow" id="liveGlow">
-      <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
-    </div>
+    <div class="live-glow" id="liveGlow"><div class="nl" aria-hidden="true"><div class="nl-layer nl-bg"><div class="nl-blob"><div class="nl-strip"></div></div></div><div class="nl-layer nl-fg"><div class="nl-blob"><div class="nl-strip"></div></div></div></div></div>
     <div class="live-controls">
       <button class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
       <button class="round-btn" id="liveInterrupt" aria-label="Unterbrechen"><span data-icon="player-pause-filled"></span></button>
@@ -109,7 +107,7 @@
   </dialog>
 
   <template id="tplUser"><div class="turn user"><div class="bubble"></div></div></template>
-  <template id="tplJarvis"><div class="turn jarvis"><img class="avatar" src="icons/jarvis.svg" alt=""><div class="body"><div class="actions-feed"></div><div class="thinking shimmer">Denkt nach …</div><div class="md"></div><div class="meta"></div></div></div></template>
+  <template id="tplJarvis"><div class="turn jarvis"><div class="loader" aria-label="Jarvis denkt nach"><svg viewBox="0 0 24 24" aria-hidden="true"><g class="orbit"><circle class="d d1" cx="12" cy="4.5" r="2.1"/><circle class="d d2" cx="19" cy="14" r="1.5"/><circle class="d d3" cx="6" cy="17" r="1.2"/></g><circle class="d core" cx="12" cy="12" r="1.7"/></svg></div><div class="body"><div class="actions-feed"></div><div class="md"></div><div class="meta"></div></div></div></template>
 
   <script type="module" src="app.js"></script>
 </body>

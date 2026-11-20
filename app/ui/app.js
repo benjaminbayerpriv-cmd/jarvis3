@@ -101,7 +101,11 @@ function appendText(t) {
     setTimeout(() => { // Timer statt rAF: läuft auch, wenn das Fenster im Hintergrund ist
       rafPending = false;
       if (!current) return;
-      current.el.querySelector(".md").innerHTML = renderMarkdown(current.text) + '<span class="cursor"></span>';
+      const md = current.el.querySelector(".md");
+      const before = md.children.length;
+      md.innerHTML = renderMarkdown(current.text);
+      // neue Blöcke sanft einblenden (Gemini: fade-in-text 400 ms)
+      [...md.children].forEach((el, i) => { if (i >= Math.max(0, before - 1) && !current.faded?.has(i)) { el.classList.add("fade"); (current.faded ??= new Set()).add(i); } });
       stickToBottom();
     }, 33);
   }
