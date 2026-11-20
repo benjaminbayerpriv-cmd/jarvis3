@@ -87,6 +87,7 @@ Bun.serve<{ kind: string }, {}>({
       const { target, cmd } = await req.json();
       return Response.json(await runTool(target, cmd));
     }
+    if (u.pathname === "/stop" && req.method === "POST") { await stop(); return Response.json({ ok: true }); }
     if (u.pathname === "/chat" && req.method === "POST") { // für Tests ohne UI
       const { text, model } = await req.json(); await chat(text, model); return Response.json({ ok: true });
     }
