@@ -37,6 +37,8 @@ Verbindung: Erweiterung öffnet `ws://127.0.0.1:7777/browser` und meldet sich mi
 |---|---|---|
 | `tab_open` | `url`, `group?` (Standard `"Jarvis"`) | `{ok, tab}` – öffnet im Hintergrund (`active:false`) in der Tab-Gruppe |
 | `tab_list` | – | `{ok, tabs:[{tab,url,title,group,active}]}` |
+| `tab_adopt` | `tab`, `group?` | `{ok, tab, url, active}` – holt einen **vorhandenen** Tab (nur http/https/file) in die Jarvis-Gruppe **seines eigenen Fensters**; danach steuerbar. Nur auf ausdrückliche Bitte des Nutzers. Aktive Tabs bleiben für click/type/scroll/focus gesperrt, scan/read gehen |
+| `tab_release` | `tab` | `{ok}` – nimmt einen übernommenen Tab wieder aus der Gruppe, nicht mehr steuerbar |
 | `tab_close` | `tab` | `{ok}` |
 | `navigate` | `tab`, `url` | `{ok}` (wartet auf load) |
 | `wait` | `tab`, `ms?`, `for?` (Text) | `{ok}` |

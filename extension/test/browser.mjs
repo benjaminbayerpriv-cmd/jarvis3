@@ -184,6 +184,23 @@ try {
   await ok("wait", onTab({ ms: 10 }));
   await fails("wait", onTab({ ms: 150, for: "Absent text" }), /Zeitüberschreitung/);
   await fails("tab_close", { tab: sentinel.tab }, /gehört nicht/);
+  // Vorhandenen Tab übernehmen: erst gesperrt, nach tab_adopt steuerbar, aktiver Tab nur lesbar, tab_release gibt frei
+  const existing = await evaluate(worker.targetId, `(async () => (await chrome.tabs.create({ url: ${JSON.stringify(base + "/fixture")}, active: false })).id)()`);
+  await until(async () => (await evaluate(worker.targetId, `chrome.tabs.get(${existing}).then(t => t.status)`)) === "complete", "Vorhandener Tab lädt nicht");
+  await Bun.sleep(300); // Content-Script nach document_idle
+  await fails("scan", { tab: existing }, /gehört nicht/);
+  const adopted = await ok("tab_adopt", { tab: existing });
+  assert.equal(adopted.tab, existing);
+  assert.equal((await ok("tab_list")).tabs.find(t => t.tab === existing).group, "Jarvis");
+  assert.match((await ok("read", { tab: existing })).text, /Ready/);
+  const scanned = await ok("scan", { tab: existing });
+  assert(scanned.targets.length > 0);
+  await fails("tab_adopt", { tab: sentinel.tab, group: "" }, /Gruppenname/);
+  await ok("tab_release", { tab: existing });
+  assert.equal((await ok("tab_list")).tabs.find(t => t.tab === existing).group, null);
+  await fails("scan", { tab: existing }, /gehört nicht/);
+  await evaluate(worker.targetId, `chrome.tabs.remove(${existing})`);
+
   const current = await evaluate(worker.targetId, `(async () => ({
     focus: (await chrome.windows.getLastFocused()).id,
     active: (await chrome.tabs.query({active:true})).map(t => t.id).sort(),

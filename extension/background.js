@@ -153,6 +153,35 @@ async function openTab(request) {
   }
 }
 
+// Vorhandenen Tab des Nutzers in die Jarvis-Gruppe seines eigenen Fensters holen (nur auf ausdrückliche Bitte).
+async function adoptTab(request) {
+  const tabId = request.tab;
+  if (!Number.isInteger(tabId)) throw new Error("tab fehlt");
+  const tab = await chrome.tabs.get(tabId).catch(() => { throw new Error("Tab nicht gefunden"); });
+  const url = tab.url || tab.pendingUrl || "";
+  if (!/^(https?|file):/.test(url)) throw new Error("Dieser Tab (z. B. chrome://, Erweiterungsseite, Neuer Tab) kann nicht übernommen werden");
+  const key = tabKey(tabId);
+  if ((await chrome.storage.session.get(key))[key] && tab.groupId >= 0) return { tab: tabId, url, active: tab.active, already: true };
+  const title = groupTitle(request.group);
+  // Nur Gruppen im selben Fenster: der Tab soll das Fenster des Nutzers nicht wechseln.
+  const groups = await chrome.tabGroups.query({ windowId: tab.windowId, title, color: "blue" });
+  const owned = await chrome.storage.session.get(groups.map(group => groupKey(group.id)));
+  const group = groups.find(group => owned[groupKey(group.id)] === true);
+  const groupId = await chrome.tabs.group(group ? { tabIds: tabId, groupId: group.id } : { tabIds: tabId });
+  if (!group) await chrome.tabGroups.update(groupId, { title, color: "blue" });
+  await chrome.storage.session.set({ [key]: true, [groupKey(groupId)]: true });
+  return { tab: tabId, url, active: tab.active };
+}
+
+// Übernommenen Tab wieder freigeben: aus der Gruppe nehmen, nicht mehr steuerbar.
+async function releaseTab(request) {
+  await requireManaged(request.tab);
+  await chrome.tabs.ungroup(request.tab);
+  await chrome.storage.session.remove(tabKey(request.tab));
+  scans.delete(request.tab);
+  return {};
+}
+
 async function listTabs() {
   const [tabs, groups] = await Promise.all([chrome.tabs.query({}), chrome.tabGroups.query({})]);
   const names = new Map(groups.map(group => [group.id, group.title ?? ""]));
@@ -491,6 +520,8 @@ async function dispatch(request) {
   const { cmd, tab } = request;
   if (cmd === "tab_open") return openTab(request);
   if (cmd === "tab_list") return listTabs();
+  if (cmd === "tab_adopt") return adoptTab(request);
+  if (cmd === "tab_release") return releaseTab(request);
   if (!["tab_close", "navigate", "back", "wait", "scan", "shot", "click", "type", "focus", "scroll", "read"].includes(cmd)) {
     throw new Error("Unbekannter Befehl");
   }

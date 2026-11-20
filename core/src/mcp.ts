@@ -52,6 +52,10 @@ server.tool("desktop_open_app", "Öffnet ein Programm per Name.", { name: z.stri
 server.tool("browser_tab_open", "Öffnet eine Seite im Hintergrund in der Tab-Gruppe Jarvis.", { url: z.string() },
   async a => result(await call("browser", { cmd: "tab_open", ...a })));
 server.tool("browser_tab_list", "Listet die Tabs.", {}, async () => result(await call("browser", { cmd: "tab_list" })));
+server.tool("browser_tab_adopt", "Übernimmt einen bereits offenen Tab des Nutzers in die Gruppe Jarvis, damit du ihn bedienen kannst. NUR auf ausdrückliche Bitte des Nutzers. Tab-ID aus browser_tab_list. Ist der Tab gerade der aktive, kannst du ihn nur lesen/scannen, nicht klicken oder tippen (dann den Nutzer bitten, kurz einen anderen Tab zu öffnen).",
+  { tab }, async a => result(await call("browser", { cmd: "tab_adopt", ...a })));
+server.tool("browser_tab_release", "Gibt einen übernommenen Tab wieder frei (aus der Gruppe Jarvis nehmen).", { tab },
+  async a => result(await call("browser", { cmd: "tab_release", ...a })));
 server.tool("browser_tab_close", "Schließt einen Jarvis-Tab.", { tab }, async a => result(await call("browser", { cmd: "tab_close", ...a })));
 server.tool("browser_navigate", "Lädt eine URL im Tab.", { tab, url: z.string() },
   async a => result(await call("browser", { cmd: "navigate", ...a })));
