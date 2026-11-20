@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarvis</title>
+  <link rel="icon" href="icons/jarvis.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wdth,wght,ROND@6..144,25..151,1..1000,0..100&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="live-grad" x1="0" y1="0" x2="24" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#4fa0ff"/><stop offset=".55" stop-color="#00a5b7"/><stop offset="1" stop-color="#d8627e"/>
+      </linearGradient>
+    </defs>
+  </svg>
+  <div class="app" id="app" data-rail="collapsed">
+    <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
+    <nav class="rail" aria-label="Navigation">
+      <div class="rail-top" data-tauri-drag-region>
+        <button class="icon-btn" id="railToggle" data-icon="menu-2" aria-label="Menü"></button>
+      </div>
+      <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
+      <div class="rail-section rail-label">Zuletzt</div>
+      <ul class="history" id="history"></ul>
+      <div class="rail-spacer"></div>
+      <button class="rail-item" id="openSettings"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
+    </nav>
+
+    <main class="main">
+      <header class="topbar" data-tauri-drag-region>
+        <button class="model-chip" id="modelChip" aria-haspopup="dialog">
+          <span class="brand">Jarvis</span>
+          <span class="model-name" id="modelName">…</span>
+          <span data-icon="chevron-down" class="chev"></span>
+        </button>
+        <div class="topbar-right">
+          <span class="status-pill" id="browserPill" title="Chrome-Erweiterung"><span data-icon="world"></span><span>Browser</span></span>
+          <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" title="Computer übernehmen">
+            <span data-icon="device-desktop"></span><span class="mode-label">Computer</span><span class="toggle"><span class="knob"></span></span>
+          </button>
+        </div>
+      </header>
+
+      <section class="conversation" id="conversation" aria-live="polite">
+        <div class="zero" id="zero">
+          <h1 class="greeting"><span class="greeting-hi">Hallo</span><br><span class="greeting-q">Womit kann ich helfen?</span></h1>
+          <div class="chips" id="suggestions"></div>
+        </div>
+        <div class="turns" id="turns"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <div class="stop-banner" id="stopBanner" hidden>
+          <button class="stop-btn" id="emergencyStop"><span data-icon="hand-stop"></span>Stopp <kbd>⌘⇧⎋</kbd></button>
+        </div>
+        <form class="composer" id="composer" autocomplete="off">
+          <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Hinzufügen"></button>
+          <textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea>
+          <div class="composer-actions">
+            <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>
+            <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span><span>Live</span></button>
+            <button type="submit" class="send-btn" id="send" aria-label="Senden" hidden><span data-icon="arrow-up"></span></button>
+            <button type="button" class="send-btn stop" id="stop" aria-label="Stoppen" hidden><span data-icon="player-stop-filled"></span></button>
+          </div>
+        </form>
+        <p class="disclaimer">Jarvis kann Fehler machen. Läuft mit <span id="footModel"></span>.</p>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Sprachmodus (Gemini-Live-Stil) -->
+  <div class="live" id="live" hidden>
+    <div class="live-top">
+      <span class="live-badge"><span class="live-dot"></span>Live</span>
+    </div>
+    <div class="live-caption" id="liveCaption">Ich höre zu …</div>
+    <div class="live-glow" id="liveGlow">
+      <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
+    </div>
+    <div class="live-controls">
+      <button class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
+      <button class="round-btn" id="liveInterrupt" aria-label="Unterbrechen"><span data-icon="player-pause-filled"></span></button>
+      <button class="round-btn end" id="liveEnd" aria-label="Beenden"><span data-icon="x"></span></button>
+    </div>
+  </div>
+
+  <!-- Modellwahl -->
+  <dialog class="sheet" id="modelDialog">
+    <form method="dialog" class="sheet-inner">
+      <header class="sheet-head"><h2>Modell wählen</h2><button class="icon-btn" value="close" data-icon="x" aria-label="Schließen"></button></header>
+      <label class="search"><span data-icon="search"></span><input id="modelSearch" placeholder="Suchen" autocomplete="off"></label>
+      <div class="model-list" id="modelList"></div>
+    </form>
+  </dialog>
+
+  <!-- Einstellungen -->
+  <dialog class="sheet" id="settingsDialog">
+    <form method="dialog" class="sheet-inner">
+      <header class="sheet-head"><h2>Einstellungen</h2><button class="icon-btn" value="close" data-icon="x" aria-label="Schließen"></button></header>
+      <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: ⌘⇧⎋</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
+      <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
+      <div class="setting"><div><b>Lofi-Stimme</b><p>Bitcrush-Filter auf der Sprachausgabe</p></div><button type="button" class="toggle-lg" id="setLofi" role="switch"></button></div>
+    </form>
+  </dialog>
+
+  <template id="tplUser"><div class="turn user"><div class="bubble"></div></div></template>
+  <template id="tplJarvis"><div class="turn jarvis"><img class="avatar" src="icons/jarvis.svg" alt=""><div class="body"><div class="actions-feed"></div><div class="thinking shimmer">Denkt nach …</div><div class="md"></div><div class="meta"></div></div></div></template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
