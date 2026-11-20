@@ -61,7 +61,8 @@ server.tool("browser_wait", "Wartet (ms) oder bis Text erscheint.", { tab, ms: z
 server.tool("browser_scan", "Bedienelemente der Seite als nummerierte Textliste.", { tab },
   async a => result({ ...(await call("browser", { cmd: "scan", text: true, ...a })), targets: undefined }));
 server.tool("browser_click", "Klickt ein Element der Seite.", { tab, id }, async a => result(await call("browser", { cmd: "click", ...a })));
-server.tool("browser_type", "Schreibt in ein Feld der Seite.", { tab, id, text: z.string() },
+server.tool("browser_type", "Schreibt in ein Feld der Seite. submit=true drückt danach Enter (z. B. Suchfeld absenden).",
+  { tab, id, text: z.string(), submit: z.boolean().optional() },
   async a => result(await call("browser", { cmd: "type", ...a })));
 server.tool("browser_scroll", "Scrollt die Seite oder ein Element.", { tab, id: id.optional(), dy: z.number().int() },
   async a => result(await call("browser", { cmd: "scroll", ...a })));
