@@ -67,7 +67,8 @@ function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
   voice = mode;
   speech.mode(mode);
-  if (mode === "off" || mode === "muted") { splitter = undefined; speech.stopSpeaking(); }
+  // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
+  if (mode === "off") { splitter = undefined; speech.stopSpeaking(); }
   broadcast(state());
 }
 
@@ -121,6 +122,8 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   const started = performance.now();
   let first = true, switching = false, textSeen = false, announced = false;
   splitter = spoken ? new SentenceSplitter() : undefined;
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  const speakAll = (parts: string[]) => { for (const p of parts) speech.say(p); };
   const system = spoken ? SYSTEM_PROMPT + "\n\nDu bist gerade im Sprachmodus: antworte in höchstens zwei kurzen Sätzen, ohne Listen." : SYSTEM_PROMPT;
   await brain.prompt(sid, text, model, system, (e: BrainEvent) => {
     if (switching) return;
@@ -140,12 +143,18 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "tool" && !textSeen && !announced && e.status !== "pending") {
       announced = true;
       const line = announcement(e) + "\n\n";
-      if (splitter) for (const s of splitter.push(line)) speech.say(s);
+      if (splitter) { speakAll(splitter.push(line)); speakAll(splitter.flush()); } // Ankündigung sofort sprechen
       if (first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
       broadcast({ type: "delta", text: line });
     }
-    if (splitter && e.kind === "text") for (const s of splitter.push(e.delta)) speech.say(s);
-    if (splitter && e.kind === "done") { for (const s of splitter.flush()) speech.say(s); splitter = undefined; }
+    if (splitter && e.kind === "text") {
+      speakAll(splitter.push(e.delta));
+      // Satz ohne folgendes Leerzeichen (Strom pausiert, z. B. vor einem Werkzeug): nach kurzer Pause trotzdem sprechen
+      clearTimeout(flushTimer);
+      flushTimer = setTimeout(() => { if (splitter) speakAll(splitter.flushIfSentence()); }, 600);
+    }
+    if (splitter && e.kind === "tool") { clearTimeout(flushTimer); speakAll(splitter.flush()); }
+    if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") { busy = false; broadcast(state()); }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }

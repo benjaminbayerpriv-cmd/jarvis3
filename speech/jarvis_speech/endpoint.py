@@ -13,7 +13,7 @@ from .recognition import FRAME, FRAME_MS, RATE, Silero
 
 LOG = logging.getLogger(__name__)
 
-PRE_ROLL = 5
+PRE_ROLL = 16  # ~0,5 s Vorlauf: der Start wird beim Sprechen der KI später erkannt (8 Bilder), der Satzanfang darf nicht fehlen
 END_SILENCE = 11
 FAST_END_SILENCE = 8
 SPECULATION_SILENCE = 2
@@ -64,9 +64,12 @@ class Endpoint:
         level = rms(samples)
         if self.utterance is None:
             self.pre_roll.append(samples)
-            threshold = 0.65 if echo else 0.55
-            self.start_run = self.start_run + 1 if probability >= threshold and level >= 0.008 else 0
-            if self.start_run >= (3 if echo else 2):
+            # Während Jarvis spricht (echo): nur klare, ca. 250 ms lange Sprache unterbricht. Husten, Tastatur
+            # und Reste der eigenen Stimme (vorher 3 Bilder = ~100 ms) brachen die Ausgabe zu früh ab.
+            threshold = 0.75 if echo else 0.55
+            floor = 0.012 if echo else 0.008
+            self.start_run = self.start_run + 1 if probability >= threshold and level >= floor else 0
+            if self.start_run >= (8 if echo else 2):
                 self.utterance = Utterance(frames=list(self.pre_roll), last_voice=len(self.pre_roll))
                 self.pre_roll.clear()
                 self.on_start()

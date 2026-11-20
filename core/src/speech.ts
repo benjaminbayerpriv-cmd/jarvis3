@@ -62,6 +62,11 @@ export class SentenceSplitter {
     }
     return out.map(clean).filter(Boolean);
   }
+  /** Gibt den Puffer frei, wenn er mit einem Satzzeichen endet (Strom pausiert, z. B. vor einem Werkzeugaufruf). */
+  flushIfSentence(): string[] {
+    if (this.inCode || !/[.!?…:;]["')\]]?\s*$/.test(this.buf)) return [];
+    return this.flush();
+  }
   flush(): string[] { const rest = this.inCode ? "" : this.buf; this.buf = ""; this.inCode = false; return [clean(rest)].filter(Boolean); }
   private cut(s: string, all: boolean) { return all ? [s] : []; }
 }
