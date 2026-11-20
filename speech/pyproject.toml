@@ -6,6 +6,9 @@ dependencies = [
   "supertonic==1.3.1",
   "num2words==0.5.14",
   "numpy",
+  "scipy",
+  "markdown-it-py",
+  "emoji",
   "sounddevice",
   "websockets>=13",
   "onnxruntime",
@@ -13,3 +16,10 @@ dependencies = [
   "mlx-whisper; sys_platform == 'darwin'",
   "faster-whisper==1.2.1",
 ]
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
