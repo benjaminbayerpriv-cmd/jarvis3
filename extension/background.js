@@ -455,22 +455,37 @@ async function streamStop(tab, reason = "gestoppt") {
   sendFrame({ type: "stream_ended", tab, reason });
 }
 
+// Bild ohne clip/scale aufnehmen: Ein Ausschnitt mit Skalierungsfaktor lässt Chrome die Seite kurz umrechnen,
+// das flackert im echten Fenster. Verkleinert wird stattdessen hier in der Erweiterung.
+async function downscale(base64, maxWidth) {
+  const blob = await (await fetch("data:image/jpeg;base64," + base64)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+  const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.6 })).arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { data: btoa(binary), w: width, h: height };
+}
+
 async function streamLoop(tab, state) {
   while (!state.stopped && streams.get(tab) === state) {
     const started = Date.now();
     try {
-      // Kleine JPEGs (max. 960 px Breite), ca. 5 Bilder pro Sekunde; der Cursor ist Teil der Seite und damit im Bild.
-      const { cssVisualViewport: v } = await chrome.debugger.sendCommand(state.target, "Page.getLayoutMetrics");
       const { data } = await chrome.debugger.sendCommand(state.target, "Page.captureScreenshot", {
-        format: "jpeg", quality: 50, fromSurface: true, optimizeForSpeed: true,
-        clip: { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: Math.min(1, 960 / v.clientWidth) },
+        format: "jpeg", quality: 70, fromSurface: true, optimizeForSpeed: true,
       });
+      const frame = await downscale(data, 1280);
       const current = await chrome.tabs.get(tab);
-      if (!state.stopped) sendFrame({ type: "frame", tab, data, w: Math.round(v.clientWidth), h: Math.round(v.clientHeight), url: current.url ?? "", title: current.title ?? "" });
+      if (!state.stopped) sendFrame({ type: "frame", tab, ...frame, url: current.url ?? "", title: current.title ?? "" });
     } catch {
       if (!(await chrome.tabs.get(tab).catch(() => null))) { await streamStop(tab, "Tab geschlossen"); return; }
     }
-    await sleep(Math.max(0, 200 - (Date.now() - started)));
+    await sleep(Math.max(0, 250 - (Date.now() - started)));
   }
 }
 

@@ -129,6 +129,7 @@
   const context = canvas.getContext("2d");
 
   let enabled = false;
+  let showMarks = false; // Rahmen+Beschriftung nur, wenn der Nutzer sie einschaltet; der Jarvis-Cursor läuft auch ohne
   let targets = [];
   let refreshTimer;
   let scanPending = true;
@@ -284,7 +285,7 @@
     }
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.clearRect(0, 0, width, height);
-    const items = locate({ x: 0, y: 0, right: width, bottom: height });
+    const items = showMarks ? locate({ x: 0, y: 0, right: width, bottom: height }) : [];
     const area = ({ rect }) => (rect.right - rect.x) * (rect.bottom - rect.y);
     items.sort((a, b) => Number(inside(pointer, b.rect)) - Number(inside(pointer, a.rect)) || area(a) - area(b));
 
@@ -340,6 +341,8 @@
       const py = agentCursor.fromY + (y - agentCursor.fromY) * eased;
       context.save();
       context.translate(px, py);
+      const k = Math.max(1, width / 900); // sichtbar bleiben, auch wenn das Live-Bild stark verkleinert ist
+      context.scale(k, k);
       context.shadowColor = "rgba(0, 0, 0, .55)";
       context.shadowBlur = 8;
       context.fillStyle = "#a78bfa";
@@ -427,6 +430,7 @@
 
   function setEnabled(value) {
     enabled = value;
+    showMarks = value;
     if (enabled) {
       schedule(true);
       return;
