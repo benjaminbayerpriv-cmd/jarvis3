@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.Drawing.Imaging;
-using Windows.Globalization;
-using Windows.Media.Ocr;
 using System.Runtime.InteropServices;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
@@ -27,16 +25,13 @@ internal static class Capture
 
     public static string ReadText(Rectangle rect, Accessibility automation)
     {
-        var engine = OcrEngine.TryCreateFromUserProfileLanguages() ??
-            OcrEngine.TryCreateFromLanguage(new Language("de-DE")) ??
-            OcrEngine.TryCreateFromLanguage(new Language("en-US")) ??
-            throw new InvalidOperationException("Install a Windows OCR language for the current user.");
         var bytes = DesktopPixels(rect, automation, rejectProtected: true);
         int width = rect.Width, height = rect.Height;
-        if (Math.Max(width, height) > OcrEngine.MaxImageDimension)
+        const int ocrMaxDimension = 2048;
+        if (Math.Max(width, height) > ocrMaxDimension)
         {
             using var full = ToBitmap(bytes, rect);
-            double scale = (double)OcrEngine.MaxImageDimension / Math.Max(width, height);
+            double scale = (double)ocrMaxDimension / Math.Max(width, height);
             width = Math.Max(1, (int)(width * scale));
             height = Math.Max(1, (int)(height * scale));
             using var resized = new Bitmap(full, width, height);
@@ -49,17 +44,7 @@ internal static class Capture
             }
             finally { resized.UnlockBits(data); }
         }
-        using var writer = new DataWriter();
-        writer.WriteBytes(bytes);
-        using var bitmap = SoftwareBitmap.CreateCopyFromBuffer(writer.DetachBuffer(),
-            BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-        try
-        {
-            var result = engine.RecognizeAsync(bitmap).AsTask(timeout.Token).GetAwaiter().GetResult();
-            return string.Join("\n", result.Lines.Select(line => line.Text));
-        }
-        catch (OperationCanceledException) { throw new TimeoutException("Windows OCR timed out."); }
+        return Ocr.Recognize(bytes, width, height);
     }
 
     public static string Screenshot(Rectangle rect, Accessibility automation, Target[] marks)

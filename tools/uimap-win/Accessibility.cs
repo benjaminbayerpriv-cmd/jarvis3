@@ -141,24 +141,32 @@ internal sealed class Accessibility : IDisposable
         var (_, element, rect) = Resolve(entry);
         if (element == null) return (null, rect);
         string? text = null;
-        if ((ControlType)entry.ControlType == ControlType.Edit)
+        try
         {
-            if (PasswordStatus(element) is not false || IsPassword(element)) throw Protected();
-            if (element.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is IUIAutomationValuePattern value)
+            if ((ControlType)entry.ControlType == ControlType.Edit)
             {
                 if (PasswordStatus(element) is not false || IsPassword(element)) throw Protected();
-                text = value.CurrentValue;
+                if (element.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is IUIAutomationValuePattern value)
+                {
+                    if (PasswordStatus(element) is not false || IsPassword(element)) throw Protected();
+                    text = value.CurrentValue;
+                }
+                else if (element.GetCurrentPattern(UIA_PatternIds.UIA_TextPatternId) is IUIAutomationTextPattern document)
+                {
+                    if (PasswordStatus(element) is not false || IsPassword(element)) throw Protected();
+                    text = document.DocumentRange.GetText(4000);
+                }
             }
-            else if (element.GetCurrentPattern(UIA_PatternIds.UIA_TextPatternId) is IUIAutomationTextPattern document)
+            else if ((ControlType)entry.ControlType is ControlType.Text or ControlType.Button or ControlType.Hyperlink or
+                     ControlType.CheckBox or ControlType.RadioButton or ControlType.MenuItem or ControlType.TabItem)
             {
-                if (PasswordStatus(element) is not false || IsPassword(element)) throw Protected();
-                text = document.DocumentRange.GetText(4000);
+                text = element.CurrentName;
             }
         }
-        else if ((ControlType)entry.ControlType is ControlType.Text or ControlType.Button or ControlType.Hyperlink or
-                 ControlType.CheckBox or ControlType.RadioButton or ControlType.MenuItem or ControlType.TabItem)
+        catch (COMException)
         {
-            text = element.CurrentName;
+            // The OCR path verifies the capture region again before it sees any text.
+            return (null, rect);
         }
         if (string.IsNullOrWhiteSpace(text)) text = null;
         else if (text.Length > 4000) text = text[..(char.IsHighSurrogate(text[3999]) ? 3999 : 4000)];
