@@ -21,13 +21,18 @@ from .synthesis import Synthesizer, Voice
 LOG = logging.getLogger(__name__)
 
 
+LONG_SENTENCE = 160  # Zeichen
+
+
 def split_first_clause(text, min_len=12, max_first=60):
     """Teilt einen langen Satz am ersten Komma/Semikolon/Doppelpunkt.
 
     Das kurze erste Stück ist mit voller Qualität schnell berechnet und spielt schon,
     während der Rest im Hintergrund entsteht (Vorgehen des alten Jarvis).
     """
-    if len(text) < 2 * min_len:
+    # Normale Sätze nicht teilen: jeder Teil wird einzeln gesprochen, die Betonung finge am Schnitt neu an.
+    # Geteilt wird nur, wenn der Satz so lang ist, dass das Warten auf den ersten Ton sonst zu lang wäre.
+    if len(text) < LONG_SENTENCE:
         return [text]
     for match in re.finditer(r"[,;:]\s+", text):
         cut = match.end()

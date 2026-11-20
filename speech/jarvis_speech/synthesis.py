@@ -150,10 +150,10 @@ class Synthesizer:
         # Remove generated lead-in so the first callback contains speech.
         lead = source // 33
         # Die Synthese hängt ca. 0,5 s Stille an jeden Schnipsel. Das machte mitten im Satz (Teilung am Komma) eine
-        # halbe Sekunde Pause. Ende auf ~150 ms nach dem letzten hörbaren Sample kürzen, letzte 40 ms ausblenden.
-        end = min(len(samples), audible[-1] + source * 150 // 1000)
+        # halbe Sekunde Pause. Ende auf ~300 ms nach dem letzten hörbaren Sample kürzen (Platz zum Ausklingen), nur die Stille davor/darin ausblenden.
+        end = min(len(samples), audible[-1] + source * 300 // 1000)
         samples = samples[max(0, audible[0] - lead):end].copy()
-        fade = min(len(samples), source * 40 // 1000)
+        fade = min(len(samples), source * 80 // 1000)
         if fade > 1:
             samples[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
         if settings.lofi:

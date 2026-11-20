@@ -55,7 +55,8 @@ export class SentenceSplitter {
         continue;
       }
       if (this.inCode) { this.buf = this.buf.slice(-2); break; }
-      const m = this.buf.match(/^([\s\S]*?[.!?…:;](?=\s)|[\s\S]*?\n\n)/);
+      // Nur an Satzenden teilen (nicht an : oder ;): jedes Stück wird einzeln gesprochen und bekäme sonst neue Betonung
+      const m = this.buf.match(/^([\s\S]*?[.!?…](?=\s)|[\s\S]*?\n\n)/);
       if (!m || m[1].length < 2) break;
       out.push(m[1]);
       this.buf = this.buf.slice(m[1].length);
@@ -64,7 +65,7 @@ export class SentenceSplitter {
   }
   /** Gibt den Puffer frei, wenn er mit einem Satzzeichen endet (Strom pausiert, z. B. vor einem Werkzeugaufruf). */
   flushIfSentence(): string[] {
-    if (this.inCode || !/[.!?…:;]["')\]]?\s*$/.test(this.buf)) return [];
+    if (this.inCode || !/[.!?…]["')\]]?\s*$/.test(this.buf)) return [];
     return this.flush();
   }
   flush(): string[] { const rest = this.inCode ? "" : this.buf; this.buf = ""; this.inCode = false; return [clean(rest)].filter(Boolean); }
