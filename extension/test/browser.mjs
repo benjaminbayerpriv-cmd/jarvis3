@@ -23,7 +23,7 @@ const fixture = `<!doctype html>
   <p style="margin-top:500px">Down here</p>
   <script>document.querySelector('#message').addEventListener('focus', () => document.body.dataset.focused='yes')</script>`;
 
-const { base, extension, connections, devtools, evaluate, until, ok, fails, close } = await startBrowser(async path => {
+const { base, extension, connections, frames, devtools, evaluate, until, ok, fails, close } = await startBrowser(async path => {
   if (path === "/redirect") return new Response(null, { status: 302, headers: { Location: "/second" } });
   if (path === "/slow-script") {
     await Bun.sleep(600);
@@ -164,9 +164,46 @@ try {
   assert.match((await ok("read", onTab())).text, /Trusted: Tauri/);
   await ok("type", onTab({ id: trusted.id, text: "" }));
   assert.equal((await ok("read", onTab({ id: trusted.id }))).text, "");
-  await ok("type", onTab({ id: trusted.id, text: "Tauri", submit: true }));
+  const nativeSubmit = await ok("type", onTab({ id: trusted.id, text: "Tauri", submit: true }));
+  assert.equal(nativeSubmit.via, "cdp");
+  assert.notEqual(nativeSubmit.submitted, false);
   assert.equal((await ok("tab_list")).tabs.find(t => t.tab === tab).url, base + "/second?q=Tauri");
   await fails("click", onTab({ id: trusted.id }), /^Seite hat gewechselt, bitte neu scannen$/);
+  await ok("navigate", onTab({ url: base + "/fixture" }));
+  const { id: formField } = (await ok("scan", onTab())).targets.find(t => t.label === "Trusted input");
+  await evaluate(page, `(() => {
+    const form = document.querySelector('form');
+    const field = form.elements.q;
+    const list = form.appendChild(document.createElement('div'));
+    list.setAttribute('role', 'listbox');
+    list.textContent = 'Autocomplete suggestions';
+    globalThis.submitEvents = [];
+    field.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      list.hidden = true;
+      if (field.value === 'Inline') document.querySelector('output').textContent = 'Inline result';
+    });
+    form.addEventListener('submit', event => {
+      submitEvents.push(event.submitter?.textContent);
+      if (field.value !== 'Fallback') event.preventDefault();
+    });
+  })()`);
+  const inline = await ok("type", onTab({ id: formField, text: "Inline", submit: true }));
+  assert.equal(inline.via, "cdp");
+  assert.notEqual(inline.submitted, false);
+  assert.deepEqual(await evaluate(page, "submitEvents"), []);
+  await evaluate(page, "document.querySelector('[role=listbox]').hidden = false");
+  const { id: failedField } = (await ok("scan", onTab())).targets.find(t => t.label === "Trusted input");
+  const failedSubmit = await ok("type", onTab({ id: failedField, text: "Ignored", submit: true }));
+  assert.equal(failedSubmit.via, "cdp+form");
+  assert.equal(failedSubmit.submitted, false);
+  assert.deepEqual(await evaluate(page, "submitEvents"), ["Submit form"]);
+  assert.equal(await evaluate(page, "document.querySelector('button[formtarget]').formTarget"), "_blank");
+  const fallback = await ok("type", onTab({ id: failedField, text: "Fallback", submit: true }));
+  assert.equal(fallback.via, "cdp+form");
+  assert.notEqual(fallback.submitted, false);
+  assert.equal((await ok("tab_list")).tabs.find(t => t.tab === tab).url, base + "/second?q=Fallback");
   await ok("navigate", onTab({ url: base + "/dense" }));
   const dense = await ok("scan", onTab({ text: true }));
   assert.deepEqual(dense.targets.slice(0, 3).map(t => t.label), ["Find", "Notes", "Primary"]);
@@ -184,6 +221,18 @@ try {
   await ok("wait", onTab({ ms: 10 }));
   await fails("wait", onTab({ ms: 150, for: "Absent text" }), /Zeitüberschreitung/);
   await fails("tab_close", { tab: sentinel.tab }, /gehört nicht/);
+  // Live-Ansicht: Bilder kommen, Befehle gehen parallel weiter, Stopp beendet den Strom
+  await ok("stream_start", onTab());
+  await until(() => frames.filter(f => f.type === "frame" && f.tab === tab).length >= 3, "Keine Live-Bilder");
+  const frame = frames.find(f => f.type === "frame");
+  assert(frame.data.startsWith("/9j/"), "Live-Bild ist kein JPEG");
+  assert(frame.w > 0 && frame.h > 0 && frame.url.includes("/second"));
+  await ok("scan", onTab());               // Debugger wird mitbenutzt, kein zweites attach
+  await ok("stream_stop", onTab());
+  await until(() => frames.some(f => f.type === "stream_ended" && f.tab === tab), "stream_ended fehlt");
+  const seen = frames.length; await Bun.sleep(900);
+  assert.equal(frames.length, seen, "Nach dem Stopp dürfen keine Bilder mehr kommen");
+
   // Vorhandenen Tab übernehmen: erst gesperrt, nach tab_adopt steuerbar, aktiver Tab nur lesbar, tab_release gibt frei
   const existing = await evaluate(worker.targetId, `(async () => (await chrome.tabs.create({ url: ${JSON.stringify(base + "/fixture")}, active: false })).id)()`);
   await until(async () => (await evaluate(worker.targetId, `chrome.tabs.get(${existing}).then(t => t.status)`)) === "complete", "Vorhandener Tab lädt nicht");

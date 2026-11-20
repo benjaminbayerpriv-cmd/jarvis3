@@ -286,13 +286,23 @@ async function targetCommand(tab, request) {
   await checkScanFrame(tab, scan.documents.get(0));
   if (location.frame.frameId !== 0) await checkScanFrame(tab, location.frame);
   const send = request => page(tab, { id: location.localId, ...request }, location.frame);
+  // Jarvis-Cursor zum Ziel bewegen; bei laufender Live-Ansicht kurz warten, damit man ihn ankommen sieht.
+  const moveCursor = async () => {
+    const { rect } = await send({ cmd: "rect" }).catch(() => ({}));
+    if (!rect) return;
+    await page(tab, { cmd: "agentCursor", x: rect[0] + rect[2] / 2, y: rect[1] + rect[3] / 2 }).catch(() => {});
+    if (streams.has(tab)) await sleep(450);
+  };
   if (cmd === "type") {
-    const action = () => typeInTab(tab, send, text, submit);
-    if (submit) await observeNavigation(tab, action, false);
-    else await action();
+    await moveCursor();
+    if (submit) {
+      return observeNavigation(tab, navigating => typeAndSubmit(tab, send, text, navigating), false, location.frame.frameId);
+    }
+    await typeInTab(tab, send, text, false);
     return { via: "cdp" };
   }
   if (cmd === "click") {
+    await moveCursor();
     return observeNavigation(tab, async () => {
       const deadline = Date.now() + 6000;
       do {
@@ -348,30 +358,34 @@ async function navigate(tab, url) {
   });
 }
 
-async function observeNavigation(tab, action, required = true) {
+async function observeNavigation(tab, action, required = true, targetFrame = 0) {
   const initial = await chrome.webNavigation.getFrame({ tabId: tab, frameId: 0 });
   const deadline = Date.now() + 25000;
-  const isTop = event => event.tabId === tab && event.frameId === 0;
+  const isObserved = event => event.tabId === tab && (event.frameId === 0 || event.frameId === targetFrame);
+  let frameId = targetFrame;
   let started = false;
   let changed = false;
   let failure;
   const onStart = event => {
-    if (!isTop(event)) return;
+    if (!isObserved(event)) return;
+    frameId = event.frameId;
     started = true;
     changed = false;
     failure = undefined;
   };
   const onChange = event => {
-    if (isTop(event)) changed = true;
+    if (!isObserved(event)) return;
+    frameId = event.frameId;
+    changed = true;
   };
   const onError = event => {
-    if (isTop(event) && event.error !== "net::ERR_ABORTED") failure = event.error;
+    if (isObserved(event) && event.error !== "net::ERR_ABORTED") failure = event.error;
   };
   chrome.webNavigation.onBeforeNavigate.addListener(onStart);
   for (const event of pageChanges) event.addListener(onChange);
   chrome.webNavigation.onErrorOccurred.addListener(onError);
   try {
-    const result = await action();
+    const result = await action(() => started || changed);
     const grace = Date.now() + 400;
     while (Date.now() < deadline) {
       const current = await chrome.tabs.get(tab);
@@ -380,9 +394,9 @@ async function observeNavigation(tab, action, required = true) {
       const loading = current.status === "loading" || current.pendingUrl;
       if (!required && !started && !moved && !loading && Date.now() >= grace) return result;
       if (moved && !loading) {
-        const frame = await chrome.webNavigation.getFrame({ tabId: tab, frameId: 0 });
+        const frame = await chrome.webNavigation.getFrame({ tabId: tab, frameId });
         const ready = frame && await page(tab, { cmd: "ready" }, frame).catch(() => null);
-        if (ready?.loaded && current.url === frame.url && !failure && changed) return result;
+        if (ready?.loaded && (frameId !== 0 || current.url === frame.url) && !failure && changed) return result;
       }
       await sleep(100);
     }
@@ -394,8 +408,12 @@ async function observeNavigation(tab, action, required = true) {
   }
 }
 
+// Live-Ansicht: Tabs, deren Bild gerade an Jarvis gestreamt wird (Debugger bleibt angehängt).
+const streams = new Map();
+
 async function withDebugger(tab, operation) {
   const debuggee = { tabId: tab };
+  if (streams.has(tab)) return operation((method, params) => chrome.debugger.sendCommand(debuggee, method, params));
   await chrome.debugger.attach(debuggee, "1.3");
   try {
     return await operation((method, params) => chrome.debugger.sendCommand(debuggee, method, params));
@@ -403,6 +421,56 @@ async function withDebugger(tab, operation) {
     await chrome.debugger.detach(debuggee).catch(() => {});
   }
 }
+
+function sendFrame(message) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+async function streamStart(tab) {
+  if (streams.has(tab)) return { already: true };
+  const target = { tabId: tab };
+  await chrome.debugger.attach(target, "1.3");
+  const state = { target, stopped: false };
+  streams.set(tab, state);
+  void streamLoop(tab, state);
+  return {};
+}
+
+async function streamStop(tab, reason = "gestoppt") {
+  const state = streams.get(tab);
+  if (!state) return;
+  state.stopped = true;
+  streams.delete(tab);
+  await chrome.debugger.detach(state.target).catch(() => {});
+  sendFrame({ type: "stream_ended", tab, reason });
+}
+
+async function streamLoop(tab, state) {
+  while (!state.stopped && streams.get(tab) === state) {
+    const started = Date.now();
+    try {
+      // Kleine JPEGs (max. 960 px Breite), ca. 5 Bilder pro Sekunde; der Cursor ist Teil der Seite und damit im Bild.
+      const { cssVisualViewport: v } = await chrome.debugger.sendCommand(state.target, "Page.getLayoutMetrics");
+      const { data } = await chrome.debugger.sendCommand(state.target, "Page.captureScreenshot", {
+        format: "jpeg", quality: 50, fromSurface: true, optimizeForSpeed: true,
+        clip: { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: Math.min(1, 960 / v.clientWidth) },
+      });
+      const current = await chrome.tabs.get(tab);
+      if (!state.stopped) sendFrame({ type: "frame", tab, data, w: Math.round(v.clientWidth), h: Math.round(v.clientHeight), url: current.url ?? "", title: current.title ?? "" });
+    } catch {
+      if (!(await chrome.tabs.get(tab).catch(() => null))) { await streamStop(tab, "Tab geschlossen"); return; }
+    }
+    await sleep(Math.max(0, 200 - (Date.now() - started)));
+  }
+}
+
+chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
+  const state = streams.get(tabId);
+  if (!state || state.stopped) return;
+  state.stopped = true;
+  streams.delete(tabId);
+  sendFrame({ type: "stream_ended", tab: tabId, reason: reason === "canceled_by_user" ? "Vom Nutzer beendet" : reason });
+});
 
 async function typeInTab(tab, pageCommand, text, submit) {
   await withDebugger(tab, async send => {
@@ -420,12 +488,44 @@ async function typeInTab(tab, pageCommand, text, submit) {
       await pageCommand({ cmd: "prepareSubmit" });
       try {
         await key("Enter", 13, "\r");
-        invalidateScan(tab);
       } finally {
-        await pageCommand({ cmd: "finishType" }).catch(() => {});
+        // A navigating document can be frozen in the back-forward cache.
+        void pageCommand({ cmd: "finishEnter" }).catch(() => {});
       }
     }
   });
+}
+
+async function typeAndSubmit(tab, pageCommand, text, navigating) {
+  const changed = async () => {
+    const deadline = Date.now() + 1500;
+    do {
+      if (navigating()) return true;
+      const state = await pageCommand({ cmd: "submitProgress" }).catch(() => null);
+      if (state?.changed || navigating()) return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(150, deadline - Date.now()));
+    } while (true);
+  };
+  const success = via => {
+    invalidateScan(tab);
+    return { via };
+  };
+  try {
+    await typeInTab(tab, pageCommand, text, true);
+    if (await changed()) return success("cdp");
+    await requireManaged(tab, true);
+    if (navigating()) return success("cdp");
+    const fallback = await pageCommand({ cmd: "submitForm" }).catch(error => {
+      if (!navigating()) throw error;
+    });
+    if (fallback?.changed || (!fallback?.attempted && navigating())) return success("cdp");
+    if (!fallback?.attempted) return { via: "cdp", submitted: false };
+    if (await changed()) return success("cdp+form");
+    return { via: "cdp+form", submitted: false };
+  } finally {
+    void pageCommand({ cmd: "finishType" }).catch(() => {});
+  }
 }
 
 async function back(tab) {
@@ -522,18 +622,24 @@ async function dispatch(request) {
   if (cmd === "tab_list") return listTabs();
   if (cmd === "tab_adopt") return adoptTab(request);
   if (cmd === "tab_release") return releaseTab(request);
-  if (!["tab_close", "navigate", "back", "wait", "scan", "shot", "click", "type", "focus", "scroll", "read"].includes(cmd)) {
+  if (!["tab_close", "navigate", "back", "wait", "scan", "shot", "preview", "click", "type", "focus", "scroll", "read", "stream_start", "stream_stop"].includes(cmd)) {
     throw new Error("Unbekannter Befehl");
   }
 
-  await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot"].includes(cmd));
+  await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot", "preview"].includes(cmd));
   switch (cmd) {
-    case "tab_close": await chrome.tabs.remove(tab); return {};
+    case "tab_close": await streamStop(tab); await chrome.tabs.remove(tab); return {};
+    case "stream_start": return streamStart(tab);
+    case "stream_stop": await streamStop(tab); return {};
     case "navigate": return navigate(tab, urlFor(request.url));
     case "back": return back(tab);
     case "wait": return wait(tab, request);
     case "scan": return scan(tab, request);
     case "shot": return shot(tab, request);
+    case "preview": {
+      const [{ data }] = await withDebugger(tab, send => send("Page.captureScreenshot", { format: "jpeg", quality: 55, fromSurface: true }));
+      return { dataUrl: "data:image/jpeg;base64," + data, tab };
+    }
     default: return targetCommand(tab, request);
   }
 }

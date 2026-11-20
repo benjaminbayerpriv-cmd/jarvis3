@@ -32,3 +32,10 @@ Die Tests benötigen Bun und Chrome mit DevTools-Unterstützung für entpackte E
 - **Lokaler Integrationstest.** Alle 13 Browserbefehle, verzögertes Laden und Redirects, ID-Wechsel, Scan-Limit und Sortierung, Passwortschutz, native Eingabe, Screenshot-Pixel, Fokus in zwei Fenstern und Wiederverbindung bestanden.
 - **Live-Szenarien.** Enter-Suche auf de.wikipedia.org und DuckDuckGo sowie React-Dateisuche mit Vorschlägen und Enter auf GitHub bestanden. Die deutsche Wikipedia lieferte für „Tauri“ keinen Artikel als Suchergebnis. Der Klick auf den ersten Treffer und das Lesen von „Tauri“ im Artikel wurden daher auf der englischen Wikipedia geprüft. Die Tests zeichneten keine Tab- oder Fensteraktivierung auf.
 - **Offen.** Der globale GitHub-Suchdialog reagierte im Testprofil auf den DOM-Klick nicht zuverlässig. Der Toolbar-Klick war im fensterlosen Testlauf nicht prüfbar. Im MCP müssen `submit` weitergereicht und der `rect`-Notbehelf entfernt werden, damit das Modell beide erweiterten Protokollbefehle nutzen kann.
+
+## Live-Ansicht und Jarvis-Cursor (2026-11-21)
+
+- `stream_start` / `stream_stop` (`tab`): Die Erweiterung hängt den Debugger an den Tab und schickt ca. 5 Bilder pro Sekunde (JPEG, max. 960 px breit) als `{type:"frame", tab, data, w, h, url, title}` an den Daemon; endet der Strom (Stopp, Tab zu, „Abbrechen“ in Chromes Hinweisleiste), kommt `{type:"stream_ended", tab, reason}`. Während der Übertragung zeigt Chrome die Leiste „Jarvis hat die Fehlerbehebung für diesen Browser gestartet“. Befehle auf demselben Tab laufen parallel weiter (der Debugger wird mitbenutzt).
+- Vor `click` und `type` fährt der **Jarvis-Cursor** (violetter Zeiger) zur Elementmitte (Befehl `rect` liefert die aktuelle Position). Er wird in der Seite gezeichnet und ist deshalb im Live-Bild sichtbar. Gezeichnet wird auch in Hintergrund-Tabs (Zeitgeber statt `requestAnimationFrame`).
+- `tab_adopt` / `tab_release`: siehe docs/protocol.md.
+- Im Zwischenstand von Codex (Enter-Absenden, `preview`) ist `scenarios.mjs` **nicht** ausgeführt worden, weil er sichtbare Chrome-Fenster öffnet.

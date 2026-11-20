@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 
 const extension = fileURLToPath(new URL("../", import.meta.url));
 const chromePath = process.env.CHROME_BIN ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-export async function startBrowser(serve, chromeOptions = []) {
+export async function startBrowser(serve, chromeOptions = [], { headless = true } = {}) {
   const connections = [];
+  const frames = [];
   const pending = new Map();
   let rid = 0;
   const server = Bun.serve({
@@ -24,7 +25,9 @@ export async function startBrowser(serve, chromeOptions = []) {
       idleTimeout: 0,
       message(ws, raw) {
         const message = JSON.parse(raw);
-        if (message.hello === "jarvis-extension") connections.push({ ws, message });
+        if (process.env.JARVIS_TRACE) console.log("answer", message.rid, message.ok, message.via, message.error);
+        if (message.type === "frame" || message.type === "stream_ended") frames.push(message);
+        else if (message.hello === "jarvis-extension") connections.push({ ws, message });
         else {
           assert(pending.has(message.rid), "Unexpected protocol message");
           pending.get(message.rid)(message);
@@ -67,7 +70,8 @@ export async function startBrowser(serve, chromeOptions = []) {
   const profile = await mkdtemp(join(tmpdir(), "jarvis-chrome-"));
   const chrome = spawn(chromePath, [
     "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
-    "--headless=new", "--remote-debugging-pipe", "--enable-unsafe-extension-debugging", "--disable-background-networking",
+    ...(headless ? ["--headless=new"] : []),
+    "--remote-debugging-pipe", "--enable-unsafe-extension-debugging", "--disable-background-networking",
     `--proxy-server=http=http://127.0.0.1:${proxy.address().port}`,
     `--proxy-bypass-list=<-loopback>;127.0.0.1:${server.port}`, ...chromeOptions, base + "/sentinel"
   ], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
@@ -115,6 +119,7 @@ export async function startBrowser(serve, chromeOptions = []) {
 
   function ask(request) {
     const id = ++rid;
+    if (process.env.JARVIS_TRACE) console.log("request", id, request.cmd, request.submit);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -160,5 +165,5 @@ export async function startBrowser(serve, chromeOptions = []) {
     server.stop(true);
     await rm(profile, { recursive: true, force: true });
   }
-  return { base, extension, connections, devtools, evaluate, until, ok, fails, close };
+  return { base, extension, connections, frames, devtools, evaluate, until, ok, fails, close };
 }

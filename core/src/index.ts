@@ -15,8 +15,8 @@ const SETTINGS = join(HOME, "settings.json");
 const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
-interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean }
-const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false };
+interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean }
+const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true };
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
 
@@ -41,7 +41,7 @@ let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
 const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const ui of uis) ui.send(s); };
 const state = () => ({ type: "state", model: settings.model, voiceModel: settings.voiceModel, mode: settings.mode,
-                       lofi: settings.lofi, busy, browser: browser.connected, speech: speech.connected, voice, models });
+                       lofi: settings.lofi, liveView: settings.liveView, busy, browser: browser.connected, speech: speech.connected, voice, models });
 
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
@@ -153,6 +153,28 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   });
 }
 
+// ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
+let streamTab: number | undefined;
+let streamTimer: ReturnType<typeof setTimeout> | undefined;
+async function stopStream() {
+  clearTimeout(streamTimer);
+  const t = streamTab; streamTab = undefined;
+  if (t !== undefined) await browser.call({ cmd: "stream_stop", tab: t }, 5000).catch(() => {});
+}
+async function ensureStream(tab: number) {
+  if (!settings.liveView || uis.size === 0 || !browser.connected) return;
+  clearTimeout(streamTimer);
+  streamTimer = setTimeout(stopStream, 12_000); // 12 s nach der letzten Aktion endet die Übertragung
+  if (streamTab === tab) return;
+  if (streamTab !== undefined) await browser.call({ cmd: "stream_stop", tab: streamTab }, 5000).catch(() => {});
+  const r = await browser.call({ cmd: "stream_start", tab }, 8000);
+  streamTab = r.ok ? tab : undefined;
+}
+browser.onEvent = m => {
+  if (m.type === "stream_ended" && m.tab === streamTab) streamTab = undefined;
+  broadcast(m);
+};
+
 async function stop() {
   stoppedUntil = Date.now() + 1500;
   splitter = undefined;
@@ -164,7 +186,12 @@ async function stop() {
 async function runTool(target: string, cmd: Record<string, any>) {
   if (Date.now() < stoppedUntil) return { ok: false, error: "vom Nutzer gestoppt" };
   broadcast({ type: "action", target, cmd: cmd.cmd, detail: cmd.url ?? cmd.id ?? cmd.name ?? "" });
-  if (target === "browser") return browser.call(cmd);
+  if (target === "browser") {
+    if (Number.isInteger(cmd.tab)) void ensureStream(cmd.tab);
+    const r = await browser.call(cmd);
+    if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
+    return r;
+  }
   if (settings.mode !== "computer" && !["scan", "read", "shot"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
@@ -211,6 +238,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       if (ws.data.kind === "browser") { browser.detach(ws); broadcast(state()); }
       else {
         uis.delete(ws);
+        if (uis.size === 0) void stopStream();
         // Keine Oberfläche mehr offen: Mikrofon zu, nichts mehr sprechen.
         if (uis.size === 0 && voice !== "off") setVoice("off");
       }
@@ -225,6 +253,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
         if ("lofi" in msg.settings) speech.send({ type: "config", lofi: settings.lofi });
         broadcast(state());
       }
+      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
       else if (msg.type === "voice") setVoice(msg.mode);
       else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history() }));
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));

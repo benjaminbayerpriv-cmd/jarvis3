@@ -51,6 +51,8 @@ function handle(m) {
     case "action": break; // Details kommen über "tool"
     case "latency": if (current) { current.firstMs = m.firstTokenMs; if (m.model) current.model = m.model; } break;
     case "notice": showNotice(m.text); break;
+    case "frame": showFrame(m); break;
+    case "stream_ended": hideViewer(); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -71,6 +73,8 @@ function renderState() {
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setLofi").setAttribute("aria-checked", String(!!state.lofi));
+  $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
+  if (state.liveView === false) hideViewer();
   $("#stop").hidden = !state.busy;
   updateSend();
   $("#stopBanner").hidden = !(state.busy && state.mode === "computer");
@@ -326,6 +330,28 @@ function renderMessages(msgs = []) {
   conv.scrollTop = conv.scrollHeight;
 }
 
+// ---------- Live-Ansicht des Tabs ----------
+const viewer = $("#viewer");
+let viewerTimer;
+function showFrame(m) {
+  if (state.liveView === false) return;
+  $("#viewerImg").src = "data:image/jpeg;base64," + m.data;
+  $("#viewerTitle").textContent = m.title || "Tab";
+  try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
+  if (viewer.hidden) { viewer.classList.remove("leaving"); viewer.hidden = false; }
+  clearTimeout(viewerTimer);
+  viewerTimer = setTimeout(hideViewer, 6000); // keine Bilder mehr -> Ansicht ausblenden
+}
+function hideViewer() {
+  clearTimeout(viewerTimer);
+  if (viewer.hidden) return;
+  viewer.classList.add("leaving");
+  setTimeout(() => { if (viewer.classList.contains("leaving")) { viewer.hidden = true; viewer.classList.remove("leaving"); } }, 200);
+}
+$("#viewerHead").onclick = e => { if (!e.target.closest("#viewerClose")) viewer.classList.toggle("big"); };
+$("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
+$("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView === false });
+
 // ---------- Modus „Computer übernehmen“ ----------
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
 $("#modeSwitch").onclick = toggleMode;
@@ -435,3 +461,6 @@ document.addEventListener("keydown", e => {
 connect();
 setInterval(() => send({ type: "history" }), 60000);
 input.focus();
+
+// Test-Zugang (nur Entwicklung): window.__jarvisDebug.handle({...}) spielt Daemon-Nachrichten ein
+window.__jarvisDebug = { handle };

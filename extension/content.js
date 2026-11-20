@@ -130,6 +130,7 @@
   let refreshTimer;
   let scanPending = true;
   let pointer = null;
+  let agentCursor = null;
   const roots = new Set();
   const observer = new MutationObserver(records => {
     if (records.some(record => record.target !== host && ![
@@ -327,6 +328,42 @@
       context.fillStyle = color;
       context.fillText(caption, left + 5, top + h / 2 + 0.5);
     }
+    if (agentCursor) {
+      const { x, y, active } = agentCursor;
+      const time = performance.now() - agentCursor.started;
+      const progress = Math.min(1, time / 420);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const px = agentCursor.fromX + (x - agentCursor.fromX) * eased;
+      const py = agentCursor.fromY + (y - agentCursor.fromY) * eased;
+      context.save();
+      context.translate(px, py);
+      context.shadowColor = "rgba(0, 0, 0, .55)";
+      context.shadowBlur = 8;
+      context.fillStyle = "#a78bfa";
+      context.strokeStyle = "#fff";
+      context.lineWidth = 1.6;
+      context.beginPath();
+      context.moveTo(0, 0);
+      context.lineTo(0, 23);
+      context.lineTo(6, 17);
+      context.lineTo(11, 27);
+      context.lineTo(15, 25);
+      context.lineTo(10, 15);
+      context.lineTo(19, 15);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      if (active && time < 420) {
+        context.beginPath();
+        context.arc(5, 5, 7 + Math.min(time, 180) / 12, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(167, 139, 250, ${1 - Math.min(time, 420) / 420})`;
+        context.lineWidth = 2;
+        context.stroke();
+      }
+      context.restore();
+      if (time < 450) schedule(false, 33); // setTimeout statt requestAnimationFrame: läuft auch im Hintergrund-Tab
+      if (active && time > 550) { agentCursor.active = false; schedule(); }
+    }
   }
 
   let capturePending = false;
@@ -341,20 +378,21 @@
     }
   }
 
-  function schedule(rescan = false) {
+  function schedule(rescan = false, delay = 65) {
     if (!enabled) return;
     scanPending ||= rescan;
     if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
-      if (!enabled || capturePending || document.hidden) return;
+      // Der Jarvis-Cursor muss auch in Hintergrund-Tabs gezeichnet werden (dort ist document.hidden wahr).
+      if (!enabled || capturePending || (document.hidden && !agentCursor)) return;
       ensureOverlay();
       if (scanPending) {
         scanPending = false;
         scan();
       }
       draw();
-    }, 65);
+    }, delay);
   }
 
   function onLayout() { schedule(); }
@@ -438,7 +476,7 @@
       ["text", "email", "search", "password", "tel", "url", "number"].includes(element.type));
   }
 
-  function readText(container, region, limit) {
+  function readText(container, region, limit, skip) {
     if (container instanceof Element && isPassword(container)) return "";
     for (let ancestor = container instanceof Element ? container : null; ancestor; ancestor = parentOf(ancestor)) {
       if (getComputedStyle(ancestor).opacity === "0") return "";
@@ -459,7 +497,7 @@
           if (node.nodeType === Node.TEXT_NODE) {
             return node.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
-          if (node === host || node.matches("script, style, noscript, template, input[type=hidden]")
+          if (node === host || skip?.(node) || node.matches("script, style, noscript, template, input[type=hidden]")
             || getComputedStyle(node).opacity === "0" || isPassword(node)) {
             return NodeFilter.FILTER_REJECT;
           }
@@ -557,14 +595,58 @@
     checkTypeFocus(element);
   }
 
-  let restoreSubmit;
+  const formFor = element => element.form ?? element.closest("form");
+  const submittersFor = form => [...form.getRootNode().querySelectorAll("button, input[type=submit], input[type=image]")]
+    .filter(node => node.form === form && (node.type === "submit" || node.type === "image"));
+
+  function submissionContent(element) {
+    // Typing and opening or dismissing suggestions do not count as a result.
+    const popupIds = ["aria-controls", "aria-owns"].flatMap(name => (element.getAttribute(name) ?? "").split(/\s+/));
+    const text = readText(document.body ?? document, undefined, undefined, node =>
+      node === element || node.matches('[role="listbox"], [role="option"]') || (node.id && popupIds.includes(node.id)));
+    return JSON.stringify([location.href, document.title, text]);
+  }
+
+  let submission;
   function prepareSubmit(element) {
     checkTypeFocus(element);
-    const form = element.form ?? element.closest("form");
-    if (!form) return;
-    const submitters = [...form.elements, ...form.querySelectorAll("input[type=image]")]
-      .filter(node => node.type === "submit" || node.type === "image");
-    restoreSubmit = targetThisTab([[form, "target"], ...submitters.map(node => [node, "formtarget"])]);
+    const form = formFor(element);
+    const before = submissionContent(element);
+    const restore = form && targetThisTab([[form, "target"], ...submittersFor(form).map(node => [node, "formtarget"])]);
+    submission = { element, form, before, restore };
+  }
+
+  function finishEnter() {
+    submission?.restore?.();
+    if (submission) submission.restore = null;
+  }
+
+  function finishType() {
+    finishEnter();
+    submission = undefined;
+  }
+  window.addEventListener("pagehide", finishType);
+
+  function submitProgress() {
+    return { changed: Boolean(submission && submissionContent(submission.element) !== submission.before) };
+  }
+
+  function submitForm() {
+    const { changed } = submitProgress();
+    if (changed) return { changed };
+    if (!submission) return { attempted: false };
+    const { element, form } = submission;
+    if (!form?.isConnected || !element.isConnected || formFor(element) !== form) return { attempted: false };
+    checkWritable(element);
+    const [submitter] = submittersFor(form);
+    if (submitter?.matches(":disabled, [aria-disabled='true']")) return { attempted: false };
+    const restore = targetThisTab(submitter ? [[form, "target"], [submitter, "formtarget"]] : [[form, "target"]]);
+    try {
+      HTMLFormElement.prototype.requestSubmit.call(form, submitter);
+    } finally {
+      restore();
+    }
+    return { attempted: true };
   }
 
   function scroll(element, dy) {
@@ -606,11 +688,30 @@
     const { cmd, id, dy } = request;
     if (cmd === "ready") return { loaded: document.readyState === "complete" };
     if (cmd === "finishType") {
-      restoreSubmit?.();
-      restoreSubmit = undefined;
+      finishType();
       return {};
     }
+    if (cmd === "finishEnter") {
+      finishEnter();
+      return {};
+    }
+    if (cmd === "submitProgress") return submitProgress();
+    if (cmd === "submitForm") return submitForm();
     const frame = placement();
+    if (cmd === "agentCursor") {
+      const x = Math.max(0, Math.min(innerWidth, Number(request.x)));
+      const y = Math.max(0, Math.min(innerHeight, Number(request.y)));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("Ungültige Cursorposition");
+      const fromX = agentCursor?.x ?? pointer?.x ?? x;
+      const fromY = agentCursor?.y ?? pointer?.y ?? y;
+      agentCursor = { x, y, fromX, fromY, started: performance.now(), active: true };
+      enabled = true;
+      scanPending = false;
+      ensureOverlay();
+      draw();
+      schedule(false, 33);
+      return {};
+    }
     if (cmd === "overlay") {
       capturePending = request.hide;
       if (capturePending) host.remove();
@@ -674,6 +775,11 @@
         // Native typing leaves transient activation that a site's click handler could use for popups.
         if (navigator.userActivation.isActive) return { activationPending: true };
         return { via: "dom", invalidates: click(element) };
+      case "rect": {
+        // Position des Elements im Koordinatensystem des obersten Fensters (für den Jarvis-Cursor)
+        const r = translate(box(element.getBoundingClientRect()));
+        return { rect: r.x < r.right && r.y < r.bottom ? rectArray(r) : null };
+      }
       case "prepareType": prepareType(element); return {};
       case "prepareSubmit": prepareSubmit(element); return {};
       case "focus":
