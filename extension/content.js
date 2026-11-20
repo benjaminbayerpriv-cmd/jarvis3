@@ -1,5 +1,8 @@
 (() => {
   "use strict";
+  // Mehrfaches Einfügen (Übernehmen eines schon offenen Tabs) darf keine zweite Kopie anlegen.
+  if (globalThis.__jarvisContent) return;
+  globalThis.__jarvisContent = true;
 
   const roles = new Map([
     ["button", "Taste"], ["link", "Link"], ["checkbox", "Kontrollkästchen"],

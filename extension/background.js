@@ -162,6 +162,12 @@ async function adoptTab(request) {
   if (!/^(https?|file):/.test(url)) throw new Error("Dieser Tab (z. B. chrome://, Erweiterungsseite, Neuer Tab) kann nicht übernommen werden");
   const key = tabKey(tabId);
   if ((await chrome.storage.session.get(key))[key] && tab.groupId >= 0) return { tab: tabId, url, active: tab.active, already: true };
+  // Tabs, die vor dem Laden/Neuladen der Erweiterung geöffnet wurden, haben noch kein Content-Script.
+  const alive = await chrome.tabs.sendMessage(tabId, { cmd: "ready" }).catch(() => null);
+  if (!alive) {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["content.js"] })
+      .catch(() => { throw new Error("Dieser Tab erlaubt keine Steuerung (z. B. Chrome Web Store oder geschützte Seite)"); });
+  }
   const title = groupTitle(request.group);
   // Nur Gruppen im selben Fenster: der Tab soll das Fenster des Nutzers nicht wechseln.
   const groups = await chrome.tabGroups.query({ windowId: tab.windowId, title, color: "blue" });
@@ -169,7 +175,7 @@ async function adoptTab(request) {
   const group = groups.find(group => owned[groupKey(group.id)] === true);
   const groupId = await chrome.tabs.group(group ? { tabIds: tabId, groupId: group.id } : { tabIds: tabId });
   if (!group) await chrome.tabGroups.update(groupId, { title, color: "blue" });
-  await chrome.storage.session.set({ [key]: true, [groupKey(groupId)]: true });
+  await chrome.storage.session.set({ [key]: "adopted", [groupKey(groupId)]: true });
   return { tab: tabId, url, active: tab.active };
 }
 
@@ -198,7 +204,11 @@ async function requireManaged(tabId, background = false) {
   const group = groupKey(tab.groupId);
   const groups = await chrome.storage.session.get(group);
   if (!groups[group]) throw new Error("Tab gehört nicht zu einer Jarvis-Tab-Gruppe");
-  if (background && (await chrome.tabs.get(tabId)).active) throw new Error("Jarvis-Tab ist gerade aktiv");
+  // Eigene Jarvis-Tabs dürfen bedient werden, auch wenn der Nutzer gerade zusieht. Übernommene Tabs des Nutzers
+  // bleiben gesperrt, solange sie der aktive Tab sind (dort arbeitet der Nutzer selbst).
+  if (background && owned[key] === "adopted" && (await chrome.tabs.get(tabId)).active) {
+    throw new Error("Dieser übernommene Tab ist gerade der aktive Tab des Nutzers. Bitte den Nutzer, kurz einen anderen Tab zu öffnen.");
+  }
   return tab;
 }
 

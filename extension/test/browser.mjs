@@ -245,6 +245,12 @@ try {
   const scanned = await ok("scan", { tab: existing });
   assert(scanned.targets.length > 0);
   await fails("tab_adopt", { tab: sentinel.tab, group: "" }, /Gruppenname/);
+  // Übernommener Tab, der gerade aktiv ist: lesen ja, bedienen nein; eigener Jarvis-Tab: auch aktiv bedienbar
+  const activeAdopt = await ok("tab_adopt", { tab: sentinel.tab });
+  assert.equal(activeAdopt.active, true);
+  assert.match((await ok("read", { tab: sentinel.tab })).text, /Second page|Sentinel/);
+  await fails("scroll", { tab: sentinel.tab, dy: 1 }, /aktive Tab des Nutzers/);
+  await ok("tab_release", { tab: sentinel.tab });
   await ok("tab_release", { tab: existing });
   assert.equal((await ok("tab_list")).tabs.find(t => t.tab === existing).group, null);
   await fails("scan", { tab: existing }, /gehört nicht/);

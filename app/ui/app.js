@@ -333,8 +333,17 @@ function renderMessages(msgs = []) {
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
 let viewerTimer;
+let viewTab, viewRatio = 0;
 function showFrame(m) {
   if (state.liveView === false) return;
+  // Seitenverhältnis des Tabs übernehmen; kleine Schwankungen (z. B. Chromes Hinweisleiste) ignorieren
+  if (m.w > 0 && m.h > 0) {
+    const ratio = m.w / m.h;
+    if (m.tab !== viewTab || Math.abs(ratio - viewRatio) / viewRatio > 0.06) {
+      viewTab = m.tab; viewRatio = ratio;
+      viewer.style.setProperty("--ar", `${m.w} / ${m.h}`);
+    }
+  }
   $("#viewerImg").src = "data:image/jpeg;base64," + m.data;
   $("#viewerTitle").textContent = m.title || "Tab";
   try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
