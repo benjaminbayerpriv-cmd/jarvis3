@@ -141,6 +141,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 }
 .status-pill svg { width: 18px; height: 18px; }
 .status-pill.ok { color: var(--success); }
+.status-pill.stale { color: #ffb74d; }
 .mode-switch {
   display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px 0 12px; border-radius: var(--r-full);
   background: var(--surface); font-size: 14px; color: var(--on-surface-variant);

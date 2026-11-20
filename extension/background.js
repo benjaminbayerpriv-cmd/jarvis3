@@ -643,6 +643,7 @@ async function shot(tab, request) {
 
 async function dispatch(request) {
   const { cmd, tab } = request;
+  if (cmd === "reload") { setTimeout(() => chrome.runtime.reload(), 150); return {}; } // Update aus dem Ordner einspielen
   if (cmd === "tab_open") return openTab(request);
   if (cmd === "tab_list") return listTabs();
   if (cmd === "tab_adopt") return adoptTab(request);

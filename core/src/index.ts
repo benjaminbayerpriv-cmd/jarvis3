@@ -41,7 +41,7 @@ let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
 const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const ui of uis) ui.send(s); };
 const state = () => ({ type: "state", model: settings.model, voiceModel: settings.voiceModel, mode: settings.mode,
-                       lofi: settings.lofi, liveView: settings.liveView, busy, browser: browser.connected, speech: speech.connected, voice, models });
+                       lofi: settings.lofi, liveView: settings.liveView, extStale: extensionStale, busy, browser: browser.connected, speech: speech.connected, voice, models });
 
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
@@ -55,15 +55,44 @@ const speech = new Speech(e => {
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   broadcast({ ...e, type: "speech", event: e.type });
-  if (e.type === "speech_start" && busy && voice === "live") stop(); // Barge-in: Nutzer unterbricht
-  if (e.type === "final" && voice === "live" && worthAnswering(String(e.text ?? ""))) chat(String(e.text), settings.voiceModel, true);
+  // Der Nutzer redet: Ausgabe verstummen lassen, die laufende Antwort aber nicht abbrechen (Husten/Pausen mitten im Satz).
+  if (e.type === "speech_start" && voice === "live") { clearHolds(); splitter = undefined; }
+  if (e.type === "final" && voice === "live") hear(String(e.text ?? ""));
 });
-// Rauschen und Fehlerkennungen ("Untertitel…", einzelne Silben) nicht beantworten.
+
+// Satzfetzen zu einer Äußerung zusammenfassen: erst nach UTTER_WAIT_MS ohne neue Sprache wird an das Modell gesendet.
+// Die Spracherkennung beendet einen Satz schon nach ~0,3 s Pause; ohne diese Wartezeit würde jeder Fetzen ("Äh, du kannst." –
+// "Für mich mal." – …) als eigene Nachricht die vorige abbrechen.
+const UTTER_WAIT_MS = 1000;
+let pendingUtterance = "";
+let utterTimer: ReturnType<typeof setTimeout> | undefined;
+let lastRun: { text: string; toolSeen: boolean; startedAt: number } | undefined;
+const STOP_WORDS = /^(stopp?|halt|abbrechen|hör auf|hoer auf|lass das|stop it)[.!?\s]*$/i;
+function hear(text: string) {
+  if (STOP_WORDS.test(text.trim())) { pendingUtterance = ""; clearTimeout(utterTimer); void stop(); return; }
+  if (!worthAnswering(text) && !pendingUtterance) return;
+  pendingUtterance = `${pendingUtterance} ${text}`.trim();
+  clearTimeout(utterTimer);
+  utterTimer = setTimeout(sendUtterance, UTTER_WAIT_MS);
+}
+function sendUtterance() {
+  const text = pendingUtterance.trim(); pendingUtterance = "";
+  if (!worthAnswering(text) || voice !== "live") return;
+  let full = text, replace = false;
+  // Antwort läuft noch, hat aber keine Werkzeuge benutzt und der Nutzer spricht weiter: zu EINER Äußerung zusammenführen
+  if (busy && lastRun && !lastRun.toolSeen && Date.now() - lastRun.startedAt < 20_000) { full = `${lastRun.text} ${text}`; replace = true; }
+  lastRun = { text: full, toolSeen: false, startedAt: Date.now() };
+  vlog(`Äußerung: ${full.slice(0, 160)}${replace ? " (zusammengeführt)" : ""}`);
+  broadcast({ type: "user", text: full, replace });
+  void chat(full, settings.voiceModel, true);
+}
+// Rauschen, Füllwörter und Fehlerkennungen ("Untertitel…", "Äh", "Mm-hmm") nicht beantworten.
+const FILLERS = new Set(["äh", "ähm", "äm", "öh", "öhm", "hm", "hmm", "mhm", "mm", "mmhmm", "mm-hmm", "um", "uh", "ah", "oh", "eh", "also", "ja", "nein", "okay", "ok", "ne", "na", "so", "genau"]);
 function worthAnswering(text: string) {
-  const t = text.trim().replace(/[.!?…,\s]+$/g, "");
-  if (t.length < 4) return false;
-  if (/^(ja|nein|äh|ähm|hm+|mhm|okay|ok|ne|na)$/i.test(t)) return false;
-  return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(t);
+  const words = text.toLowerCase().replace(/[.!?…,;:]+/g, " ").split(/\s+/).filter(Boolean);
+  const content = words.filter(w => !FILLERS.has(w));
+  if (!content.length || content.join("").length < 3) return false;
+  return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(text);
 }
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
@@ -165,6 +194,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       clearTimeout(flushTimer);
       flushTimer = setTimeout(() => { if (splitter) speakAll(splitter.flushIfSentence()); }, 600);
     }
+    if (e.kind === "tool" && lastRun) lastRun.toolSeen = true;
     if (splitter && e.kind === "tool") {
       clearTimeout(flushTimer);
       if (toolSeen) { clearHolds(); splitter.flush(); vlog("Zwischentext vor Werkzeug verworfen"); } // Ankündigung gab es schon
@@ -196,6 +226,21 @@ async function ensureStream(tab: number) {
   const r = await browser.call({ cmd: "stream_start", tab }, 8000);
   streamTab = r.ok ? tab : undefined;
 }
+// Erweiterung veraltet? Neue Versionen lädt sie auf Anweisung selbst; sehr alte (vor 1.2.0) muss der Nutzer einmal neu laden.
+const wantedExtension = () => { try { return JSON.parse(readFileSync(join(ROOT, "extension/manifest.json"), "utf8")).version as string; } catch { return ""; } };
+const versionNum = (v: string) => v.split(".").reduce((n, x) => n * 1000 + Number(x || 0), 0);
+let extensionStale = false;
+browser.onHello = version => {
+  const want = wantedExtension();
+  extensionStale = !!want && version !== want;
+  if (extensionStale && versionNum(version) >= versionNum("1.2.0")) {
+    vlog(`Erweiterung ${version} -> ${want}: lade neu`);
+    setTimeout(() => void browser.call({ cmd: "reload" }, 3000).catch(() => {}), 300);
+  } else if (extensionStale) {
+    broadcast({ type: "notice", text: `Die Chrome-Erweiterung ist veraltet (${version}, aktuell ${want}). Bitte einmal unter chrome://extensions bei „Jarvis“ neu laden – danach aktualisiert sie sich selbst.` });
+  }
+  broadcast(state());
+};
 browser.onEvent = m => {
   if (m.type === "stream_ended" && m.tab === streamTab) streamTab = undefined;
   broadcast(m);

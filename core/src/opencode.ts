@@ -127,6 +127,7 @@ export class OpenCode {
         break;
       }
       case "session.error":
+        if (p.error?.name === "MessageAbortedError") break; // vom Nutzer/Daemon abgebrochen: kein Fehler
         cb({ kind: "error", message: p.error?.data?.message ?? p.error?.name ?? "Fehler" });
         break;
       case "session.idle":

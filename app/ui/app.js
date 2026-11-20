@@ -51,6 +51,7 @@ function handle(m) {
     case "action": break; // Details kommen über "tool"
     case "latency": if (current) { current.firstMs = m.firstTokenMs; if (m.model) current.model = m.model; } break;
     case "notice": showNotice(m.text); break;
+    case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
     case "stream_ended": hideViewer(); break;
     case "error": showError(m.message); break;
@@ -69,7 +70,8 @@ function renderState() {
   $("#footModel").textContent = state.model;
   const pill = $("#browserPill");
   pill.classList.toggle("ok", state.browser);
-  pill.title = state.browser ? "Chrome-Erweiterung verbunden" : "Chrome-Erweiterung nicht verbunden";
+  pill.title = state.browser ? (state.extStale ? "Chrome-Erweiterung veraltet – unter chrome://extensions neu laden" : "Chrome-Erweiterung verbunden") : "Chrome-Erweiterung nicht verbunden";
+  pill.classList.toggle("stale", !!state.extStale);
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setLofi").setAttribute("aria-checked", String(!!state.lofi));
@@ -212,6 +214,8 @@ function toolEvent(m) {
 }
 function finishTurn(note) {
   if (!current) return;
+  // Antwort ohne Inhalt (abgebrochen, bevor etwas kam): nicht als leere Blase mit Zeitangabe stehen lassen
+  if (!current.blocks.length) { current.el.remove(); current = null; return; }
   const { el, started, firstMs } = current;
   el.classList.remove("busy", "empty");
   el.classList.add("done");
@@ -235,7 +239,17 @@ function showNotice(text) {
   current.blocks.push({ kind: "notice", el: p });
   stickToBottom();
 }
+// Gesprochene Äußerung, die der Daemon an das Modell schickt (Fetzen sind schon zusammengefasst)
+function heardUser(m) {
+  if (m.replace) {  // Nutzer sprach weiter: letzte Nachricht samt abgebrochener Antwort durch die zusammengeführte ersetzen
+    if (current) { current.el.remove(); current = null; }
+    [...turns.querySelectorAll(".turn.user")].at(-1)?.remove();
+  }
+  addUser(m.text);
+  startJarvis();
+}
 function showError(msg) {
+  if (/abort/i.test(String(msg))) return;
   if (!current) startJarvis();
   current.el.classList.remove("empty");
   const p = document.createElement("p");
@@ -450,7 +464,7 @@ function speechEvent(m) {
       break;
     case "final":
       if (dictating) { input.value = m.text; autosize(); updateSend(); input.focus(); }
-      else if (live.on) { liveCaption(m.text, true); addUser(m.text); startJarvis(); }
+      else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
     case "say_start": liveEl.dataset.state = "speaking"; break;
     case "say_end": liveEl.dataset.state = "listening"; break;

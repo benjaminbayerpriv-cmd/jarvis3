@@ -8,7 +8,8 @@ export class Browser {
   private pending = new Map<number, (r: Reply) => void>();
   private rid = 0;
   version?: string;
-  onEvent?: (m: Record<string, any>) => void;  // Live-Bilder und Stream-Ende der Erweiterung
+  onEvent?: (m: Record<string, any>) => void;
+  onHello?: (version: string) => void;  // Live-Bilder und Stream-Ende der Erweiterung
 
   get connected() { return !!this.socket; }
 
@@ -23,7 +24,7 @@ export class Browser {
 
   receive(raw: string) {
     const msg = JSON.parse(raw);
-    if (msg.hello) { this.version = msg.version; return; }
+    if (msg.hello) { this.version = msg.version; this.onHello?.(String(msg.version)); return; }
     if (msg.type === "frame" || msg.type === "stream_ended") { this.onEvent?.(msg); return; }
     const id = msg.rid as number;
     this.pending.get(id)?.(msg); this.pending.delete(id);
