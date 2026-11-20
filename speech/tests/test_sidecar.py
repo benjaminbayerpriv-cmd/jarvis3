@@ -1,6 +1,7 @@
 """Exercise the real models and WebSocket protocol without using audio hardware."""
 
 import asyncio
+import json
 from collections import deque
 from pathlib import Path
 import logging
@@ -147,10 +148,6 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready["devices"], audio.devices())
         _, level = await client.wait("level", now)
         self.assertEqual((level["mic"], level["out"]), (0, 0))
-        async with connect(url) as other:
-            with self.assertRaises(ConnectionClosed):
-                await other.recv()
-
         await client.send("mode", value="off")
         _, drained = audio.feed(wav(4))
         await drained
@@ -232,6 +229,11 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         await client.wait("say_end", first, id="second")
         self.assertTrue(any(m["type"] == "level" and m["mic"] > 0 for _, m in client.messages))
         self.assertTrue(any(m["type"] == "level" and m["out"] > 0 for _, m in client.messages))
+
+        # Neue Daemon-Verbindung ersetzt die alte (auch eine tote), statt abgelehnt zu werden.
+        async with connect(url) as other:
+            ready = json.loads(await asyncio.wait_for(other.recv(), 5))
+            self.assertEqual(ready["type"], "ready")
 
 
 if __name__ == "__main__":

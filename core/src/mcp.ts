@@ -65,8 +65,14 @@ server.tool("browser_type", "Schreibt in ein Feld der Seite.", { tab, id, text: 
   async a => result(await call("browser", { cmd: "type", ...a })));
 server.tool("browser_scroll", "Scrollt die Seite oder ein Element.", { tab, id: id.optional(), dy: z.number().int() },
   async a => result(await call("browser", { cmd: "scroll", ...a })));
-server.tool("browser_read", "Liest Text eines Elements oder Bereichs der Seite.", { tab, id: id.optional(), rect: rect.optional() },
-  async a => result(await call("browser", { cmd: "read", ...a })));
+server.tool("browser_read", "Liest Text der Seite: ohne id/rect den gesamten sichtbaren Seitentext, sonst ein Element (id) oder einen Bereich (rect).",
+  { tab, id: id.optional(), rect: rect.optional() },
+  async a => {
+    const whole = a.id === undefined && a.rect === undefined;
+    const r = await call("browser", { cmd: "read", ...a, ...(whole ? { rect: [0, 0, 6000, 6000] } : {}) });
+    if (r.ok && typeof r.text === "string" && r.text.length > 8000) r.text = r.text.slice(0, 8000) + "\n[… gekürzt]";
+    return result(r);
+  });
 server.tool("browser_look", "Screenshot des Tabs, NUR wenn nötig.", { tab, rect: rect.optional(), marks: z.boolean().optional() },
   async a => image(await call("browser", { cmd: "shot", ...a })));
 

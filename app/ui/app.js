@@ -26,10 +26,10 @@ let current = null;        // aktuelle Jarvis-Antwort {el, text, started}
 let live = { on: false, muted: false };
 
 // ---------- Verbindung ----------
-let ws, retry = 0;
+let ws, retry = 0, firstState = true;
 function connect() {
   ws = new WebSocket(`ws://${DAEMON}/ui`);
-  ws.onopen = () => { retry = 0; setOffline(false); };
+  ws.onopen = () => { retry = 0; firstState = true; setOffline(false); };
   ws.onclose = () => { setOffline(true); setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
@@ -42,8 +42,9 @@ function handle(m) {
   switch (m.type) {
     case "state":
       Object.assign(state, m); renderState();
-      // Zustand abgleichen: Daemon denkt "live", die Oberfläche aber nicht -> Mikrofon schließen
-      if (state.voice === "live" && !live.on && !dictating) send({ type: "voice", mode: "off" });
+      // Nach Neuladen: Daemon denkt noch "live", diese Oberfläche aber nicht -> einmalig schließen.
+      // Nur beim ersten Zustand einer Verbindung, sonst würde eine zweite offene Oberfläche Live abwürgen.
+      if (firstState) { firstState = false; if (state.voice === "live" && !live.on && !dictating) send({ type: "voice", mode: "off" }); }
       break;
     case "delta": appendText(m.text); break;
     case "tool": toolEvent(m); break;
