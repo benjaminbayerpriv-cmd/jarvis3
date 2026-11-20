@@ -24,6 +24,8 @@ Wer etwas ändert, ändert zuerst diese Datei.
 | `read` | `id` **oder** `rect` | `{ok, text, via:"ax|dom|ocr"}` |
 | `shot` | `rect?`, `marks?` | `{ok, path | dataUrl, rect}` – nur bei Bedarf! |
 | `displays` | – | Desktop: Monitore |
+| `key` | `combo` (z. B. `cmd+t`, `return`, `escape`) | `{ok}` – nur Desktop; Windows: `ctrl` statt `cmd` (noch offen in uimap-win) |
+| `open_app` | `name` | `{ok}` – erledigt jarvisd selbst (`open -a` / `start`), nicht uimap |
 
 Fehler: `{ok:false, error:"…"}`.
 

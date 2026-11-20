@@ -7,3 +7,4 @@ target/
 tools/uimap-mac/bin/
 workspace/
 core/node_modules/
+speech/.venv/
