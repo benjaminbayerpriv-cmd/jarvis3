@@ -40,11 +40,11 @@ def speakable(text):
 
 @dataclass(frozen=True)
 class Voice:
-    # Wie im alten Jarvis: männliche Stimme M1, volle Qualität (8 Diffusionsschritte).
+    # Vom Nutzer gewählt (Hörprobe): männliche Stimme M1, 5 Diffusionsschritte, schnelleres Tempo.
     voice: str = "M1"
-    speed: float = 1.0
+    speed: float = 1.15
     lofi: bool = False
-    steps: int = 8
+    steps: int = 5
 
 
 def fallback_name():
