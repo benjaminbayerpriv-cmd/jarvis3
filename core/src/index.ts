@@ -39,7 +39,7 @@ try {
   recordError({ category: "daemon", source: "jarvisd/settings", message: "Einstellungen konnten nicht gelesen werden", error });
 }
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
-type ChatMeta = { title?: string; folder?: string; auto?: boolean };
+type ChatMeta = { title?: string; folder?: string; auto?: boolean; pinned?: boolean; archived?: boolean };
 let chatMeta: Record<string, ChatMeta> = existsSync(CHAT_META) ? JSON.parse(readFileSync(CHAT_META, "utf8")) : {};
 let chatFolders: string[] = existsSync(CHAT_FOLDERS) ? JSON.parse(readFileSync(CHAT_FOLDERS, "utf8")) : [];
 const saveChatMeta = () => writeFileSync(CHAT_META, JSON.stringify(chatMeta, null, 2));
@@ -337,7 +337,7 @@ async function history() {
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title),
                    folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session, running: busySessions.has(s.id),
-                   updated: s.time?.updated ?? 0, projectId: projects.chat(s.id)?.projectId ?? null,
+                   updated: s.time?.updated ?? 0, pinned: !!chatMeta[s.id]?.pinned, archived: !!chatMeta[s.id]?.archived, projectId: projects.chat(s.id)?.projectId ?? null,
                    project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
   } catch (error) {
     recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
@@ -773,6 +773,13 @@ async function updateChat(msg: any) {
     if (!title) return;
     chatMeta[id] = { ...chatMeta[id], title, auto: false }; saveChatMeta();
     await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+  } else if (msg.action === "pin" || msg.action === "archive") {
+    const key = msg.action === "pin" ? "pinned" : "archived";
+    chatMeta[id] = { ...chatMeta[id] };
+    if (msg.value) chatMeta[id][key] = true; else delete chatMeta[id][key];
+    if (key === "archived" && msg.value) delete chatMeta[id].pinned; // Archivierte Chats sind nie angepinnt
+    if (key === "pinned" && msg.value) delete chatMeta[id].archived;
+    saveChatMeta();
   } else if (msg.action === "move") {
     const folder = String(msg.folder ?? "").trim().slice(0, 100);
     let target = folder ? projectByLabel(folder) : undefined;
