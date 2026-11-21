@@ -316,7 +316,17 @@ $("#dictate").onclick = () => {
 };
 
 // ---------- Seitenleiste / Verlauf ----------
-$("#railToggle").onclick = () => { const a = $("#app"); a.dataset.rail = a.dataset.rail === "open" ? "collapsed" : "open"; };
+const railBtn = $("#railToggle");
+const setRail = open => {
+  $("#app").dataset.rail = open ? "open" : "collapsed";
+  railBtn.setAttribute("aria-expanded", String(open));
+  railBtn.setAttribute("aria-label", open ? "Seitenleiste schließen" : "Seitenleiste öffnen");
+  railBtn.title = open ? "Seitenleiste schließen" : "Seitenleiste öffnen";
+  railBtn.querySelector("span").innerHTML = icon(open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand");
+  try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
+};
+railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
+try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
 $("#newChat").onclick = () => {
   send({ type: "new" }); turns.innerHTML = ""; current = null; setZero(true); input.focus();
 };

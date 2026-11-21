@@ -8,6 +8,7 @@ import { Desktop } from "./desktop";
 import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
+import { correct } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -80,6 +81,12 @@ const speech = new Speech(e => {
       broadcast({ type: "notice", text: "Ausgewähltes Mikrofon ist nicht mehr verbunden – Systemstandard aktiv" });
     }
     broadcast(state());
+  }
+  if (e.type === "final" && typeof e.text === "string") {
+    // Wortliste: typische Verhörer bei Denglisch und Programmnamen korrigieren, bevor der Text angezeigt/verarbeitet wird
+    const fixed = correct(e.text);
+    if (fixed.changes.length) vlog(`Wortliste: ${fixed.changes.map(([a, b]) => `${a} → ${b}`).join(", ")} | "${e.text}" → "${fixed.text}"`);
+    e = { ...e, text: fixed.text };
   }
   broadcast({ ...e, type: "speech", event: e.type });
   // Der Nutzer redet: Ausgabe verstummen lassen, die laufende Antwort aber nicht abbrechen (Husten/Pausen mitten im Satz).
