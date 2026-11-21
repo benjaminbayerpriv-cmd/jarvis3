@@ -68,7 +68,7 @@ function handle(m) {
     case "frame": showFrame(m); break;
     case "spoken": if (live.on) liveSpoken(m.text); break;
     case "tabs": viewerTabsMessage(m); break;
-    case "stream_ended": viewer.dataset.idle = "1"; viewerGotFrame = false; send({ type: "tabs" }); break;
+    case "viewer_idle": viewerIdle(); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -93,7 +93,7 @@ function renderState() {
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
   if (state.sttMode) $("#setStt").value = state.sttMode;
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
-  if (state.liveView === false) hideViewer();
+  if (state.liveView === false && !viewer.hidden) hideViewer();
   $("#stop").hidden = !state.busy;
   updateSend();
   $("#stopBanner").hidden = !(state.busy && state.mode === "computer");
@@ -779,7 +779,7 @@ $("#exNew").onclick = () => {
 
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
-let viewerTimer, viewerPoll;
+let viewerTimer, viewerPoll, viewerPicker = false, viewerEpoch = 0, viewerAspect = 0;
 let viewerTabs = [], viewerWindows = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
 const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
@@ -790,15 +790,15 @@ function renderViewerTabs() {
     if (iconHtml) b.insertAdjacentHTML("beforeend", iconHtml);
     const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick; box.append(b);
   };
-  mk("Automatisch", viewerPinned === null, () => send({ type: "viewer_tab", tab: null }), icon("sparkles"), "Dem Tab folgen, in dem Jarvis gerade arbeitet");
+  mk("Automatisch", viewerPinned === null, () => chooseViewer(null), icon("sparkles"), "Dem Tab oder Fenster folgen, in dem Jarvis gerade arbeitet");
   for (const t of viewerTabs) {
     const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
-    mk(t.title || t.url || "Tab", t.tab === viewerStreaming, () => { viewerStreaming = t.tab; viewerPinned = t.tab; renderViewerTabs(); send({ type: "viewer_tab", tab: t.tab }); }, fav, t.url || t.title);
+    mk(t.title || t.url || "Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, t.url || t.title);
   }
   // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
   for (const w of viewerWindows) {
     const key = `win:${w.id}`;
-    mk(w.title || w.app, viewerStreaming === key, () => { viewerStreaming = key; viewerPinned = key; renderViewerTabs(); send({ type: "viewer_window", window: w.id }); },
+    mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
       icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
   }
   const empty = $("#viewerEmpty");
@@ -806,16 +806,57 @@ function renderViewerTabs() {
   else empty.textContent = "";
 }
 const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
-function openViewer() {
-  viewer.hidden = false; state.liveView = true; syncViewerButtons();
-  send({ type: "liveview", on: true }); send({ type: "tabs" });
-  clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 2000);
+function openViewer(picker = false) {
+  if (picker) {
+    viewerPicker = true;
+    state.liveView = true;
+    send({ type: "liveview", on: true });
+  }
+  viewer.hidden = false;
+  syncViewerButtons();
+  send({ type: "tabs" });
+  clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 3000);
   renderViewerTabs();
 }
+function resetViewerFrame() {
+  viewerEpoch++;
+  viewerNext = null;
+  viewerGotFrame = false;
+  viewerStreaming = null;
+  viewerAspect = 0;
+  viewer.dataset.idle = "1";
+  vctx.clearRect(0, 0, vcanvas.width, vcanvas.height);
+  $("#viewerTitle").textContent = "Vorschau";
+  $("#viewerHost").textContent = "";
+  document.documentElement.style.removeProperty("--viewer-frame-width");
+}
 function hideViewer() {
-  clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
+  clearTimeout(viewerTimer); clearInterval(viewerPoll);
+  viewer.hidden = true; viewerPicker = false; viewerPinned = null;
+  resetViewerFrame();
   syncViewerButtons();
 }
+function viewerIdle() {
+  viewerPinned = null;
+  if (!viewerPicker) hideViewer();
+  else { resetViewerFrame(); renderViewerTabs(); }
+}
+function chooseViewer(target) {
+  viewerPinned = target;
+  if (target !== null) viewerPicker = false;
+  resetViewerFrame();
+  renderViewerTabs();
+  if (typeof target === "string") send({ type: "viewer_window", window: Number(target.slice(4)) });
+  else send({ type: "viewer_tab", tab: target });
+}
+const viewerFrame = vcanvas.parentElement;
+function sizeViewer() {
+  if (!viewerAspect || viewer.hidden) return;
+  const width = Math.round(viewerFrame.clientHeight * viewerAspect + 25) + "px";
+  const style = document.documentElement.style;
+  if (style.getPropertyValue("--viewer-frame-width") !== width) style.setProperty("--viewer-frame-width", width);
+}
+new ResizeObserver(sizeViewer).observe(viewerFrame);
 // Virtuelle Maus: wo Jarvis zuletzt geklickt/getippt hat (Bildschirmpunkt -> Bildpunkt über die Fensterlage)
 function drawVirtualCursor(m) {
   if (!Array.isArray(m.cursor) || !Array.isArray(m.bounds) || !m.bounds[2]) return;
@@ -833,41 +874,72 @@ function drawFrame(m) {
   // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
   if (viewerBusy) { viewerNext = m; return; }
   viewerBusy = true;
+  const epoch = viewerEpoch;
   const bin = atob(m.data), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
+    if (viewer.hidden || epoch !== viewerEpoch || viewerStreaming !== m.tab) { bmp.close(); return; }
     if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
     vctx.drawImage(bmp, 0, 0); bmp.close();
     drawVirtualCursor(m);
   }).catch(() => {}).finally(() => { viewerBusy = false; if (viewerNext) { const n = viewerNext; viewerNext = null; drawFrame(n); } });
 }
 function showFrame(m) {
-  if (viewer.hidden) { if (state.liveView === false) return; openViewer(); }
+  if (state.liveView === false || (viewerPinned !== null && viewerPinned !== m.tab)) return;
+  if (viewer.hidden) openViewer();
+  viewerPicker = false;
+  const changed = viewerStreaming !== m.tab;
+  viewerStreaming = m.tab;
+  if (m.w > 0 && m.h > 0 && m.w / m.h !== viewerAspect) {
+    viewerAspect = m.w / m.h;
+    sizeViewer();
+  }
   drawFrame(m);
-  $("#viewerTitle").textContent = m.title || "Tab";
+  $("#viewerTitle").textContent = m.title || "Vorschau";
   try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
   delete viewer.dataset.idle;
-  if (!viewerGotFrame || viewerStreaming !== m.tab) { viewerGotFrame = true; viewerStreaming = m.tab; renderViewerTabs(); }
+  if (!viewerGotFrame || changed) { viewerGotFrame = true; renderViewerTabs(); }
   clearTimeout(viewerTimer);
-  viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
+  viewerTimer = setTimeout(() => {
+    if (viewerPinned === null) viewerIdle();
+    else viewer.dataset.idle = "1";
+  }, 12000); // Rückfall, falls die Verbindung ohne viewer_idle abreißt
 }
 function viewerTabsMessage(m) {
-  viewerTabs = m.tabs || []; viewerWindows = m.windows || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
+  viewerTabs = m.tabs || [];
+  viewerWindows = m.windows || [];
+  if (Object.hasOwn(m, "pinned")) viewerPinned = m.pinned;
   if (!viewer.hidden) renderViewerTabs();
 }
-$("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
-// Das Auge öffnet die Vorschau immer (mit der Tab-Auswahl oben) und schließt sie wieder
-const toggleViewer = () => { if (viewer.hidden) openViewer(); else { send({ type: "liveview", on: false }); hideViewer(); } };
+const closeViewer = () => { state.liveView = false; send({ type: "liveview", on: false }); hideViewer(); };
+$("#viewerClose").onclick = closeViewer;
+const toggleViewer = () => viewer.hidden ? openViewer(true) : closeViewer();
 $("#viewToggle").onclick = toggleViewer;
-$("#liveView").onclick = toggleViewer;   // auch im Live-Modus erreichbar
-// Breite per Griff ziehen (wird gemerkt)
-try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) document.documentElement.style.setProperty("--viewer-w", w + "px"); } catch {}
-$("#viewerGrip").addEventListener("pointerdown", e => {
-  const grip = e.currentTarget; grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); viewer.style.animation = "none";
-  const move = ev => { const w = Math.round(Math.min(innerWidth - 420, Math.max(360, innerWidth - ev.clientX))); document.documentElement.style.setProperty("--viewer-w", w + "px"); viewer.dataset.w = w; };
-  const up = () => { grip.classList.remove("drag"); grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
-    try { if (viewer.dataset.w) localStorage.setItem("jarvis.viewerW", viewer.dataset.w); } catch {} };
-  grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+$("#liveView").onclick = toggleViewer;
+try {
+  const w = Number(localStorage.getItem("jarvis.viewerW"));
+  if (w > 0) document.documentElement.style.setProperty("--viewer-user-width", w + "px");
+} catch {}
+const viewerGrip = $("#viewerGrip");
+viewerGrip.addEventListener("pointerdown", e => {
+  viewerGrip.setPointerCapture(e.pointerId);
+  viewerGrip.classList.add("drag");
+  const move = ev => {
+    const width = Math.max(160, Math.round(innerWidth - ev.clientX));
+    document.documentElement.style.setProperty("--viewer-user-width", width + "px");
+    try { localStorage.setItem("jarvis.viewerW", width); } catch {}
+  };
+  const finish = () => {
+    viewerGrip.classList.remove("drag");
+    viewerGrip.removeEventListener("pointermove", move);
+    viewerGrip.removeEventListener("lostpointercapture", finish);
+  };
+  viewerGrip.addEventListener("pointermove", move);
+  viewerGrip.addEventListener("lostpointercapture", finish);
+});
+viewerGrip.addEventListener("dblclick", () => {
+  document.documentElement.style.removeProperty("--viewer-user-width");
+  try { localStorage.removeItem("jarvis.viewerW"); } catch {}
 });
 
 // ---------- Modus „Computer übernehmen“ ----------

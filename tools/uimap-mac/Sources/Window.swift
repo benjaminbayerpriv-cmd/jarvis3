@@ -260,3 +260,81 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         emit(frame)
     }
 }
+
+
+// ---------- Virtuelle Maus im echten Fenster ----------
+// Ein durchsichtiges, klickdurchlässiges Fenster mit dem violetten Jarvis-Zeiger. Es liegt über allem, nimmt keinen Fokus
+// und wechselt keinen Bildschirm-Space. Der Zeiger gleitet zum Ziel, pulsiert beim Klick und verschwindet nach einer Weile.
+final class CursorView: NSView {
+    var ripple: CGFloat = 0
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        if ripple > 0 {
+            ctx.setStrokeColor(NSColor(red: 0.655, green: 0.545, blue: 0.98, alpha: 1 - ripple).cgColor)
+            ctx.setLineWidth(2.5)
+            let r = 8 + ripple * 22
+            ctx.strokeEllipse(in: CGRect(x: 6 - r + 8, y: 6 - r + 8, width: r * 2, height: r * 2))
+        }
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: 6, y: 6)); path.line(to: NSPoint(x: 6, y: 29)); path.line(to: NSPoint(x: 12, y: 23))
+        path.line(to: NSPoint(x: 17, y: 33)); path.line(to: NSPoint(x: 21, y: 31)); path.line(to: NSPoint(x: 16, y: 21))
+        path.line(to: NSPoint(x: 25, y: 21)); path.close()
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 6, color: NSColor.black.withAlphaComponent(0.55).cgColor)
+        NSColor(red: 0.655, green: 0.545, blue: 0.98, alpha: 1).setFill(); path.fill()
+        ctx.restoreGState()
+        NSColor.white.setStroke(); path.lineWidth = 1.6; path.stroke()
+    }
+}
+
+final class CursorOverlay {
+    private var panel: NSPanel?
+    private let view = CursorView(frame: NSRect(x: 0, y: 0, width: 96, height: 96))
+    private var hideTimer: Timer?
+
+    /// point in Bildschirmkoordinaten (oben links, wie CoreGraphics)
+    func show(at point: CGPoint, click: Bool) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        // Spitze des Zeigers liegt bei (6,6) im Bild; das Fenster so setzen, dass sie auf `point` sitzt
+        let frame = NSRect(x: point.x - 6, y: primaryHeight - point.y - 90, width: 96, height: 96)
+        let firstTime = panel == nil
+        if firstTime {
+            let p = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = false
+            p.level = .statusBar; p.ignoresMouseEvents = true; p.isReleasedWhenClosed = false
+            p.hidesOnDeactivate = false
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            p.contentView = view
+            panel = p
+        }
+        guard let panel else { return }
+        let wasHidden = firstTime || panel.alphaValue < 0.5
+        if wasHidden { panel.setFrame(frame, display: true); panel.alphaValue = 1 }
+        panel.orderFrontRegardless()
+        if !wasHidden {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.35
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+                panel.animator().setFrame(frame, display: true)
+            }
+        }
+        if click { pulse() }
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; self?.panel?.animator().alphaValue = 0 })
+        }
+    }
+
+    private func pulse() {
+        view.ripple = 0.01
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.view.ripple += 0.06
+            if self.view.ripple >= 1 { self.view.ripple = 0; timer.invalidate() }
+            self.view.needsDisplay = true
+        }
+    }
+
+    func hide() { hideTimer?.invalidate(); panel?.animator().alphaValue = 0 }
+}

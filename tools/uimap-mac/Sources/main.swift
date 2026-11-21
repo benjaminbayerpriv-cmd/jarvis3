@@ -309,8 +309,10 @@ case "capture-serve":
     let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(server, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
     guard bound == 0, listen(server, 4) == 0 else { FileHandle.standardError.write(Data("Port \(port) belegt\n".utf8)); exit(1) }
     signal(SIGPIPE, SIG_IGN)
+    let overlay = CursorOverlay()
     // Fehlt die Bildschirmaufnahme-Freigabe, zeigt macOS hiermit den Dialog bzw. trägt die App in die Liste ein.
     if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+    Thread.detachNewThread {
     while true {
         let client = accept(server, nil, nil)
         if client < 0 { continue }
@@ -334,7 +336,15 @@ case "capture-serve":
                     reply = ["ok": true, "path": url.path, "w": image.width, "h": image.height]
                 } catch let f as Failure { reply = ["ok": false, "error": f.message] } catch { reply = ["ok": false, "error": "\(error)"] }
             case "cursor":
-                if let p = request["point"] as? [Int], p.count == 2 { session.streamer.cursor = CGPoint(x: p[0], y: p[1]) }
+                if let p = request["point"] as? [Int], p.count == 2 {
+                    let point = CGPoint(x: p[0], y: p[1])
+                    session.streamer.cursor = point
+                    let click = request["click"] as? Bool ?? true
+                    DispatchQueue.main.async { overlay.show(at: point, click: click) }   // Zeiger im echten Fenster
+                }
+                reply = ["ok": true]
+            case "cursor_hide":
+                DispatchQueue.main.async { overlay.hide() }
                 reply = ["ok": true]
             case "stream_start", "stream_stop":
                 reply = session.handle(request)
@@ -351,6 +361,10 @@ case "capture-serve":
         fclose(input)
         outputFD = STDOUT_FILENO
     }
+    }
+    NSApplication.shared.setActivationPolicy(.accessory)
+    NSApplication.shared.run()
+
 default:
     FileHandle.standardError.write(Data("uimap scan|serve|capture-serve|displays [--display N]\n".utf8))
     exit(2)

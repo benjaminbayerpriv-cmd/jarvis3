@@ -77,7 +77,7 @@
       </footer>
     </main>
     <!-- Tab-Vorschau: Seitenleiste rechts (wie der Browser in Claude), Breite per Griff am linken Rand ziehbar -->
-    <aside class="viewer" id="viewer" hidden aria-label="Tab-Vorschau">
+    <aside class="viewer" id="viewer" data-idle="1" hidden aria-label="Vorschau">
       <div class="viewer-grip" id="viewerGrip" role="separator" aria-orientation="vertical" aria-label="Breite ändern"></div>
       <header class="viewer-head" id="viewerHead">
         <span class="viewer-dot"></span>
@@ -85,9 +85,9 @@
         <span class="viewer-host" id="viewerHost"></span>
         <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
       </header>
-        <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Tabs der Jarvis-Gruppe"></div>
+        <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Vorschauquelle"></div>
       <div class="viewer-frame">
-        <canvas id="viewerCanvas" aria-label="Live-Bild des Tabs"></canvas>
+        <canvas id="viewerCanvas" aria-label="Live-Bild des Tabs oder Fensters"></canvas>
         <div class="viewer-empty" id="viewerEmpty"></div>
       </div>
     </aside>
@@ -102,7 +102,7 @@
     <div class="live-glow" id="liveGlow"><div class="nl" aria-hidden="true"><div class="nl-layer nl-bg"><div class="nl-blob"><div class="nl-strip"></div></div></div><div class="nl-layer nl-fg"><div class="nl-blob"><div class="nl-strip"></div></div></div></div></div>
     <div class="live-controls">
       <button class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
-      <button class="round-btn" id="liveView" aria-label="Tab-Vorschau" aria-pressed="false" title="Tab-Vorschau"><span data-icon="eye"></span></button>
+      <button class="round-btn" id="liveView" aria-label="Vorschau" aria-pressed="false" title="Tab-Vorschau"><span data-icon="eye"></span></button>
       <button class="round-btn" id="liveInterrupt" aria-label="Unterbrechen"><span data-icon="player-pause-filled"></span></button>
       <button class="round-btn end" id="liveEnd" aria-label="Beenden"><span data-icon="x"></span></button>
     </div>

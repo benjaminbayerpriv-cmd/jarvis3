@@ -14,6 +14,7 @@ import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES,
 import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
 import { Capture } from "./capture";
+import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -106,6 +107,7 @@ import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
 let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0, micRestarted = false;
 const speaking = new Set<number>();
+const speechStarted = new Map<number, () => void>();
 // Mikrofon-Wächter: kommt nach dem Start des Zuhörens 7 s lang kein Pegel, ist das Gerät stumm oder der Sidecar hat die Audiogeräte
 // veraltet. Einmal pro Gespräch wird der Sidecar dann automatisch neu gestartet (liest die Geräte frisch ein), danach folgt ein Hinweis.
 function armMicWatch() {
@@ -135,7 +137,10 @@ const speech = new Speech(e => {
   if (e.type === "speech_start" && voice === "live") { speech.sayTimes.clear(); clearHolds(); }
   // Sätze ohne hörbaren Ton (z. B. nur "1.") bekommen nie ein say_start: alles bis zur gestarteten/beendeten ID gilt als erledigt
   const doneUpTo = (id: number) => { for (const k of [...speech.sayTimes.keys()]) if (k <= id) speech.sayTimes.delete(k); };
-  if (e.type === "say_start") { speaking.add(Number(e.id)); doneUpTo(Number(e.id)); }
+  if (e.type === "say_start") {
+    speaking.add(Number(e.id)); doneUpTo(Number(e.id));
+    speechStarted.get(Number(e.id))?.();
+  }
   if (e.type === "say_end") { speaking.delete(Number(e.id)); doneUpTo(Number(e.id)); }
   if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
@@ -406,10 +411,22 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
   const input = e.input ?? {};
   let host = "";
   try { host = input.url ? new URL(String(input.url)).host.replace(/^www\./, "") : ""; } catch {}
+  const target = name.startsWith("browser_") ? "browser" : "desktop";
+  const key = targetKey(target, input.tab ?? input.window ?? desktopScanWindow);
+  const label = Number.isInteger(input.id) ? lastTargets.get(key)?.find(t => t.id === input.id)?.label : undefined;
+  const short = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").slice(0, 50);
   if (name === "browser_tab_open" || name === "browser_navigate") return `Ich öffne ${host || "die Seite"}, einen Moment.`;
+  if (name === "browser_tab_close") return "Ich schließe den Tab, einen Moment.";
+  if (name === "browser_back") return "Ich gehe eine Seite zurück, einen Moment.";
   if (name === "webfetch") return `Ich rufe ${host || "die Seite"} ab, einen Moment.`;
   if (name === "desktop_open_app") return `Ich öffne ${input.name ?? "das Programm"}, einen Moment.`;
+  if (name === "browser_click" || name === "desktop_click") return label ? `Ich klicke jetzt auf ${short(label)}, einen Moment.` : "Ich klicke jetzt auf die Stelle, einen Moment.";
+  if (name === "browser_type" || name === "desktop_type") return label ? `Ich schreibe in ${short(label)}, einen Moment.` : "Ich schreibe den Text, einen Moment.";
+  if (name === "desktop_type_text") return "Ich tippe den Text, einen Moment.";
+  if (name === "desktop_key") return `Ich drücke ${short(input.combo)}, einen Moment.`;
+  if (name === "browser_scroll" || name === "desktop_scroll") return "Ich scrolle ein Stück, einen Moment.";
   if (name.startsWith("browser_")) return "Ich schaue mir die Seite an, einen Moment.";
+  if (name === "desktop_windows") return "Ich sehe nach, welche Fenster offen sind, einen Moment.";
   if (name.startsWith("desktop_")) return "Ich sehe mir den Bildschirm an, einen Moment.";
   return "Ich kümmere mich darum, einen Moment.";
 }
@@ -417,8 +434,44 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
 let runSeq = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
+let toolSpeech: { run: number; firstAction?: Promise<void>; modelLead?: string; modelSpeechId?: number } | undefined;
+function waitUntilSpoken(id: number | undefined) {
+  if (id === undefined || !speech.sayTimes.has(id)) return Promise.resolve();
+  return new Promise<void>(resolve => {
+    const done = () => { clearTimeout(timer); speechStarted.delete(id); resolve(); };
+    const timer = setTimeout(done, 1200);
+    speechStarted.set(id, done);
+  });
+}
+
+const announcedActions: Record<string, [string, RegExp]> = {
+  click: ["click", /klick/i], type: ["type", /tipp|schreib/i], typetext: ["type_text", /tipp|schreib/i],
+  key: ["key", /drück/i], scroll: ["scroll", /scroll/i], open_app: ["open_app", /öffn/i],
+  tab_open: ["tab_open", /öffn/i], navigate: ["navigate", /öffn|navigier/i],
+  back: ["back", /zurück/i], tab_close: ["tab_close", /schließ/i],
+};
+
+async function announceToolAction(target: "browser" | "desktop", cmd: Record<string, any>) {
+  const run = toolSpeech;
+  const action = announcedActions[cmd.cmd];
+  if (!action || !run || run.run !== runSeq || !busy || voice !== "live" || !speech.connected) return true;
+  const stopBefore = stoppedUntil;
+  const userBefore = lastUserActivityAt;
+  if (!run.firstAction) {
+    if (run.modelLead && action[1].test(run.modelLead)) run.firstAction = waitUntilSpoken(run.modelSpeechId);
+    else {
+      const line = announcement({ kind: "tool", id: "", status: "running", name: `${target}_${action[0]}`, input: cmd });
+      lastSayAt = Date.now();
+      run.firstAction = waitUntilSpoken(speech.say(line));
+    }
+  }
+  await run.firstAction;
+  return stoppedUntil === stopBefore && runSeq === run.run && lastUserActivityAt === userBefore;
+}
+
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments) {
   const runId = ++runSeq;
+  toolSpeech = spoken ? { run: runId } : undefined;
   if (busy && session && !fresh) await brain.abort(session);
   // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
   if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
@@ -443,6 +496,12 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   busy = true; broadcast(state());
   const started = performance.now();
   let first = true, switching = false, textSeen = false, announced = false, responseText = "";
+  // Sprachmodus: kommt nach 1,3 s weder Text noch Werkzeug, kurz bestätigen, damit der Nutzer weiß, dass er gehört wurde
+  const ackTimer = setTimeout(() => {
+    if (!spoken || runId !== runSeq || !busy || voice !== "live" || textSeen || announced || toolSpeech?.firstAction || Date.now() - lastSayAt < 2500) return;
+    lastSayAt = Date.now(); announced = true;
+    speech.say("Alles klar, einen Moment.");
+  }, 1300);
   // Sprachmodus: arbeitet Jarvis lange mit Werkzeugen und hat nichts gesagt, kurz Bescheid geben (sonst wirkt es wie "antwortet nicht")
   let progressSaid = 0;
   const progressTimer = setInterval(() => {
@@ -461,7 +520,14 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     for (const p of parts) {
       vlog(`say: ${toolSeen ? "(gehalten) " : ""}${p.slice(0, 120)}`);
       lastSayAt = Date.now();
-      if (!toolSeen) { speech.say(p); continue; }
+      if (!toolSeen) {
+        const id = speech.say(p);
+        if (toolSpeech?.run === runId && !toolSpeech.firstAction) {
+          toolSpeech.modelLead = p;
+          toolSpeech.modelSpeechId = id;
+        }
+        continue;
+      }
       const t = setTimeout(() => { holds.delete(t); speech.say(p); }, 1000);
       holds.add(t);
     }
@@ -535,7 +601,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "tool" && !textSeen && !announced && e.status !== "pending") {
       announced = true;
       const line = announcement(e) + "\n\n";
-      if (splitter) { speakAll(splitter.push(line)); speakAll(splitter.flush()); } // Ankündigung sofort sprechen
+      // Gesprochene Ansagen laufen bei ausführenden Befehlen vor der Aktion in announceToolAction.
       if (first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
       broadcast({ type: "delta", text: line });
     }
@@ -555,7 +621,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") {
-      clearInterval(progressTimer);
+      clearInterval(progressTimer); clearTimeout(ackTimer);
       busy = false; broadcast(state());
       if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
         void aiTitle(text, responseText).then(title => setSessionTitle(sid, title ?? topicTitle(`${text} ${responseText}`), true));
@@ -627,25 +693,9 @@ async function rewindMessage(id: string, messageID: string) {
   broadcast({ type: "messages", messages: chatHistory(await sessionMessages(id)) });
 }
 
-// ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
-let streamTab: number | undefined;
-let pinnedTab: number | undefined; // vom Nutzer in der Vorschau gewählter Tab: bleibt, bis er "Automatisch" wählt oder die Vorschau schließt
-let streamTimer: ReturnType<typeof setTimeout> | undefined;
-async function stopStream() {
-  clearTimeout(streamTimer);
-  const t = streamTab; streamTab = undefined;
-  if (t !== undefined) await browser.call({ cmd: "stream_stop", tab: t }, 5000).catch(() => {});
-}
-async function ensureStream(tab: number, manual = false) {
-  if (!manual && (!settings.liveView || pinnedTab !== undefined && pinnedTab !== tab)) return;
-  if (uis.size === 0 || !browser.connected) return;
-  clearTimeout(streamTimer);
-  if (pinnedTab === undefined) streamTimer = setTimeout(stopStream, 12_000); // 12 s nach der letzten Aktion endet die Übertragung
-  if (streamTab === tab) return;
-  if (streamTab !== undefined) await browser.call({ cmd: "stream_stop", tab: streamTab }, 5000).catch(() => {});
-  const r = await browser.call({ cmd: "stream_start", tab }, 8000);
-  streamTab = r.ok ? tab : undefined;
-  if (!r.ok && manual) broadcast({ type: "notice", text: `Tab-Vorschau nicht möglich: ${r.error ?? "unbekannter Fehler"}` });
+// ---------- Live-Ansicht des Ziels, in dem Jarvis gerade arbeitet ----------
+function follow(target: PreviewTarget) {
+  if (settings.liveView && uis.size > 0) preview.work(target);
 }
 /** Tabs der Gruppe "Jarvis" (auch "Jarvis …"-Gruppen) für die Auswahl oben in der Vorschau. */
 async function jarvisTabs() {
@@ -670,23 +720,26 @@ browser.onHello = version => {
   broadcast(state());
 };
 browser.onEvent = m => {
-  if (m.type === "stream_ended" && m.tab === streamTab) streamTab = undefined;
-  if (m.type === "stream_ended" && m.tab === pinnedTab && /geschlossen/i.test(String(m.reason ?? ""))) pinnedTab = undefined;
-  broadcast(m);
+  if (m.type === "stream_ended") preview.ended(m.tab);
+  else if (m.type === "frame" && preview.shows(m.tab)) broadcast(m);
 };
 
 async function stop() {
   stoppedUntil = Date.now() + 1500;
+  preview.clear();
   splitter = undefined;
   clearHolds();
   speech.stopSpeaking();
+  if (lastDesktopPoint && Date.now() - lastDesktopPoint.at < 4000 && capture.available())
+    void capture.call({ cmd: "cursor_hide" }, 3000);
+  lastDesktopPoint = undefined;
   if (session) await brain.abort(session);
   busy = false; broadcast({ type: "stopped" }); broadcast(state());
 }
 
 // Letzte scan-Ergebnisse je Ziel, damit ein Fehler-Screenshot das betroffene Element markieren kann.
-const lastTargets = new Map<string, { id: number; rect: number[] }[]>();
-const targetKey = (target: string, tab: unknown) => target === "browser" ? `browser:${tab}` : "desktop";
+const lastTargets = new Map<string, { id: number; rect: number[]; label?: string }[]>();
+const targetKey = (target: string, id: unknown) => `${target}:${id ?? ""}`;
 
 /** Screenshot des Tabs bzw. Bildschirms, die Stellen in `boxes` (Seiten-/Bildschirmkoordinaten) rot umrandet. */
 async function errorShot(target: string, tab: unknown, boxes: number[][]): Promise<Uint8Array | undefined> {
@@ -714,7 +767,7 @@ async function errorShot(target: string, tab: unknown, boxes: number[][]): Promi
 const NO_SHOT = /nicht verbunden|Computer-Steuerung ist aus|vom Nutzer gestoppt|Passwort/i;
 /** Werkzeugfehler ins Fehler-Log, bei Bildschirmbezug mit Screenshot; markiert wird das Element (id) bzw. der Bereich (rect). */
 async function logToolError(target: string, cmd: Record<string, any>, message: string, opts: { category?: ErrorCategory; source?: string; context?: Record<string, unknown> } = {}) {
-  const el = Number.isInteger(cmd.id) ? lastTargets.get(targetKey(target, cmd.tab))?.find(t => t.id === cmd.id) : undefined;
+  const el = Number.isInteger(cmd.id) ? lastTargets.get(targetKey(target, cmd.tab ?? cmd.window ?? desktopScanWindow))?.find(t => t.id === cmd.id) : undefined;
   const boxes = [el?.rect, Array.isArray(cmd.rect) && cmd.rect.length === 4 ? cmd.rect : undefined].filter(Boolean) as number[][];
   const screenshot = NO_SHOT.test(message) || cmd.cmd === "shot" || cmd.screenshot === false ? undefined : await errorShot(target, cmd.tab, boxes);
   return recordError({ category: opts.category ?? "tool", source: opts.source ?? `${target}/${cmd.cmd}`, message, screenshot,
@@ -723,7 +776,7 @@ async function logToolError(target: string, cmd: Record<string, any>, message: s
 
 async function runTool(target: string, cmd: Record<string, any>) {
   const r: Record<string, any> = await runToolInner(target, cmd).catch(error => ({ ok: false, error: String(error?.message ?? error) }));
-  if (r.ok && cmd.cmd === "scan" && Array.isArray(r.targets)) lastTargets.set(targetKey(target, cmd.tab), r.targets);
+  if (r.ok && cmd.cmd === "scan" && Array.isArray(r.targets)) lastTargets.set(targetKey(target, cmd.tab ?? cmd.window ?? desktopScanWindow), r.targets);
   if (!r.ok && r.error !== "vom Nutzer gestoppt") void logToolError(target, cmd, String(r.error ?? "Werkzeug fehlgeschlagen"));
   return r;
 }
@@ -732,19 +785,23 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
   if (Date.now() < stoppedUntil) return { ok: false, error: "vom Nutzer gestoppt" };
   broadcast({ type: "action", target, cmd: cmd.cmd, detail: cmd.url ?? cmd.id ?? cmd.name ?? "" });
   if (target === "browser") {
-    if (Number.isInteger(cmd.tab)) void ensureStream(cmd.tab);
+    if (!await announceToolAction("browser", cmd)) return { ok: false, error: "vom Nutzer gestoppt" };
+    if (Number.isInteger(cmd.tab) && !["tab_close", "tab_release"].includes(cmd.cmd)) follow(cmd.tab);
     const r = await browser.call(cmd);
-    if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
+    if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) follow(r.tab as number);
     return r;
   }
   if (settings.mode !== "computer" && !["scan", "read", "shot", "displays", "windows"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
+  if (!await announceToolAction("desktop", cmd)) return { ok: false, error: "vom Nutzer gestoppt" };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
     const code = await p.exited;
     return code === 0 ? { ok: true } : { ok: false, error: `Programm „${cmd.name}“ nicht geöffnet (Exit-Code ${code})` };
   }
-  if (Number.isInteger(cmd.window)) void ensureWindowStream(cmd.window);
+  const window = Number.isInteger(cmd.window) ? cmd.window as number
+    : cmd.cmd === "scan" ? undefined : desktopScanWindow;
+  if (window !== undefined && !["windows", "displays"].includes(cmd.cmd)) follow(`win:${window}`);
   // Fensterbild über den Aufnahme-Dienst (auch verdeckt); geht das nicht, macht uimap ein Bild des sichtbaren Bereichs
   if (cmd.cmd === "shot" && Number.isInteger(cmd.window) && !cmd.marks && capture.available()) {
     const r = await capture.call({ cmd: "windowshot", window: cmd.window });
@@ -752,58 +809,80 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
     vlog(`Aufnahme-Dienst: ${r.error}`);
   }
   const r = await desktop.call(cmd);
-  if (Array.isArray(r.point)) { lastDesktopPoint = r.point as [number, number]; if (streamWin !== undefined) void capture.call({ cmd: "cursor", point: r.point }); }
+  if (Array.isArray(r.point)) {
+    lastDesktopPoint = { window, point: r.point as [number, number], at: Date.now() };
+    // violetter Jarvis-Zeiger im ECHTEN Fenster (Overlay im Aufnahme-Dienst) und im Live-Bild
+    if (capture.available()) void capture.call({ cmd: "cursor", point: r.point, click: cmd.cmd === "click" }, 3000);
+  }
+  if (cmd.cmd === "scan") desktopScanWindow = r.ok ? window : undefined;
   return r;
 }
 
 // ---------- Live-Bild eines Fensters, das Jarvis bedient (Aufnahme-Dienst, virtuelle Maus) ----------
 const capture = new Capture();
-let streamWin: number | undefined;
-let streamWinTimer: ReturnType<typeof setTimeout> | undefined;
-let lastDesktopPoint: [number, number] | undefined;
-capture.onEvent = m => {
-  if (m.event === "frame") broadcast({ type: "frame", tab: `win:${m.window}`, data: m.data, w: m.w, h: m.h, bounds: m.bounds,
-    title: m.title ? `${m.app} – ${m.title}` : m.app, url: "", cursor: lastDesktopPoint });
-  else if (m.event === "stream_ended") { if (m.window === streamWin) streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${m.window}` }); }
-};
-let pinnedWin: number | undefined;   // vom Nutzer in der Vorschau gewähltes Fenster
+let desktopScanWindow: number | undefined;
+let lastDesktopPoint: { window?: number; point: [number, number]; at: number } | undefined;
 let lowFpsNoticeAt = 0;
-async function stopWindowStream() {
-  clearTimeout(streamWinTimer);
-  if (streamWin === undefined) return;
-  streamWin = undefined;
-  await capture.call({ cmd: "stream_stop" }, 4000).catch(() => {});
+let windowCaptureRun = 0;
+
+function windowFrame(win: number, m: Record<string, any>) {
+  if (!preview.shows(`win:${win}`)) return;
+  const cursor = lastDesktopPoint?.window === win && Date.now() - lastDesktopPoint.at < 4000 ? lastDesktopPoint.point : undefined;
+  broadcast({ type: "frame", tab: `win:${win}`, data: m.data, w: m.w, h: m.h, bounds: m.bounds,
+    title: m.title ? `${m.app} – ${m.title}` : m.app, url: "", cursor });
 }
-/** Rückfall ohne Bildschirmaufnahme-Freigabe: Einzelbilder des sichtbaren Fensterbereichs über uimap (ca. 4–6 Bilder/s). */
-async function windowFallbackLoop(win: number) {
-  while (streamWin === win && uis.size > 0) {
-    const f: any = await desktop.call({ cmd: "framejpeg", window: win, maxWidth: 1280 }, 6000);
-    if (streamWin !== win) break;
-    if (!f.ok) { vlog(`Fenster-Vorschau (Rückfall) beendet: ${f.error}`); streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${win}` }); break; }
-    broadcast({ type: "frame", tab: `win:${win}`, data: f.data, w: f.w, h: f.h, bounds: f.bounds,
-      title: f.title ? `${f.app} – ${f.title}` : f.app, url: "", cursor: lastDesktopPoint });
+capture.onEvent = m => {
+  if (m.event === "frame") windowFrame(m.window, m);
+  else if (m.event === "stream_ended") preview.ended(`win:${m.window}`);
+};
+
+/** Rückfall ohne Bildschirmaufnahme-Freigabe: Einzelbilder des sichtbaren Fensterbereichs über uimap. */
+async function windowFallbackLoop(win: number, run: number) {
+  const target = `win:${win}` as const;
+  const running = () => windowCaptureRun === run && preview.active === target;
+  while (running()) {
+    const frame = await desktop.call({ cmd: "framejpeg", window: win, maxWidth: 1280 }, 6000).catch(() => undefined);
+    if (!running()) return;
+    if (!frame?.ok) {
+      vlog(`Fenster-Vorschau (Rückfall) beendet: ${frame?.error ?? "keine Antwort"}`);
+      if (preview.pinned === target) broadcast({ type: "notice", text: "Fenster-Vorschau nicht verfügbar." });
+      preview.ended(target);
+      return;
+    }
+    windowFrame(win, frame);
     await Bun.sleep(80);
   }
 }
-async function ensureWindowStream(win: number, manual = false) {
-  if (!manual && (!settings.liveView || (pinnedWin !== undefined && pinnedWin !== win))) return;
-  if (uis.size === 0) return;
-  clearTimeout(streamWinTimer);
-  if (pinnedWin === undefined) streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000);  // 20 s nach der letzten Aktion
-  if (streamWin === win) return;
-  await stopWindowStream();
-  await stopStream();   // ein Live-Bild zur Zeit: Browser-Tab-Übertragung beenden
-  lastDesktopPoint = undefined;
-  const r = capture.available() ? await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000) : { ok: false, error: "kein Aufnahme-Dienst" };
-  streamWin = win;
-  if (r.ok) return;
-  vlog(`Fenster-Live-Bild über den Aufnahme-Dienst nicht möglich (${r.error}) – Rückfall auf Einzelbilder`);
-  if (/TCC|abgelehnt|Freigabe/i.test(String(r.error)) && Date.now() - lowFpsNoticeAt > 10 * 60_000) {
-    lowFpsNoticeAt = Date.now();
-    broadcast({ type: "notice", text: "Fenster-Vorschau im Sparmodus (nur sichtbare Fenster, ruckelig). Für das flüssige Bild „Jarvis Bildschirm“ unter Bildschirmaufnahme erlauben." });
-  }
-  void windowFallbackLoop(win);
-}
+
+const preview = new Preview({
+  async start(target) {
+    if (typeof target === "number") {
+      const r = await browser.call({ cmd: "stream_start", tab: target }, 8000);
+      if (!r.ok && preview.pinned === target) broadcast({ type: "notice", text: `Tab-Vorschau nicht möglich: ${r.error ?? "unbekannter Fehler"}` });
+      return r.ok;
+    }
+    const win = Number(target.slice(4));
+    const r = capture.available() ? await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000)
+      : { ok: false, error: "kein Aufnahme-Dienst" };
+    if (!r.ok) {
+      vlog(`Fenster-Live-Bild über den Aufnahme-Dienst nicht möglich (${r.error}) – Rückfall auf Einzelbilder`);
+      if (/TCC|abgelehnt|Freigabe/i.test(String(r.error)) && Date.now() - lowFpsNoticeAt > 10 * 60_000) {
+        lowFpsNoticeAt = Date.now();
+        broadcast({ type: "notice", text: "Für ein flüssiges Fensterbild „Jarvis Bildschirm“ unter Bildschirmaufnahme erlauben." });
+      }
+      void windowFallbackLoop(win, ++windowCaptureRun);
+    }
+    return true;
+  },
+  async stop(target) {
+    if (typeof target === "number") await browser.call({ cmd: "stream_stop", tab: target }, 5000);
+    else {
+      windowCaptureRun++;
+      if (capture.available()) await capture.call({ cmd: "stream_stop" }, 4000);
+    }
+  },
+  idle: () => broadcast({ type: "viewer_idle" }),
+});
 /** Fenster für die Auswahl oben in der Vorschau */
 async function previewWindows() {
   const r: any = await desktop.call({ cmd: "windows" }, 5000).catch(() => ({}));
@@ -834,11 +913,15 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       }
     },
     close(ws) {
-      if (ws.data.kind === "browser") { browser.detach(ws); broadcast(state()); }
+      if (ws.data.kind === "browser") {
+        browser.detach(ws);
+        if (!browser.connected && typeof preview.active === "number") preview.ended(preview.active);
+        broadcast(state());
+      }
       else {
         vlog(`ui #${uiId(ws)} close`);
         uis.delete(ws);
-        if (uis.size === 0) { pinnedTab = undefined; void stopStream(); }
+        if (uis.size === 0) preview.clear();
         // Wer Live gestartet hat und die Verbindung verliert, beendet es. Das gilt auch, wenn andere UIs noch offen sind.
         if (voiceOwner === ws) { vlog(`voice-owner ui #${uiId(ws)} weg -> off`); setVoice("off"); }
         // Keine Oberfläche mehr offen: Mikrofon zu, nichts mehr sprechen.
@@ -948,19 +1031,18 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() });
         broadcast(state());
       }
-      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; pinnedWin = undefined; await stopStream(); await stopWindowStream(); } broadcast(state()); }
-      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
-      else if (msg.type === "viewer_window") { // Nutzer wählt ein Programmfenster für die Vorschau
-        pinnedTab = undefined;
-        if (Number.isInteger(msg.window)) { pinnedWin = msg.window; await ensureWindowStream(msg.window, true); }
-        else { pinnedWin = undefined; await stopWindowStream(); }
+      else if (msg.type === "liveview") {
+        settings.liveView = !!msg.on;
+        save();
+        if (!settings.liveView) preview.clear();
+        broadcast(state());
       }
-      else if (msg.type === "viewer_tab") {
-        // Nutzer wählt einen Tab (Zahl) oder "Automatisch" (null: Jarvis' aktuellem Tab folgen)
-        if (Number.isInteger(msg.tab)) { pinnedWin = undefined; await stopWindowStream(); pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
-        else { pinnedTab = undefined; pinnedWin = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); clearTimeout(streamWinTimer); streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000); }
-        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
+      else if (msg.type === "tabs") {
+        const [tabs, windows] = await Promise.all([jarvisTabs(), previewWindows()]);
+        ws.send(JSON.stringify({ type: "tabs", tabs, windows, pinned: preview.pinned ?? null }));
       }
+      else if (msg.type === "viewer_tab" && settings.liveView) preview.pin(Number.isInteger(msg.tab) ? msg.tab : undefined);
+      else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
