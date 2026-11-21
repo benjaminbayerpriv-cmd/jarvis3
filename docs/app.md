@@ -22,6 +22,9 @@ Aufteilung: **Hülle** = `app/src-tauri` (Rust, Codex). **Oberfläche** = `app/u
 - Einstellung `micDevice` in `~/.jarvis3/settings.json` (PortAudio-Geräte-ID oder `null` = Systemstandard). Die UI bietet dafür eine Auswahl unter „Einstellungen → Mikrofon“ (mehrfach gelistete Geräte werden mit `#ID` unterschieden) und schickt `{type:"settings", settings:{micDevice:…}}`. Der Daemon leitet das als `{type:"config", input:…}` an den Sidecar weiter; ein Wechsel während des Live-Modus übernimmt sofort. Verschwindet die ID (z. B. nach Neustart), fällt der Daemon beim `ready`-Event auf den Systemstandard zurück.
 - `voice:off` wirkt nur von der Oberfläche, die den Live-Modus auch gestartet hat (`voiceOwner` im Daemon). Andere verbundene UIs oder alte Registerkarten können ein Gespräch nicht mehr beenden. Verliert der Besitzer die Verbindung, schaltet jarvisd selbst auf `off`.
 
+## Sprach-Animation im Eingabefeld
+Im Live-Modus und beim Diktat klappt das Eingabefeld nach oben auf (`#voice`, `composer[data-voice="live"|"dictate"|"off"]`). Oben steht der erkannte Text (im Live-Modus bei Jarvis' Antwort dessen Text), darunter eine Canvas mit Wellen: blau = Mikrofon, rosa = Ausgabe von Jarvis. Die Amplitude folgt dem echten Pegel der `level`-Ereignisse des Sidecars (`mic`/`out`); ohne Ereignisse bleibt eine ruhige Grundbewegung, stumm = flache Linie. Im Ruhezustand ist der Bereich eingeklappt. Fehler der Animation landen als `ui`-Eintrag im Fehler-Log. Die frühere Vollbild-Ansicht entfällt.
+
 ## jarvisd-Endpunkte für die Hülle
 - `GET /health` → `{ok, opencode, browser}`
 - `POST /stop` → Not-Aus (bricht Modell ab, sperrt Werkzeuge kurz, stoppt Sprache)
