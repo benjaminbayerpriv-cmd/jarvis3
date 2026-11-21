@@ -1071,14 +1071,26 @@ const BUILTIN_COMMANDS = [
 ];
 async function commandList() {
   const oc: any[] = (await ocGet("/command")) ?? [];
-  const items = oc.filter(c => !["init", "review"].includes(c.name) || true).map(c => ({ name: c.name, description: String(c.description ?? "").slice(0, 160), source: c.source === "skill" ? "skill" : "command", hint: c.hints?.length ? "Argumente" : undefined }));
+  const disabled = loadStore().disabledSkills;
+  const items = oc.filter(c => c.source !== "skill" || !disabled.includes(c.name)).map(c => ({ name: c.name, description: String(c.description ?? "").slice(0, 160), source: c.source === "skill" ? "skill" : "command", hint: c.hints?.length ? "Argumente" : undefined }));
   return [...BUILTIN_COMMANDS.map(c => ({ ...c, source: "builtin" })), ...items];
 }
 async function extensionState() {
   const store = loadStore();
   const status: Record<string, any> = (await ocGet("/mcp")) ?? {};
-  const mcp = [{ name: "jarvis", builtin: true, type: "local", detail: "Browser- und Desktop-Werkzeuge (eingebaut)", enabled: true, source: "Jarvis", status: status.jarvis?.status ?? "?" },
-    ...Object.entries(store.mcp).map(([name, e]) => ({ name, builtin: false, type: e.type, detail: mcpSummary(e), enabled: e.enabled, source: e.source, status: status[name]?.status ?? (e.enabled ? "unbekannt" : "disabled"), error: status[name]?.error }))];
+  const configured = (await ocGet("/config"))?.mcp ?? {};
+  const definitions: Record<string, any> = { ...BASE_OPENCODE_CONFIG.mcp, ...configured };
+  const names = new Set([...Object.keys(definitions), ...Object.keys(status), ...Object.keys(store.mcp)]);
+  const mcp = [...names].map(name => {
+    const builtin = name === "jarvis";
+    const managed = !builtin && Object.hasOwn(store.mcp, name);
+    const definition = definitions[name];
+    const enabled = managed ? store.mcp[name].enabled
+      : store.mcpOverrides?.[name] ?? (definition?.enabled !== false && status[name]?.status !== "disabled");
+    return { name, builtin, managed, enabled, type: (managed ? store.mcp[name] : definition)?.type ?? "local",
+      detail: builtin ? "Browser- und Desktop-Werkzeuge" : managed ? mcpSummary(store.mcp[name]) : "Aus OpenCode",
+      status: enabled ? status[name]?.status ?? "unbekannt" : "disabled", error: enabled ? status[name]?.error : undefined };
+  });
   const skillList: any[] = (await ocGet("/skill")) ?? [];
   const skills = skillList.map(sk => ({ name: sk.name, description: String(sk.description ?? "").slice(0, 200), source: skillSource(String(sk.location ?? "")), disabled: store.disabledSkills.includes(sk.name) }));
   for (const n of store.disabledSkills) if (!skills.some(x => x.name === n)) skills.push({ name: n, description: "(gesperrt)", source: "Jarvis", disabled: true });
@@ -1088,7 +1100,8 @@ async function extensionState() {
 /** Konfiguration neu schreiben und OpenCode neu laden (Befehle, Skills, MCP, Plugins). */
 async function reloadExtensions() {
   writeWorkspace(workspace, BASE_OPENCODE_CONFIG);
-  await fetch(`${brain.url}/instance/dispose`, { method: "POST" }).catch(() => {});
+  const response = await fetch(`${brain.url}/instance/dispose`, { method: "POST" });
+  if (!response.ok) throw new Error(`OpenCode konnte Erweiterungen nicht neu laden (${response.status}).`);
   await Bun.sleep(600);
   for (let i = 0; i < 20 && !(await brain.healthy()); i++) await Bun.sleep(250);
 }
@@ -1106,15 +1119,28 @@ async function extensionMessage(msg: any): Promise<any> {
   }
   if (msg.type === "ext_mcp") {
     const name = String(msg.name ?? "").trim();
-    if (msg.op === "remove") delete store.mcp[name];
-    else if (msg.op === "toggle" && store.mcp[name]) store.mcp[name].enabled = !!msg.enabled;
+    if (msg.op === "remove" && name !== "jarvis" && Object.hasOwn(store.mcp, name)) delete store.mcp[name];
+    else if (msg.op === "toggle" && typeof msg.enabled === "boolean") {
+      if (name !== "jarvis" && Object.hasOwn(store.mcp, name)) store.mcp[name].enabled = msg.enabled;
+      else {
+        const configured = (await ocGet("/config"))?.mcp;
+        if (name !== "jarvis" && !Object.hasOwn(configured ?? {}, name))
+          return { type: "error", message: "Dieser MCP-Server ist in OpenCode nicht konfiguriert." };
+        const latest = loadStore();
+        latest.mcpOverrides = { ...latest.mcpOverrides, [name]: msg.enabled };
+        saveStore(latest); await reloadExtensions();
+        return await extensionState();
+      }
+    }
     else if (msg.op === "add") {
       const raw = msg.entry ?? {};
       const entry: McpEntry | undefined = raw.url
         ? { type: "remote", url: String(raw.url), headers: raw.headers, enabled: true, source: "manual" }
         : String(raw.command ?? "").trim() ? { type: "local", command: String(raw.command).trim().split(/\s+/), environment: raw.environment, enabled: true, source: "manual" } : undefined;
       if (!name || !entry) return { type: "error", message: "MCP-Server braucht einen Namen und einen Befehl oder eine URL." };
-      store.mcp[name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")] = entry;
+      const key = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      if (key === "jarvis") return { type: "error", message: "Der Name „jarvis“ gehört zum eingebauten MCP-Server." };
+      store.mcp[key] = entry;
     }
     saveStore(store); await reloadExtensions();
     return await extensionState();
@@ -1403,12 +1429,24 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "commands") ws.send(JSON.stringify({ type: "commands", items: await commandList() }));
       else if (msg.type === "ext_list") ws.send(JSON.stringify(await extensionState()));
-      else if (typeof msg.type === "string" && msg.type.startsWith("ext_")) ws.send(JSON.stringify(await extensionMessage(msg)));
+      else if (typeof msg.type === "string" && msg.type.startsWith("ext_")) {
+        try {
+          ws.send(JSON.stringify(await extensionMessage(msg)));
+          if (msg.type === "ext_skill" || msg.type === "ext_import")
+            broadcast({ type: "commands", items: await commandList() });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ws.send(JSON.stringify({ type: "notice", text: message }));
+          ws.send(JSON.stringify(await extensionState()));
+        }
+      }
       else if (msg.type === "run_command") {
         // Schrägstrich-Befehl oder Skill: Vorlage mit Argumenten füllen und wie eine Nachricht senden
         const name = String(msg.name ?? ""), args = String(msg.args ?? "");
         const found = ((await ocGet("/command")) as any[] | undefined)?.find(c => c.name === name);
         if (!found) ws.send(JSON.stringify({ type: "error", message: `Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.` }));
+        else if (found.source === "skill" && loadStore().disabledSkills.includes(name))
+          ws.send(JSON.stringify({ type: "notice", text: `Der Skill „${name}“ ist deaktiviert.` }));
         else {
           const prompt = found.source === "skill"
             ? `Nutze den Skill „${name}“ für diese Aufgabe.${args.trim() ? `\n\nAufgabe: ${args.trim()}` : ""}\n\n${expandTemplate(String(found.template ?? ""), args)}`
