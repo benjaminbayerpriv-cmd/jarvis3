@@ -700,3 +700,15 @@ body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); left: 0; }
 
 /* Live-Modus: Vorschau-Knopf zeigt an, ob die Tab-Vorschau offen ist */
 .round-btn[aria-pressed="true"] { background: var(--primary-container); color: var(--on-primary-container); }
+
+/* ---------- Buchstaben unscharf einblenden (Live-Untertitel, Diktat) ---------- */
+.bt.in { animation: bt-in 420ms var(--ease) both; }
+@keyframes bt-in { from { opacity: 0; filter: blur(8px); transform: translateY(3px); } to { opacity: 1; filter: blur(0); transform: none; } }
+@media (prefers-reduced-motion: reduce) { .bt.in { animation: none; } }
+.ta-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+.ta-wrap textarea { flex: 1; min-width: 0; }
+/* Beim Diktieren zeigt eine Spiegel-Ebene den Text (mit Einblend-Effekt), das Textfeld darunter behält nur den Cursor */
+.ta-mirror { display: none; position: absolute; inset: 0; overflow: hidden; pointer-events: none; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 400 17px/24px var(--font); font-variation-settings: "wdth" 92; padding: 8px 4px; color: var(--on-surface); }
+.composer[data-voice="dictate"] .ta-mirror { display: block; }
+.composer[data-voice="dictate"] textarea { color: transparent; caret-color: var(--on-surface); }

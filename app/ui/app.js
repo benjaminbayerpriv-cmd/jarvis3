@@ -3,6 +3,7 @@ import { TABLER as BASE } from "./tabler.js";
 import { CUSTOM } from "./icons-custom.js";
 const TABLER = { ...BASE, ...CUSTOM };
 import { renderMarkdown } from "./markdown.js";
+import { BlurText } from "./blurtext.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = (location.protocol.startsWith("http") && location.port === "7777") ? location.host : "127.0.0.1:7777";
@@ -65,6 +66,7 @@ function handle(m) {
     case "notice": showNotice(m.text); break;
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
+    case "spoken": if (live.on) liveSpoken(m.text); break;
     case "tabs": viewerTabsMessage(m); break;
     case "stream_ended": viewer.dataset.idle = "1"; viewerGotFrame = false; send({ type: "tabs" }); break;
     case "error": showError(m.message); break;
@@ -160,7 +162,6 @@ function appendText(t) {
       stickToBottom();
     }, 33);
   }
-  if (live.on) liveCaption(current.text, false);
 }
 function paintText(b) {
   const before = b.el.children.length;
@@ -332,7 +333,7 @@ function updateSend() {
   $("#liveBtn").hidden = has || dictating || state.busy;
 }
 input.addEventListener("input", () => {
-  if (dictating) dictBase = input.value;   // eigene Änderungen während des Diktierens bleiben erhalten
+  if (dictating) { dictBase = input.value; taMirror.set(input.value, { animate: false }); }   // eigene Änderungen während des Diktierens bleiben erhalten
   const was = !$("#send").hidden;
   autosize(); updateSend();
   if (!was && !$("#send").hidden) { const c = $("#composer"); c.classList.remove("pulse"); void c.offsetWidth; c.classList.add("pulse"); }
@@ -439,13 +440,17 @@ input.addEventListener("paste", e => {
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
 let dictBase = "";   // bereits fertig diktierter Text; jeder neue Satz wird angehängt statt das Feld zu überschreiben
 const dictJoin = t => dictBase && t ? dictBase + (/\s$/.test(dictBase) ? "" : " ") + t : dictBase || t;
+const taMirror = new BlurText($("#taMirror"));   // zeigt den diktierten Text mit Einblend-Effekt (nur während des Diktierens sichtbar)
+const syncMirrorScroll = () => { $("#taMirror").style.transform = `translateY(${-input.scrollTop}px)`; };
+input.addEventListener("scroll", syncMirrorScroll);
 function dictShow(t) {
   if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
   input.value = dictJoin(t); autosize(); updateSend();
+  taMirror.set(input.value); syncMirrorScroll();
 }
 $("#dictate").onclick = () => {
   dictating = !dictating;
-  if (dictating) dictBase = input.value;
+  if (dictating) { dictBase = input.value; taMirror.set(input.value, { animate: false }); }
   $("#dictate").classList.toggle("rec", dictating);
   $("#dictate").innerHTML = icon(dictating ? "player-stop-filled" : "microphone");
   $("#dictate").setAttribute("aria-label", dictating ? "Diktat beenden" : "Diktieren");
@@ -964,12 +969,41 @@ function setVoiceUi(mode) { // "off" | "dictate"
   voiceEl.setAttribute("aria-hidden", String(mode === "off"));
   if (mode === "dictate") startWaves(); else stopWaves();
 }
+// Live-Untertitel: zeigt, was der Nutzer gerade sagt, und von Jarvis nur das, was schon gesprochen wird (Satz für Satz, im
+// Sprechtempo). Jeder neue Buchstabe erscheint unscharf und wird scharf (BlurText).
+const liveBT = new BlurText($("#liveCaption"));
+let spokenText = "", spokenCut = 0, revealQ = "", revealTimer = 0, spokenActive = false;
+function revealStop() { clearInterval(revealTimer); revealTimer = 0; revealQ = ""; spokenText = ""; spokenCut = 0; spokenActive = false; }
 function liveCaption(text, user) {
+  revealStop();
   const c = $("#liveCaption");
-  const words = text.trim().split(/\s+/);
-  c.textContent = words.slice(-40).join(" ") || "Ich höre zu …";
+  const words = text.trim().split(/\s+/).filter(Boolean);
   c.classList.toggle("user", !!user);
+  liveBT.set(words.length ? words.slice(-40).join(" ") : "Ich höre zu …", { animate: words.length > 0 });
 }
+function showSpoken() {
+  let view = spokenText.slice(spokenCut);
+  if (view.length > 260) { // alte Sätze vorn abschneiden (ohne Animation), damit der Text nicht endlos wächst
+    const m = /[.!?…]\s+/.exec(view.slice(40));
+    if (m) { spokenCut += 40 + m.index + m[0].length; view = spokenText.slice(spokenCut); liveBT.set(view, { animate: false }); return; }
+  }
+  liveBT.set(view);
+}
+function liveSpoken(sentence) {
+  const c = $("#liveCaption");
+  c.classList.remove("user");
+  if (!spokenActive) { liveBT.set("", { animate: false }); spokenText = ""; spokenCut = 0; revealQ = ""; spokenActive = true; }
+  const add = sentence.trim();
+  if (!add) return;
+  revealQ += (spokenText || revealQ ? " " : "") + add;
+  if (revealTimer) return;
+  revealTimer = setInterval(() => {   // ~20 Zeichen/s, bei Rückstau schneller
+    if (!revealQ) { clearInterval(revealTimer); revealTimer = 0; return; }
+    const n = revealQ.length > 140 ? 4 : revealQ.length > 70 ? 2 : 1;
+    spokenText += revealQ.slice(0, n); revealQ = revealQ.slice(n); showSpoken();
+  }, 48);
+}
+function flushSpoken() { if (revealQ) { spokenText += revealQ; revealQ = ""; showSpoken(); } }  // Satz ist zu Ende gesprochen: Rest sofort zeigen
 function openLive() {
   if (live.on) return;
   if (dictating) $("#dictate").click();
@@ -1070,7 +1104,7 @@ function speechEvent(m) {
       else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
     case "say_start": liveEl.dataset.state = "speaking"; break;
-    case "say_end": liveEl.dataset.state = "listening"; break;
+    case "say_end": liveEl.dataset.state = "listening"; flushSpoken(); break;
   }
 }
 

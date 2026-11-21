@@ -106,6 +106,7 @@ let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined;
 const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
   if (e.type === "level") micPeak = Math.max(micPeak, Number(e.mic) || 0);
+  if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
