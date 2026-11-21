@@ -30,7 +30,7 @@ PLIST
 # Feste Signatur: macOS bindet die Bildschirmaufnahme-Freigabe an die Signatur. Mit dem lokalen Zertifikat "Jarvis Local Code Signing"
 # (falls bereits im Schlüsselbund vorhanden) bleibt die Freigabe auch nach einem Neubau gültig; ohne Zertifikat ad-hoc (Freigabe danach neu setzen).
 IDENTITY="Jarvis Local Code Signing"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
   codesign --force --sign "$IDENTITY" --identifier de.jarvis3.bildschirm "$APP" >/dev/null 2>&1 || codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 else
   codesign --force --sign - "$APP" >/dev/null 2>&1 || true
