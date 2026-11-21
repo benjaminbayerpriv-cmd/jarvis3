@@ -594,6 +594,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     : "";
   const prompt = clickContext ? `${text}\n\nDer damit gemeinte vorherige Auftrag war: ${clickContext}`
     : text || (attachmentText || images.length ? "Sieh dir die angehängten Dateien an." : "");
+  try {
   await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
     // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
     // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
@@ -692,6 +693,16 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (!spoken && !click) broadcast({ type: "reasoning", text: e.delta });
     } else broadcast({ type: e.kind, ...e });
   }, images, attachmentText);
+  } catch (error) {
+    // Schlägt schon das Absenden fehl (OpenCode nicht erreichbar), käme nie ein „done“: ohne Rücksetzen bliebe busy für immer true
+    // und die Oberfläche zeigte im Leerlauf dauerhaft Stopp.
+    clearTimeout(ackTimer);
+    finished = true;
+    busy = false;
+    if (activeTurn === turn) activeTurn = undefined;
+    broadcast(state());
+    throw error;
+  }
 }
 
 /** Kurzer Chat-Titel vom schnellen Gratis-Modell (2–5 Wörter); null, wenn das Modell nichts Brauchbares liefert. */
