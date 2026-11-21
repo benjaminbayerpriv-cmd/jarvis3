@@ -350,10 +350,29 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       recordError({ category: "tool", source: `opencode/${e.name}`, message: e.error ?? "Werkzeug fehlgeschlagen",
         context: { tool: e.name, input: e.input, model, request: text, mode: settings.mode } });
     if (e.kind === "text") { textSeen = true; responseText += e.delta; }
-    // Stiller Datenverlust sichtbar machen: Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an
-    if (e.kind === "done" && !e.aborted && !textSeen && !toolSeen)
+    // Sitzung existiert nicht mehr (z. B. in OpenCode gelöscht): neue Sitzung anlegen und einmal erneut senden
+    if (e.kind === "error" && /Session not found|NotFoundError/i.test(e.message) && !tried.includes("__session")) {
+      switching = true;
+      if (!fresh) session = undefined;
+      brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, model, spoken, [...tried, "__session"], fresh); });
+      return;
+    }
+    // Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an: bis zu zweimal automatisch neu versuchen
+    // (erst dasselbe Modell, dann ein anderes), damit Jarvis nie wortlos aufhört
+    if (e.kind === "done" && !e.aborted && !textSeen && !toolSeen) {
+      const attempts = tried.filter(t => t !== "__session").length;
+      if (attempts < 2) {
+        switching = true;
+        const alt = attempts === 0 ? model : (nextModel([...tried, model]) ?? model);
+        vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
+        broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal." });
+        brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh); });
+        return;
+      }
       recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
         context: { model, request: text, mode: settings.mode, spoken, voice, session: sid, tried } });
+      broadcast({ type: "error", message: "Jarvis hat nicht geantwortet. Bitte sag es noch einmal oder wähle ein anderes Modell." });
+    }
     // Modelle, die wortlos loslegen: eine passende Ankündigung ergänzen (wie bei einem guten Assistenten)
     if (e.kind === "tool" && !textSeen && !announced && e.status !== "pending") {
       announced = true;

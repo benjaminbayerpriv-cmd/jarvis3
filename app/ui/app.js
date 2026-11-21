@@ -681,10 +681,10 @@ function hideViewer() { clearTimeout(viewerTimer); viewer.hidden = true; }
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
 $("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView === false });
 // Breite per Griff ziehen (wird gemerkt)
-try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) viewer.style.setProperty("--viewer-w", w + "px"); } catch {}
+try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) document.documentElement.style.setProperty("--viewer-w", w + "px"); } catch {}
 $("#viewerGrip").addEventListener("pointerdown", e => {
   const grip = e.currentTarget; grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); viewer.style.animation = "none";
-  const move = ev => { const w = Math.round(Math.min(innerWidth - 420, Math.max(360, innerWidth - ev.clientX))); viewer.style.setProperty("--viewer-w", w + "px"); viewer.dataset.w = w; };
+  const move = ev => { const w = Math.round(Math.min(innerWidth - 420, Math.max(360, innerWidth - ev.clientX))); document.documentElement.style.setProperty("--viewer-w", w + "px"); viewer.dataset.w = w; };
   const up = () => { grip.classList.remove("drag"); grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
     try { if (viewer.dataset.w) localStorage.setItem("jarvis.viewerW", viewer.dataset.w); } catch {} };
   grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
