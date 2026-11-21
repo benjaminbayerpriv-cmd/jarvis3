@@ -641,3 +641,19 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .ex-menu button { width: 100%; min-height: 36px; padding: 0 12px; border-radius: 8px; text-align: left; font-size: 14px; color: var(--on-surface); }
 .ex-menu button:hover { background: var(--state-hover); }
 @media (max-width: 760px) { .ex-body { grid-template-columns: 1fr; } .ex-tree { display: none; } .ex-cols, .ex-row { grid-template-columns: minmax(0, 1fr) 90px; } .ex-cols span:nth-child(3), .ex-date { display: none; } }
+
+/* Projekt-Zeile: Name und Menü in EINER Zeile (Menü rechts), wie bei Chats */
+.folder-head { display: flex; align-items: center; gap: 2px; height: 36px; padding-right: 4px; border-radius: var(--r-full); }
+.folder-head:hover { background: var(--state-hover); }
+.folder-head .folder-toggle { flex: 1; min-width: 0; height: 36px; background: transparent; padding: 0 8px 0 12px; }
+.folder-head .folder-toggle:hover { background: transparent; }
+.folder-head .folder-toggle span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-head .folder-toggle svg { width: 22px; height: 22px; flex: none; }
+.folder-head .history-menu-toggle { opacity: 0; }
+.folder-head:hover .history-menu-toggle, .folder-head:focus-within .history-menu-toggle, .history-menu-toggle[aria-expanded="true"] { opacity: 1; }
+
+/* Menü-Symbol (Chats): nur sichtbar, solange die Maus auf der Zeile ist (oder per Tastatur fokussiert / Menü offen) */
+.history li.history-chat:not(.folder-chat) .history-menu-toggle { opacity: 0; transition: opacity var(--d-s3) linear; }
+.history li.history-chat:not(.folder-chat):hover .history-menu-toggle,
+.history li.history-chat:not(.folder-chat):focus-within .history-menu-toggle,
+.history li.history-chat:not(.folder-chat) .history-menu-toggle[aria-expanded="true"] { opacity: 1; }

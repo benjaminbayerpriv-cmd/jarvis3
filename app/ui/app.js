@@ -21,7 +21,7 @@ const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").for
 paintIcons();
 
 // ---------- Zustand ----------
-const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", lofi: false, micDevice: null, devices: null };
+const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", micDevice: null, devices: null };
 let current = null;        // aktuelle Jarvis-Antwort {el, text, started}
 let currentSession = null;
 let historySessions = [];
@@ -86,7 +86,6 @@ function renderState() {
   pill.classList.toggle("stale", !!state.extStale);
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
-  $("#setLofi").setAttribute("aria-checked", String(!!state.lofi));
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
   if (state.liveView === false) hideViewer();
   $("#stop").hidden = !state.busy;
@@ -259,7 +258,7 @@ function finishTurn(note) {
   el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
     .filter(Boolean).join(" · ");
   current = null;
-  send({ type: "history" });
+  send({ type: "history" }); send({ type: "projects" });
 }
 function showNotice(text) {
   if (!current) startJarvis();
@@ -506,11 +505,12 @@ function renderHistory(list = []) {
     menuToggle.title = "Projektaktionen"; menuToggle.setAttribute("aria-label", `Aktionen für Projekt ${name}`); menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
     const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
     const action = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
-    action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name));
+    action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name, name));
     action("Verschieben", icon("folder"), () => showChatAction("move-folder", "", name));
     action("Löschen", icon("trash"), () => showChatAction("delete-folder", "", name));
     menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
-    menu.append(menuToggle, actions); row.append(toggle, menu);
+    menu.append(menuToggle, actions);
+    const head = document.createElement("div"); head.className = "folder-head"; head.append(toggle, menu); row.append(head);
     if (!isFolderCollapsed) {
       const children = document.createElement("ul"); children.className = "folder-children";
       visible.filter(s => s.folder === name).forEach(s => appendChat(s, children));
@@ -600,7 +600,7 @@ function exProjectRow(p) {
   li.querySelector(".ex-acts").append(
     exBtn("edit", "Umbenennen", () => exRename(li, p.name, name => projectAction({ op: "update", id: p.id, patch: { name } }))),
     exBtn("move", "Verschieben", b => exMoveMenu(b, to => projectAction({ op: "update", id: p.id, patch: { parentId: to } }), descendants(p.id))),
-    exBtn("trash", "Löschen", () => { if (confirm(`Projekt „${p.name}“ samt Unterprojekten löschen? Die Chats bleiben erhalten.`)) { if (exSel && descendants(p.id).has(exSel)) exSel = p.parentId ?? null; projectAction({ op: "delete", id: p.id }); } }));
+    exBtn("trash", "Löschen", () => showChatAction("delete-folder", "", projectLabel(p.id))));
   return li;
 }
 function exChatRow(c) {
@@ -700,7 +700,6 @@ $("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView ===
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
 $("#modeSwitch").onclick = toggleMode;
 $("#setComputer").onclick = toggleMode;
-$("#setLofi").onclick = () => send({ type: "settings", settings: { lofi: !state.lofi } });
 
 // ---------- Modellwahl ----------
 const GROUPS = { free: "Kostenlos (OpenCode)", lmstudio: "Lokal (LM Studio)", nvidia: "NVIDIA", other: "Weitere" };
@@ -727,16 +726,21 @@ $(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !
 $("#newFolder").onclick = () => { setRail(true); showChatAction("folder"); };
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
-  const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?" };
+  const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?",
+    "rename-folder": "Projekt umbenennen", "move-folder": "Projekt verschieben", "delete-folder": "Projekt löschen?" };
   $("#chatActionTitle").textContent = labels[action];
-  $("#chatActionDesc").textContent = action === "delete" ? `„${title}“ wird dauerhaft aus dem Verlauf entfernt.` : action === "move" ? "Projektnamen eingeben oder ein vorhandenes Projekt auswählen. Leer lassen, um den Chat aus dem Projekt zu lösen." : "";
-  $("#chatActionField").hidden = action === "delete";
+  const desc = { delete: `„${title}“ wird dauerhaft aus dem Verlauf entfernt.`,
+    move: "Projektnamen eingeben oder ein vorhandenes Projekt auswählen. Leer lassen, um den Chat aus dem Projekt zu lösen.",
+    "move-folder": "Überprojekt eingeben oder auswählen. Leer lassen für die oberste Ebene.",
+    "delete-folder": `Projekt „${title}“ samt Unterprojekten wird gelöscht. Die Chats bleiben erhalten.` };
+  $("#chatActionDesc").textContent = desc[action] ?? "";
+  $("#chatActionField").hidden = action === "delete" || action === "delete-folder";
   $("#chatActionValue").value = value;
-  $("#chatActionValue").placeholder = action === "folder" ? "Projektname" : action === "rename" ? "Chatname" : "Projektname";
+  $("#chatActionValue").placeholder = action === "rename" ? "Chatname" : action === "rename-folder" ? "Neuer Projektname" : action === "move-folder" ? "Überprojekt (leer = oberste Ebene)" : "Projektname";
   $("#chatActionValue").setAttribute("list", "chatFolderOptions");
   $("#chatFolderOptions").replaceChildren(...chatFolderNames.map(name => { const option = document.createElement("option"); option.value = name; return option; }));
   $("#chatActionDialog").showModal();
-  if (action !== "delete") requestAnimationFrame(() => $("#chatActionValue").focus());
+  if (!action.startsWith("delete")) requestAnimationFrame(() => $("#chatActionValue").focus());
 }
 $("#chatActionDialog").addEventListener("close", () => {
   const action = pendingChatAction, result = $("#chatActionDialog").returnValue;
@@ -751,6 +755,17 @@ $("#chatActionDialog").addEventListener("close", () => {
   else if (action.action === "rename" && value) send({ type:"chat_action", action:"rename", id:action.id, title:value });
   else if (action.action === "move") send({ type:"chat_action", action:"move", id:action.id, folder:value });
   else if (action.action === "delete") send({ type:"chat_action", action:"delete", id:action.id });
+  else if (action.action.endsWith("-folder")) {
+    const p = projectData.projects.find(x => projectLabel(x.id) === action.title);
+    if (!p) return showNotice("Projekt nicht gefunden");
+    if (action.action === "rename-folder" && value) projectAction({ op: "update", id: p.id, patch: { name: value } });
+    else if (action.action === "delete-folder") projectAction({ op: "delete", id: p.id });
+    else if (action.action === "move-folder") {
+      const parent = value ? projectData.projects.find(x => projectLabel(x.id) === value || x.name === value) : null;
+      if (value && !parent) return showNotice(`Überprojekt „${value}“ gibt es nicht`);
+      projectAction({ op: "update", id: p.id, patch: { parentId: parent?.id ?? null } });
+    }
+  }
 });
 $("#chatActionValue").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); $("#chatActionDialog").close("apply"); }

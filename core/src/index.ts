@@ -563,7 +563,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
         vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
         if (uis.size === 0 && !ws.data.fresh) session = undefined;
-        uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: folderLabels() })));
+        uis.add(ws); ws.send(JSON.stringify(state())); ws.send(JSON.stringify({ type: "projects", ...projects.data() })); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: folderLabels() })));
         ws.send(JSON.stringify({ type: "projects", ...projects.data() })); void syncProjects();
       }
     },
