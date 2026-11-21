@@ -51,7 +51,9 @@ export class OpenCode {
   async start() {
     if (await this.healthy()) { this.listen(); return; } // läuft schon (z. B. nach Daemon-Neustart)
     this.proc = Bun.spawn(["opencode", "serve", "--port", String(this.port), "--hostname", "127.0.0.1"],
-      { cwd: this.workspace, stdout: "ignore", stderr: "inherit", env: { ...process.env } });
+      { cwd: this.workspace, stdout: "ignore", stderr: "inherit",
+        // Skills nur aus dem Jarvis-Arbeitsordner (Erweiterungen): ~/.claude/skills & Co. würden sonst alle automatisch in jede Anfrage geladen
+        env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1" } });
     for (let i = 0; i < 60 && !(await this.healthy()); i++) await Bun.sleep(250);
     if (!(await this.healthy())) throw new Error("opencode serve startet nicht");
     this.listen();

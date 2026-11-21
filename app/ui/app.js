@@ -37,10 +37,16 @@ let dictating = false;   // Diktat läuft (Mikro-Knopf wird zum Stopp, Live-Knop
 let projectData = { projects: [], chats: [], root: "" };
 
 // ---------- Verbindung ----------
-let ws, retry = 0;
+let ws, retry = 0, hadSocket = false;
 function connect() {
   ws = new WebSocket(`ws://${DAEMON}/ui`);
-  ws.onopen = () => { retry = 0; setOffline(false); };
+  ws.onopen = () => {
+    retry = 0; setOffline(false);
+    // Nach einem Verbindungsabbruch (z. B. Neustart von jarvisd) sind Ereignisse verloren gegangen: den gezeigten Chat neu laden,
+    // sonst bleibt eine laufende Antwort leer, bis der Nutzer die Seite aktualisiert.
+    if (hadSocket && currentSession && !editingMessage) send({ type: "open", id: currentSession });
+    hadSocket = true;
+  };
   // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
   // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
   ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };

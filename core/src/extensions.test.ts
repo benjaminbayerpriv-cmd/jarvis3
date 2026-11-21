@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyImport, expandTemplate, loadStore, parseMarkdown, scanImport, writeWorkspace } from "./extensions";
+import { applyImport, expandTemplate, loadStore, parseMarkdown, saveStore, scanImport, writeWorkspace } from "./extensions";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "jarvis-ext-"));
@@ -33,7 +33,7 @@ test("Claude/Codex-MCP-Formate werden zu OpenCode-Einträgen", () => {
   writeWorkspace(ws, { mcp: { jarvis: { type: "local", command: ["x"] } } }, loadStore());
   const config = JSON.parse(readFileSync(join(ws, "opencode.json"), "utf8"));
   expect(Object.keys(config.mcp)).toEqual(["jarvis", "dateien", "web"]);
-  expect(config.mcp.web).toEqual({ type: "remote", url: "https://x.test/mcp", enabled: true });
+  expect(config.mcp.web).toEqual({ type: "remote", url: "https://x.test/mcp", enabled: false }); // Import startet aus
   expect(config.plugin).toEqual(["mein-plugin"]);
   expect(readFileSync(join(ws, ".opencode", "command", "zusammenfassen.md"), "utf8")).toContain("description: Fasst zusammen");
 });
@@ -44,6 +44,7 @@ test("Skills werden verknüpft, gesperrte Skills in der Konfiguration verweigert
   writeFileSync(join(skill, "SKILL.md"), "---\nname: mein-skill\ndescription: Testet\n---\nAnleitung");
   const store = loadStore();
   applyImport([{ id: "s", kind: "skill", name: "mein-skill", from: "claude", detail: "", status: "neu", data: { path: skill } }], store);
+  expect(store.disabledSkills).toEqual(["mein-skill"]); // Import startet aus
   store.disabledSkills = ["alt-skill"];
   const ws = join(dir, "ws"); mkdirSync(ws);
   writeWorkspace(ws, {}, store);
@@ -54,4 +55,20 @@ test("Skills werden verknüpft, gesperrte Skills in der Konfiguration verweigert
 test("Importsuche liefert nur Bekanntes ohne Absturz", () => {
   setup();
   for (const from of ["claude", "codex", "opencode"] as const) expect(Array.isArray(scanImport(from))).toBe(true);
+});
+
+test("Altbestand: Importiertes wird einmalig abgeschaltet, eigene Einträge bleiben", () => {
+  setup();
+  const { writeFileSync: w } = require("node:fs");
+  w(process.env.JARVIS_EXTENSIONS!, JSON.stringify({ mcp: {
+    rea: { type: "local", command: ["rea"], enabled: true, source: "claude" },
+    eigen: { type: "local", command: ["x"], enabled: true, source: "manual" } },
+    skillDirs: { a: { path: "/tmp/a", source: "claude" } }, disabledSkills: [], commands: {}, plugins: [] }));
+  const store = loadStore();
+  expect(store.mcp.rea.enabled).toBe(false);
+  expect(store.mcp.eigen.enabled).toBe(true);
+  expect(store.disabledSkills).toEqual(["a"]);
+  store.mcp.rea.enabled = true; // später bewusst eingeschaltet
+  saveStore(store);
+  expect(loadStore().mcp.rea.enabled).toBe(true);
 });

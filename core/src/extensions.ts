@@ -22,6 +22,7 @@ export interface Store {
   skillDirs: Record<string, { path: string; source: Source }>;   // Name -> Ordner mit SKILL.md
   disabledSkills: string[];
   plugins: string[];                                            // npm-Pakete oder Dateien für OpenCode
+  version?: number;                                             // 2: Importiertes ist standardmäßig aus (jeder aktive MCP-Server und Skill kostet Kontext)
 }
 export type ImportKind = "mcp" | "skill" | "command" | "plugin";
 export interface Candidate {
@@ -35,13 +36,21 @@ export const STORE_FILE = () => process.env.JARVIS_EXTENSIONS ?? join(HOME, ".ja
 const empty = (): Store => ({ mcp: {}, commands: {}, skillDirs: {}, disabledSkills: [], plugins: [] });
 
 export function loadStore(): Store {
-  try {
-    const raw = JSON.parse(readFileSync(STORE_FILE(), "utf8"));
-    return { ...empty(), ...raw, mcp: raw.mcp ?? {}, commands: raw.commands ?? {}, skillDirs: raw.skillDirs ?? {},
-      disabledSkills: raw.disabledSkills ?? [], plugins: raw.plugins ?? [] };
-  } catch { return empty(); }
+  let raw: any;
+  try { raw = JSON.parse(readFileSync(STORE_FILE(), "utf8")); } catch { return { ...empty(), version: 2 }; }
+  const store: Store = { ...empty(), ...raw, mcp: raw.mcp ?? {}, commands: raw.commands ?? {}, skillDirs: raw.skillDirs ?? {},
+    disabledSkills: raw.disabledSkills ?? [], plugins: raw.plugins ?? [] };
+  if ((raw.version ?? 1) < 2) { // Altbestand: alles Importierte war an und hat die Eingabe (Werkzeuglisten, Skill-Liste) auf über 100 000 Tokens aufgebläht
+    for (const e of Object.values(store.mcp)) if (e.source !== "manual") e.enabled = false;
+    store.disabledSkills = [...new Set([...store.disabledSkills, ...Object.keys(store.skillDirs)])];
+    store.version = 2;
+    try { saveStore(store); } catch {}
+  }
+  store.version = 2;
+  return store;
 }
 export function saveStore(store: Store) {
+  store.version = 2;
   mkdirSync(dirname(STORE_FILE()), { recursive: true });
   writeFileSync(STORE_FILE(), JSON.stringify(store, null, 2));
 }
@@ -173,8 +182,9 @@ export function scanImport(from: Source, store = loadStore()): Candidate[] {
 export function applyImport(candidates: Candidate[], store = loadStore()): Record<string, number> {
   const counts: Record<string, number> = { mcp: 0, skill: 0, command: 0, plugin: 0 };
   for (const c of candidates) {
-    if (c.kind === "mcp") store.mcp[c.name] = c.data as McpEntry;
-    else if (c.kind === "skill") store.skillDirs[c.name] = { path: c.data.path, source: c.from };
+    // Importiertes startet aus: viele MCP-Server (z. B. mit Hunderten Werkzeugen) und Skills sprengen sonst das Kontextlimit
+    if (c.kind === "mcp") store.mcp[c.name] = { ...(c.data as McpEntry), enabled: false };
+    else if (c.kind === "skill") { store.skillDirs[c.name] = { path: c.data.path, source: c.from }; if (!store.disabledSkills.includes(c.name)) store.disabledSkills.push(c.name); }
     else if (c.kind === "command") store.commands[c.name] = { description: c.data.description, template: c.data.template, source: c.from };
     else if (c.kind === "plugin") { const v = c.data.file ?? c.data.name; if (!store.plugins.includes(v)) store.plugins.push(v); }
     else continue;

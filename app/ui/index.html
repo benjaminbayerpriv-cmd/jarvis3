@@ -232,7 +232,7 @@
         <p class="usage-note" id="usageNote"></p>
         </div>
         <div class="set-pane" data-pane="mcp" hidden>
-          <p class="set-intro">MCP-Server geben Jarvis zusätzliche Werkzeuge (Dateien, Datenbanken, Webdienste). Aktive Server stehen dem Modell sofort zur Verfügung.</p>
+          <p class="set-intro">MCP-Server geben Jarvis zusätzliche Werkzeuge (Dateien, Datenbanken, Webdienste). Aktive Server stehen dem Modell sofort zur Verfügung. <strong>Jeder aktive Server vergrößert jede Anfrage</strong> (manche bringen Hunderte Werkzeuge mit) und kann Gratis-Modelle über ihr Limit bringen: nur einschalten, was du wirklich brauchst. Importierte Server starten aus.</p>
           <ul class="ext-list" id="extMcp"></ul>
           <form class="ext-form" id="mcpForm">
             <input id="mcpName" placeholder="Name, z. B. dateien" aria-label="Name" autocomplete="off">
@@ -241,7 +241,7 @@
           </form>
         </div>
         <div class="set-pane" data-pane="skills" hidden>
-          <p class="set-intro">Skills sind Anleitungen, die Jarvis bei passenden Aufgaben lädt. Du kannst sie im Chat auch direkt mit <code>/name</code> aufrufen.</p>
+          <p class="set-intro">Skills sind Anleitungen, die Jarvis bei passenden Aufgaben lädt. Du kannst sie im Chat auch direkt mit <code>/name</code> aufrufen. Jeder aktive Skill belegt Platz in jeder Anfrage; importierte Skills starten aus.</p>
           <label class="search ext-search"><span data-icon="search"></span><input id="skillSearch" placeholder="Skills suchen" autocomplete="off"></label>
           <ul class="ext-list" id="extSkills"></ul>
         </div>
