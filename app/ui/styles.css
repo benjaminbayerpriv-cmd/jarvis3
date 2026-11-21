@@ -157,6 +157,13 @@ html.tauri { --inset-top: 28px; }
 /* ---------- Kopfzeile ---------- */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: var(--gutter);
   height: calc(var(--header-h) + var(--inset-top)); padding: var(--inset-top) var(--gutter) 0 var(--gutter); }
+.model-chip {
+  display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-radius: var(--r-s);
+  transition: background-color var(--d-s3) var(--ease);
+}
+.model-chip:hover { background: var(--state-hover); }
+.brand { font-size: 22px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; }
+.model-name { font-size: 14px; color: var(--on-surface-low); }
 .chev svg { width: 18px; height: 18px; color: var(--on-surface-low); }
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 .status-pill {
@@ -435,8 +442,3 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .app[data-rail="open"] #railToggle { transform: translateX(208px); }
 #railToggle svg { transition: opacity var(--d-s3) linear; }
 
-/* ---------- Modellwahl in der Seitenleiste ---------- */
-.model-item { height: 48px; }
-.model-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; text-align: left; }
-.model-text .brand { font-size: 14px; color: var(--on-surface); }
-.model-text .model-name { font-size: 12px; color: var(--on-surface-low); overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
