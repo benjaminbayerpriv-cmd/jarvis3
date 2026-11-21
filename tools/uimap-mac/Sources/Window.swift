@@ -149,11 +149,14 @@ func captureWindow(_ id: CGWindowID) throws -> (URL, CGImage) {
 
 // ---------- Eingaben direkt an ein Programm (ohne Fokus, ohne echte Maus) ----------
 
-func clickInApp(_ pid: pid_t, at point: CGPoint) {
-    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-        let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        e?.setIntegerValueField(.mouseEventClickState, value: 1)
-        e?.postToPid(pid)
+func sendClick(to pid: pid_t?, at point: CGPoint) throws {
+    let events = [CGEventType.leftMouseDown, .leftMouseUp].compactMap {
+        CGEvent(mouseEventSource: nil, mouseType: $0, mouseCursorPosition: point, mouseButton: .left)
+    }
+    guard events.count == 2 else { throw Failure(message: "Klickereignis konnte nicht erstellt werden.") }
+    for event in events {
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        if let pid { event.postToPid(pid) } else { event.post(tap: .cghidEventTap) }
         usleep(30_000)
     }
 }

@@ -171,7 +171,7 @@ function paintText(b) {
 }
 
 const TOOL_LABEL = {
-  desktop_scan: "Bildschirm ansehen", desktop_click: "Klicken", desktop_type: "Tippen", desktop_scroll: "Scrollen",
+  desktop_windows: "Fenster suchen", desktop_scan: "Bildschirm ansehen", desktop_click: "Klicken", desktop_type: "Tippen", desktop_scroll: "Scrollen",
   desktop_read: "Text lesen", desktop_look: "Screenshot", desktop_key: "Tasten drücken", desktop_open_app: "Programm öffnen",
   browser_tab_open: "Tab öffnen", browser_tab_list: "Tabs prüfen", browser_tab_close: "Tab schließen",
   browser_navigate: "Seite laden", browser_back: "Zurück", browser_wait: "Auf Seite warten", browser_scan: "Seite ansehen",
@@ -182,7 +182,7 @@ const TOOL_LABEL = {
 };
 // Laufzeitform für die Kopfzeile ("Öffnet Tab …")
 const TOOL_RUNNING = {
-  desktop_scan: "Sieht sich den Bildschirm an", desktop_click: "Klickt", desktop_type: "Tippt", desktop_read: "Liest Text",
+  desktop_windows: "Sucht das Fenster", desktop_scan: "Sieht sich den Bildschirm an", desktop_click: "Klickt", desktop_type: "Tippt", desktop_read: "Liest Text",
   desktop_look: "Macht einen Screenshot", browser_tab_open: "Öffnet einen Tab", browser_navigate: "Lädt die Seite",
   browser_wait: "Wartet auf die Seite", browser_scan: "Sieht sich die Seite an", browser_click: "Klickt auf der Seite",
   browser_type: "Schreibt auf der Seite", browser_read: "Liest die Seite", browser_scroll: "Scrollt", bash: "Führt einen Befehl aus",
@@ -192,7 +192,7 @@ const baseName = n => n.replace(/^jarvis_/, "");
 function detail(input = {}, title) {
   const v = input.url ?? (typeof input.text === "string" ? `„${input.text.slice(0, 60)}“` : undefined)
     ?? input.combo ?? input.name ?? input.command ?? input.filePath ?? input.pattern
-    ?? (input.id !== undefined ? `Element ${input.id}` : undefined) ?? title;
+    ?? (input.id === undefined ? title : undefined);
   return v === undefined ? "" : String(v).slice(0, 90);
 }
 
