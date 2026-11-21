@@ -108,6 +108,9 @@ impl Service {
         let mut command = Command::new(program);
         command.args(args).current_dir(root).stdin(Stdio::null());
         command.env("PATH", service_path()?);
+        if matches!(self, Self::Daemon) {
+            command.env("JARVIS_SHELL_STARTS_SPEECH", "1");
+        }
         Ok(command)
     }
 
