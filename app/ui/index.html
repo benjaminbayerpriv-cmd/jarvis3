@@ -20,7 +20,6 @@
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
-      <button class="rail-item folder-add" id="newFolder"><span data-icon="folder-plus"></span><span class="rail-label">Neues Projekt</span></button>
       <button class="rail-item" id="openProjects"><span data-icon="folder-open"></span><span class="rail-label">Projekte</span></button>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
@@ -117,26 +116,46 @@
     </form>
   </dialog>
 
-  <!-- Projekte: Datei-Explorer (Projekte = Ordner, Chats = Dateien) -->
+  <!-- Projekte: Übersicht (Kacheln) und Projektansicht (Explorer: Projekte = Ordner, Chats = Dateien) -->
   <dialog class="sheet explorer" id="projectsDialog">
-    <div class="ex">
-      <header class="ex-head">
-        <h2>Projekte</h2>
-        <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
-        <div class="ex-tools">
-          <button type="button" class="chip-btn" id="exNew"><span data-icon="folder-plus"></span>Neues Projekt</button>
-          <button type="button" class="chip-btn" id="analyzeProjects"><span data-icon="refresh"></span>Automatisch zuordnen</button>
-          <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+    <div class="ex" id="exRoot" data-view="grid">
+      <section class="pg" id="pgView">
+        <header class="pg-head">
+          <h2>Projekte</h2>
+          <button type="button" class="icon-btn" id="closeProjectsGrid" data-icon="x" aria-label="Schließen"></button>
+        </header>
+        <div class="pg-bar">
+          <div class="pg-tabs" role="tablist">
+            <button type="button" role="tab" id="pgTabActive" aria-selected="true">Deine Projekte</button>
+            <button type="button" role="tab" id="pgTabArchived" aria-selected="false">Archiviert</button>
+          </div>
+          <label class="pg-search" id="pgSearchBox"><button type="button" class="icon-btn" id="pgSearchBtn" data-icon="search" aria-label="Projekte suchen"></button><input id="pgSearch" type="search" placeholder="Projekte suchen" autocomplete="off"></label>
+          <div class="pg-sort">
+            <button type="button" class="icon-btn" id="pgSortBtn" data-icon="arrows-sort" aria-haspopup="menu" aria-expanded="false" aria-label="Sortieren"><span class="pg-sort-label" id="pgSortLabel" hidden></span></button>
+            <div class="ex-menu pg-sort-menu" id="pgSortMenu" role="menu" hidden></div>
+          </div>
+          <button type="button" class="chip-btn pg-new" id="pgNew">Neues Projekt</button>
         </div>
-      </header>
-      <div class="ex-body">
-        <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
-        <section class="ex-main">
-          <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
-          <ul class="ex-list" id="exList"></ul>
-        </section>
-      </div>
-      <footer class="ex-foot" id="exStatus"></footer>
+        <div class="pg-grid" id="pgGrid"></div>
+      </section>
+      <section class="ex-view" id="exView">
+        <header class="ex-head">
+          <button type="button" class="icon-btn" id="exBack" data-icon="arrow-left" aria-label="Zurück zu allen Projekten"></button>
+          <h2>Projekte</h2>
+          <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
+          <div class="ex-tools">
+            <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+          </div>
+        </header>
+        <div class="ex-body">
+          <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
+          <section class="ex-main">
+            <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
+            <ul class="ex-list" id="exList"></ul>
+          </section>
+        </div>
+        <footer class="ex-foot" id="exStatus"></footer>
+      </section>
     </div>
   </dialog>
 

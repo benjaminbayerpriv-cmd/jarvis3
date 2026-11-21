@@ -631,6 +631,49 @@ body.dropping::after {
 .explorer { width: min(1120px, calc(100vw - 48px)); height: min(720px, calc(100vh - 64px)); max-height: none; }
 .explorer[open] { display: block; }
 .ex { height: 100%; display: flex; flex-direction: column; }
+.ex-view, .pg { flex: 1; min-height: 0; flex-direction: column; display: none; }
+.ex[data-view="detail"] .ex-view, .ex[data-view="grid"] .pg { display: flex; }
+/* Projekte-Übersicht (Kacheln) */
+.pg { width: min(100%, 980px); margin: 0 auto; padding: 24px 32px 24px; gap: 16px; overflow: hidden; }
+.pg-head { flex: none; display: flex; align-items: center; gap: 12px; }
+.pg-head h2 { flex: 1; margin: 0; font-size: 28px; font-weight: 500; }
+.pg-new { background: var(--on-surface); color: var(--bg); }
+.pg-new:hover { background: var(--on-surface); opacity: .88; }
+.pg-bar { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 4px; }
+.pg-tabs { flex: 1; display: flex; gap: 4px; min-width: 0; }
+.pg-tabs button { height: 36px; padding: 0 14px; border-radius: var(--r-full); font-size: 14px; color: var(--on-surface-low); }
+.pg-tabs button:hover { background: var(--state-hover); }
+.pg-tabs button[aria-selected="true"] { background: var(--surface-highest); color: var(--on-surface); }
+.pg-search { display: flex; align-items: center; border-radius: var(--r-full); }
+.pg-search input { width: 0; padding: 0; border: 0; background: transparent; color: var(--on-surface); font: inherit; outline: none; transition: width var(--d-s3) var(--ease); }
+.pg-search.open { background: var(--surface); }
+.pg-search.open input { width: 200px; padding-right: 14px; }
+.pg-hide-never {}
+.pg-sort { position: relative; }
+.pg-sort-menu { right: 0; left: auto; top: 42px; min-width: 210px; }
+.pg-sort-menu[hidden] { display: none; }
+.pg-sort-menu button, .pg-card-menu button { display: flex; align-items: center; gap: 10px; }
+.pg-sort-menu .chk { width: 18px; height: 18px; display: inline-grid; place-items: center; }
+.pg-sort-menu .chk svg, .pg-card-menu svg { width: 18px; height: 18px; }
+.pg-grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; gap: 12px; align-content: start; padding: 4px 2px; }
+.pg-card { position: relative; display: flex; align-items: center; gap: 14px; height: 64px; padding: 0 16px; border-radius: var(--r-m); background: var(--surface);
+  cursor: pointer; outline: none; transition: background-color var(--d-s3) var(--ease); }
+.pg-card:hover, .pg-card:focus-visible { background: var(--surface-highest); }
+.pg-card:focus-visible { outline: 2px solid var(--primary); }
+.pg-ico { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-s); background: var(--surface-highest); color: var(--on-surface-low); }
+.pg-ico svg { width: 18px; height: 18px; }
+.pg-txt { flex: 1; min-width: 0; }
+.pg-name { font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-meta { font-size: 13px; line-height: 20px; color: var(--on-surface-low); }
+.pg-pin { flex: none; display: grid; color: var(--on-surface); }
+.pg-pin svg { width: 18px; height: 18px; fill: currentColor; }
+.pg-more { flex: none; width: 32px; height: 32px; margin-right: -8px; border-radius: var(--r-full); display: grid; place-items: center; color: var(--on-surface-low); opacity: 0; transition: opacity var(--d-s3) linear; }
+.pg-card:hover .pg-more, .pg-card:focus-within .pg-more, .pg-more:focus-visible { opacity: 1; }
+.pg-more:hover { background: var(--state-hover); color: var(--on-surface); }
+.pg-more svg { width: 18px; height: 18px; }
+.pg-card-menu { right: 8px; top: 48px; z-index: 6; min-width: 190px; }
+.pg-empty { grid-column: 1 / -1; }
+@media (max-width: 760px) { .pg { padding: 16px; } .pg-grid { grid-template-columns: 1fr; } }
 .ex-head { flex: none; display: flex; align-items: center; gap: 16px; padding: 12px 12px 12px 24px; border-bottom: 1px solid var(--outline-variant); }
 .ex-head h2 { margin: 0; font-size: 22px; font-weight: 400; }
 .ex-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; color: var(--on-surface-low); }

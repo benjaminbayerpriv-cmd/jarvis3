@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 export type Assignment = "manual" | "ki" | "auto" | null;
-export interface Project { id: string; name: string; description: string; parentId: string | null; folder: string; created: number }
+export interface Project { id: string; name: string; description: string; parentId: string | null; folder: string; created: number; pinned?: boolean; archived?: boolean }
 export interface ChatMeta { id: string; title: string; projectId: string | null; assignedBy: Assignment; analyzed: boolean; created: number; updated: number }
 export interface ProjectData { projects: Project[]; chats: ChatMeta[]; root: string }
 export interface SessionInfo { id: string; title: string; updated?: number }
@@ -40,7 +40,8 @@ export class Projects {
       if (p?.id && p.folder && p.parentId === parentId && !this.projects.has(p.id)) {
         id = p.id;
         this.projects.set(id, { id, name: String(p.name ?? p.folder), description: String(p.description ?? ""),
-          parentId, folder: safe(p.folder), created: Number(p.created) || Date.now() });
+          parentId, folder: safe(p.folder), created: Number(p.created) || Date.now(),
+          ...(p.pinned ? { pinned: true } : {}), ...(p.archived ? { archived: true } : {}) });
       }
       this.readChats(join(dir, "chats"));
       for (const name of readdirSync(dir)) {
@@ -95,7 +96,7 @@ export class Projects {
     return p;
   }
 
-  update(id: string, patch: { name?: string; description?: string; parentId?: string | null }): Project {
+  update(id: string, patch: { name?: string; description?: string; parentId?: string | null; pinned?: boolean; archived?: boolean }): Project {
     const p = this.project(id);
     if (!p) throw new Error("Projekt nicht gefunden");
     const parent = "parentId" in patch ? patch.parentId ?? null : p.parentId;
@@ -111,6 +112,8 @@ export class Projects {
     p.name = patch.name !== undefined && String(patch.name).trim() ? String(patch.name).trim() : p.name;
     p.description = patch.description !== undefined ? String(patch.description).trim() : p.description;
     p.parentId = parent;
+    if (patch.pinned !== undefined) { if (patch.pinned) p.pinned = true; else delete p.pinned; }
+    if (patch.archived !== undefined) { if (patch.archived) p.archived = true; else delete p.archived; }
     this.saveProject(p);
     return p;
   }

@@ -321,7 +321,7 @@ async function projectAction(action: Record<string, any>) {
     return { ok: true, project: p };
   }
   if (op === "update") {
-    const p = projects.update(String(action.id), (action.patch ?? {}) as { name?: string; description?: string; parentId?: string | null });
+    const p = projects.update(String(action.id), (action.patch ?? {}) as { name?: string; description?: string; parentId?: string | null; pinned?: boolean; archived?: boolean });
     broadcastProjects(); return { ok: true, project: p };
   }
   if (op === "delete") {
