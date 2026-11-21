@@ -637,16 +637,17 @@ function renderHistory(list = []) {
   const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
   const collapsedSections = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedHistorySections") || "[]"));
   const isSearching = !!q;
-  const addSection = (name, key) => {
+  const addSection = (name, key, closedByDefault = false) => {
+    const isOpen = () => isSearching || (closedByDefault ? collapsedSections.has(key) : !collapsedSections.has(key));
     const li = document.createElement("li"); li.className = "history-section";
     const toggle = document.createElement("button"); toggle.className = "history-section-toggle";
     if (key === "chats") toggle.dataset.chatDropFolder = "";
     const label = document.createElement("span"); label.textContent = name;
     toggle.append(label, document.createRange().createContextualFragment(icon("chevron-down")));
-    toggle.setAttribute("aria-expanded", String(isSearching || !collapsedSections.has(key)));
+    toggle.setAttribute("aria-expanded", String(isOpen()));
     toggle.onclick = () => { collapsedSections.has(key) ? collapsedSections.delete(key) : collapsedSections.add(key); localStorage.setItem("jarvis.collapsedHistorySections", JSON.stringify([...collapsedSections])); renderHistory(historySessions); };
     li.append(toggle); ul.append(li);
-    return isSearching || !collapsedSections.has(key);
+    return isOpen();
   };
   const appendChat = (s, parent) => {
     const li = document.createElement("li"); li.className = "history-chat"; li.classList.toggle("active", !!s.active); li.classList.toggle("running", !!s.running); li.dataset.id = s.id;
@@ -657,16 +658,21 @@ function renderHistory(list = []) {
     const menu = document.createElement("div"); menu.className = "history-menu";
     const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
     menuToggle.title = "Chataktionen"; menuToggle.setAttribute("aria-label", `Aktionen für ${s.title || "Chat"}`);
-    menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("dots");
     const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
     const button = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.title = label; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
+    if (!s.archived) button(s.pinned ? "Lösen" : "Anpinnen", icon("pin"), () => send({ type: "chat_action", action: "pin", id: s.id, value: !s.pinned }));
     button("Umbenennen", icon("edit"), () => showChatAction("rename", s.id, s.title));
-    button("Verschieben", icon("folder"), () => showChatAction("move", s.id, s.title, s.folder || ""));
+    button(s.archived ? "Wiederherstellen" : "Archivieren", icon("archive"), () => send({ type: "chat_action", action: "archive", id: s.id, value: !s.archived }));
+    if (!s.archived) button("Verschieben", icon("folder"), () => showChatAction("move", s.id, s.title, s.folder || ""));
     button("Löschen", icon("trash"), () => showChatAction("delete", s.id, s.title));
     menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
     menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
   };
-  const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
+  const matches = s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q);
+  const pinned = list.filter(s => s.pinned && !s.archived && matches(s));
+  const archived = list.filter(s => s.archived && matches(s));
+  const visible = list.filter(s => !s.pinned && !s.archived && matches(s));
   const addFolder = name => {
     const row = document.createElement("li"); row.className = "history-chat folder-chat"; row.dataset.folder = name;
     const isFolderCollapsed = !isSearching && collapsed.has(name);
@@ -679,7 +685,7 @@ function renderHistory(list = []) {
     toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
     const menu = document.createElement("div"); menu.className = "history-menu";
     const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
-    menuToggle.title = "Projektaktionen"; menuToggle.setAttribute("aria-label", `Aktionen für Projekt ${name}`); menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    menuToggle.title = "Projektaktionen"; menuToggle.setAttribute("aria-label", `Aktionen für Projekt ${name}`); menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("dots");
     const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
     const action = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
     action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name, name));
@@ -695,8 +701,10 @@ function renderHistory(list = []) {
     }
     ul.append(row);
   };
+  if (pinned.length && addSection("Angepinnt", "pinned")) pinned.forEach(s => appendChat(s, ul));
   if (addSection("Projekte", "folders")) folders.forEach(addFolder);
   if (addSection("Chats", "chats")) visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
+  if (archived.length && addSection("Archiviert", "archived", true)) archived.forEach(s => appendChat(s, ul));
 }
 document.addEventListener("click", () => {
   document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
