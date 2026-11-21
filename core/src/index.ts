@@ -667,7 +667,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         switching = true; clearTimeout(ackTimer);
         const alt = attempts === 0 ? model : (nextModel([...tried, model], !!click?.corner) ?? model);
         vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
-        broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal.", session: sid });
+        broadcast({ type: "notice", text: attempts === 0 ? "Keine Antwort erhalten – ich versuche es noch einmal." : `Wieder keine Antwort – ich versuche es mit ${alt}.`, session: sid });
         brain.abort(sid).catch(() => {}).then(async () => {
           // die leere Runde samt Nutzer-Nachricht zurücknehmen, sonst steht die Frage nach jedem Versuch noch einmal im Chat
           try {
