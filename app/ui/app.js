@@ -312,6 +312,7 @@ let dictating = false;
 $("#dictate").onclick = () => {
   dictating = !dictating;
   $("#dictate").classList.toggle("rec", dictating);
+  if (!live.on) setVoiceUi(dictating ? "dictate" : "off");
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
 };
 
@@ -450,25 +451,44 @@ function fillAudioDevices() {
 $("#setMic").onchange = e => send({ type: "settings", settings: { micDevice: e.target.value === "" ? null : Number(e.target.value) } });
 
 // ---------- Sprachmodus (Live) ----------
-const liveEl = $("#live");
+// Das Eingabefeld klappt nach oben auf: erkannter bzw. gesprochener Text über animierten Wellen.
+const composerEl = $("#composer");
+const voiceEl = $("#voice");
+const captionEl = $("#liveCaption");
+const STATE_TEXT = { listening: "Ich höre zu …", speaking: "Jarvis spricht …", muted: "Stumm" };
+let voiceState = "listening";
+function setVoiceState(st) {
+  voiceState = live.muted ? "muted" : st;
+  $("#voiceState").textContent = STATE_TEXT[voiceState];
+}
+function setVoiceUi(mode) { // "off" | "live" | "dictate"
+  composerEl.dataset.voice = mode;
+  voiceEl.setAttribute("aria-hidden", String(mode === "off"));
+  if (mode === "off") { stopWaves(); captionEl.textContent = ""; }
+  else startWaves();
+}
 function liveCaption(text, user) {
-  const c = $("#liveCaption");
-  const words = text.trim().split(/\s+/);
-  c.textContent = words.slice(-40).join(" ") || "Ich höre zu …";
-  c.classList.toggle("user", !!user);
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  captionEl.textContent = words.slice(-60).join(" ");
+  captionEl.classList.toggle("user", !!user);
+  captionEl.scrollTop = captionEl.scrollHeight;
 }
 function openLive() {
+  if (live.on) return;
+  if (dictating) $("#dictate").click();
   live.on = true; live.muted = false;
-  liveEl.hidden = false; liveEl.classList.remove("closing"); liveEl.dataset.state = "listening";
   $("#liveMute").classList.remove("muted");
+  $("#liveMute").innerHTML = icon("microphone");
+  setVoiceState("listening");
   liveCaption("", true);
+  setVoiceUi("live");
   send({ type: "voice", mode: "live" });
 }
 function closeLive() {
+  if (!live.on) return;
   live.on = false;
   send({ type: "voice", mode: "off" });
-  liveEl.classList.add("closing");
-  setTimeout(() => { liveEl.hidden = true; }, 250);
+  setVoiceUi(dictating ? "dictate" : "off");
 }
 $("#liveBtn").onclick = openLive;
 $("#liveEnd").onclick = closeLive;
@@ -477,22 +497,70 @@ $("#liveMute").onclick = () => {
   live.muted = !live.muted;
   $("#liveMute").classList.toggle("muted", live.muted);
   $("#liveMute").innerHTML = icon(live.muted ? "microphone-off" : "microphone");
+  setVoiceState("listening");
   send({ type: "voice", mode: live.muted ? "muted" : "live" });
 };
 document.addEventListener("keydown", e => { if (e.key === "Escape" && live.on) closeLive(); });
 
-const glow = $("#liveGlow");
-let level = 0;
+// Wellen: zwei Gruppen übereinander, Blau = Mikrofon (du), Rosa = Ausgabe (Jarvis). Amplitude folgt dem echten Pegel
+// der "level"-Ereignisse des Sprach-Sidecars; ohne Ereignisse bleibt nur eine ruhige Grundbewegung.
+const canvas = $("#voiceWaves");
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let micLvl = 0, outLvl = 0, micRaw = 0, outRaw = 0, rafId = 0, phase = 0, lastT = 0;
+const WAVES = [ // Frequenz, Tempo, Anteil an der Amplitude, Deckkraft, Breite
+  { f: 1.1, s: 1.0, a: 1.0, o: 1.0, w: 2.4 },
+  { f: 1.7, s: -1.3, a: .72, o: .6, w: 1.8 },
+  { f: 2.6, s: 1.8, a: .5, o: .42, w: 1.4 },
+  { f: 0.8, s: -.7, a: .85, o: .3, w: 3 },
+];
+function cssColor(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888"; }
+function drawGroup(ctx, w, h, amp, color, shift, t) {
+  const mid = h / 2;
+  for (const k of WAVES) {
+    ctx.beginPath();
+    ctx.lineWidth = k.w; ctx.strokeStyle = color; ctx.globalAlpha = k.o * (.35 + .65 * Math.min(1, amp * 3 + .15));
+    for (let x = 0; x <= w; x += 3) {
+      const u = x / w;
+      const env = Math.sin(Math.PI * u) ** 1.6;               // an den Rändern ruhig, in der Mitte hoch
+      const y = mid + Math.sin(u * Math.PI * 2 * k.f * 1.5 + t * k.s + shift) * env * k.a * amp * (mid - 4);
+      x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function frame(now) {
+  rafId = requestAnimationFrame(frame);
+  try {
+    const dt = Math.min(.05, (now - (lastT || now)) / 1000); lastT = now;
+    const slow = reduceMotion.matches ? .25 : 1;
+    phase += dt * 2.2 * slow;
+    const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+    // Pegel glätten: schneller Anstieg, langsames Abklingen
+    const mt = live.muted ? 0 : Math.min(1, Math.sqrt(micRaw) * 1.5), ot = Math.min(1, Math.sqrt(outRaw) * 1.5);
+    micLvl += (mt - micLvl) * (mt > micLvl ? .4 : .12);
+    outLvl += (ot - outLvl) * (ot > outLvl ? .4 : .12);
+    micRaw *= .9; outRaw *= .9; // fällt ab, falls keine Ereignisse mehr kommen
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const idle = .06 + .02 * Math.sin(phase * .7);
+    drawGroup(ctx, w, h, Math.max(idle, outLvl), cssColor("--brand-pink"), 1.3, phase);
+    drawGroup(ctx, w, h, live.muted ? idle * .5 : Math.max(idle, micLvl), cssColor("--primary"), 0, phase * 1.1);
+  } catch (e) { stopWaves(); reportError("voice-waves", e); }
+}
+function startWaves() { if (!rafId) { lastT = 0; rafId = requestAnimationFrame(frame); } }
+function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
+
 function speechEvent(m) {
   if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
   switch (m.event) {
-    case "level": {
-      const target = Math.min(1, Math.max(m.mic ?? 0, m.out ?? 0) * 1.6);
-      level += (target - level) * 0.35;
-      glow.style.setProperty("--lvl", level.toFixed(3));
+    case "level":
+      micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
       break;
-    }
-    case "speech_start": liveEl.dataset.state = "listening"; break;
+    case "speech_start": setVoiceState("listening"); break;
     case "partial":
       if (dictating) { input.value = m.text; autosize(); updateSend(); }
       else if (live.on) liveCaption(m.text, true);
@@ -501,8 +569,8 @@ function speechEvent(m) {
       if (dictating) { input.value = m.text; autosize(); updateSend(); input.focus(); }
       else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
-    case "say_start": liveEl.dataset.state = "speaking"; break;
-    case "say_end": liveEl.dataset.state = "listening"; break;
+    case "say_start": setVoiceState("speaking"); break;
+    case "say_end": setVoiceState("listening"); break;
   }
 }
 
