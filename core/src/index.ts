@@ -128,8 +128,10 @@ function restartSidecar(reason: string) {
 const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
   if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
-  if (e.type === "say_start") { speaking.add(Number(e.id)); speech.sayTimes.delete(Number(e.id)); }
-  if (e.type === "say_end") speaking.delete(Number(e.id));
+  // Sätze ohne hörbaren Ton (z. B. nur "1.") bekommen nie ein say_start: alles bis zur gestarteten/beendeten ID gilt als erledigt
+  const doneUpTo = (id: number) => { for (const k of [...speech.sayTimes.keys()]) if (k <= id) speech.sayTimes.delete(k); };
+  if (e.type === "say_start") { speaking.add(Number(e.id)); doneUpTo(Number(e.id)); }
+  if (e.type === "say_end") { speaking.delete(Number(e.id)); doneUpTo(Number(e.id)); }
   if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
@@ -392,7 +394,9 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
+let runSeq = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments) {
+  const runId = ++runSeq;
   if (busy && session && !fresh) await brain.abort(session);
   // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
   if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
@@ -417,6 +421,15 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   busy = true; broadcast(state());
   const started = performance.now();
   let first = true, switching = false, textSeen = false, announced = false, responseText = "";
+  // Sprachmodus: arbeitet Jarvis lange mit Werkzeugen und hat nichts gesagt, kurz Bescheid geben (sonst wirkt es wie "antwortet nicht")
+  let progressSaid = 0;
+  const progressTimer = setInterval(() => {
+    if (!spoken || runId !== runSeq || !busy || voice === "off") { clearInterval(progressTimer); return; }
+    if (lastRun?.toolSeen && Date.now() - lastSayAt > 18_000 && progressSaid < 3) {
+      progressSaid++; lastSayAt = Date.now();
+      speech.say(progressSaid === 1 ? "Ich bin noch dran." : "Dauert noch einen Moment.");
+    }
+  }, 5000);
   splitter = spoken ? new SentenceSplitter() : undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   // Nach dem ersten Werkzeugaufruf werden Sätze 1 s zurückgehalten: Folgt direkt ein weiteres Werkzeug, war es ein Zwischentext
@@ -425,6 +438,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   const speakAll = (parts: string[]) => {
     for (const p of parts) {
       vlog(`say: ${toolSeen ? "(gehalten) " : ""}${p.slice(0, 120)}`);
+      lastSayAt = Date.now();
       if (!toolSeen) { speech.say(p); continue; }
       const t = setTimeout(() => { holds.delete(t); speech.say(p); }, 1000);
       holds.add(t);
@@ -447,6 +461,13 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     : "";
   const prompt = text || (attachmentText || images.length ? "Sieh dir die angehängten Dateien an." : "");
   await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
+    // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
+    // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
+    if (runId !== runSeq) {
+      if (e.kind === "done" || e.kind === "error") clearInterval(progressTimer);
+      if (e.kind === "done" && e.aborted) broadcast({ type: "done", ...e }); // Oberfläche schließt die abgebrochene Antwort ab
+      return;
+    }
     if (switching) return;
     if (e.kind === "error" && isLimit(e.message)) {
       limited.set(model, Date.now() + 30 * 60_000);
@@ -512,6 +533,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") {
+      clearInterval(progressTimer);
       busy = false; broadcast(state());
       if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
         void aiTitle(text, responseText).then(title => setSessionTitle(sid, title ?? topicTitle(`${text} ${responseText}`), true));
