@@ -16,9 +16,10 @@ const SETTINGS = join(HOME, "settings.json");
 const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
-interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean }
-const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true };
+interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean; micDevice: number | null }
+const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true, micDevice: null };
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
+if (settings.micDevice !== null && !Number.isInteger(settings.micDevice)) settings.micDevice = null; // alte/ungültige Werte
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
 
 // OpenCode-Arbeitsordner mit Jarvis-MCP und voller Autonomie (Nutzerentscheidung).
@@ -40,12 +41,26 @@ let busy = false;
 let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 
 const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
+const uiIds = new WeakMap<ServerWebSocket<{ kind: string; fresh?: boolean }>, number>();
+let uiSeq = 0;
+const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean }>) => {
+  let id = uiIds.get(ws);
+  if (!id) { id = ++uiSeq; uiIds.set(ws, id); }
+  return id;
+};
 const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const ui of uis) ui.send(s); };
+type AudioDevice = { id: number; name: string; default: boolean };
+type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
+let audioDevices: AudioDevices | undefined;
 const state = () => ({ type: "state", model: settings.model, voiceModel: settings.voiceModel, mode: settings.mode,
-                       lofi: settings.lofi, liveView: settings.liveView, extStale: extensionStale, busy, browser: browser.connected, speech: speech.connected, voice, models });
+                       lofi: settings.lofi, liveView: settings.liveView, extStale: extensionStale, busy, browser: browser.connected, speech: speech.connected, voice, models,
+                       micDevice: settings.micDevice, devices: audioDevices });
 
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
+// Nur die Oberfläche, die Live gestartet hat, darf es auch beenden. Andere UIs (z. B. eine vergessene
+// Registerkarte oder ein zweiter Client) schickten sonst sofort voice:off, sobald sie "live" im State sahen.
+let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean }> | undefined;
 let splitter: SentenceSplitter | undefined;
 const holds = new Set<ReturnType<typeof setTimeout>>(); // zurückgehaltene Sätze nach dem ersten Werkzeug (siehe chat)
 const clearHolds = () => { for (const t of holds) clearTimeout(t); holds.clear(); };
@@ -53,10 +68,19 @@ import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
 const speech = new Speech(e => {
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
-  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
+  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
+  if (e.type === "ready") {
+    audioDevices = e.devices as AudioDevices;
+    if (settings.micDevice !== null && !audioDevices.input.some(d => d.id === settings.micDevice)) {
+      vlog(`Mikrofon-ID ${settings.micDevice} nicht mehr vorhanden -> Systemstandard`);
+      settings.micDevice = null; save(); speech.send({ type: "config", input: null });
+      broadcast({ type: "notice", text: "Ausgewähltes Mikrofon ist nicht mehr verbunden – Systemstandard aktiv" });
+    }
+    broadcast(state());
+  }
   broadcast({ ...e, type: "speech", event: e.type });
   // Der Nutzer redet: Ausgabe verstummen lassen, die laufende Antwort aber nicht abbrechen (Husten/Pausen mitten im Satz).
   if (e.type === "speech_start" && voice === "live") { clearHolds(); splitter = undefined; }
@@ -100,10 +124,25 @@ function worthAnswering(text: string) {
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
   voice = mode;
+  if (mode === "off") voiceOwner = undefined;
   speech.mode(mode);
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
   if (mode === "off") { splitter = undefined; clearHolds(); speech.stopSpeaking(); }
   broadcast(state());
+}
+let lastIgnoredOffLog = 0;
+function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, mode: typeof voice) {
+  vlog(`voice von ui #${uiId(ws)} ${ws.remoteAddress ?? "?"}: ${mode}`);
+  if (mode === "off" && voiceOwner && voiceOwner !== ws) {
+    // Kein broadcast(state()): alte Clients antworten auf jeden live-State mit off -> sonst Dauerschleife.
+    if (Date.now() - lastIgnoredOffLog > 1000) {
+      vlog(`voice:off von ui #${uiId(ws)} ignoriert – Live gehört ui #${uiId(voiceOwner)}`);
+      lastIgnoredOffLog = Date.now();
+    }
+    return;
+  }
+  voiceOwner = mode === "off" ? undefined : ws;
+  setVoice(mode);
 }
 
 // ---------- Verlauf (OpenCode-Sitzungen) ----------
@@ -352,6 +391,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
     open(ws) {
       if (ws.data.kind === "browser") { browser.attach(ws); broadcast(state()); }
       else {
+        vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
         if (uis.size === 0 && !ws.data.fresh) session = undefined;
         uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s })));
@@ -360,10 +400,13 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
     close(ws) {
       if (ws.data.kind === "browser") { browser.detach(ws); broadcast(state()); }
       else {
+        vlog(`ui #${uiId(ws)} close`);
         uis.delete(ws);
         if (uis.size === 0) void stopStream();
+        // Wer Live gestartet hat und die Verbindung verliert, beendet es. Das gilt auch, wenn andere UIs noch offen sind.
+        if (voiceOwner === ws) { vlog(`voice-owner ui #${uiId(ws)} weg -> off`); setVoice("off"); }
         // Keine Oberfläche mehr offen: Mikrofon zu, nichts mehr sprechen.
-        if (uis.size === 0 && voice !== "off") setVoice("off");
+        else if (uis.size === 0 && voice !== "off") setVoice("off");
       }
     },
     async message(ws, raw) {
@@ -430,12 +473,15 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
       else if (msg.type === "stop") await stop();
       else if (msg.type === "settings") {
-        settings = { ...settings, ...msg.settings }; save();
-        if ("lofi" in msg.settings) speech.send({ type: "config", lofi: settings.lofi });
+        settings = { ...settings, ...msg.settings };
+        if ("micDevice" in msg.settings) settings.micDevice = Number.isInteger(settings.micDevice) ? settings.micDevice : null;
+        save();
+        if ("lofi" in msg.settings || "micDevice" in msg.settings)
+          speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice });
         broadcast(state());
       }
       else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
-      else if (msg.type === "voice") setVoice(msg.mode);
+      else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history() }));
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
       else if (msg.type === "new") { session = undefined; broadcast(state()); }

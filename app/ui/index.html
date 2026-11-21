@@ -103,7 +103,8 @@
   <dialog class="sheet" id="settingsDialog">
     <form method="dialog" class="sheet-inner">
       <header class="sheet-head"><h2>Einstellungen</h2><button class="icon-btn" value="close" data-icon="x" aria-label="Schließen"></button></header>
-      <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: ⌘⇧⎋</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
+      <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: Strg+Alt+Shift+Esc</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
+      <div class="setting"><div><b>Mikrofon</b><p>Eingabegerät für die Spracherkennung. Pegel siehst du im Live-Modus.</p></div><select id="setMic"></select></div>
       <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
       <div class="setting"><div><b>Lofi-Stimme</b><p>Bitcrush-Filter auf der Sprachausgabe</p></div><button type="button" class="toggle-lg" id="setLofi" role="switch"></button></div>
     </form>

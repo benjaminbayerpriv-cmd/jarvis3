@@ -21,15 +21,15 @@ const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").for
 paintIcons();
 
 // ---------- Zustand ----------
-const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", lofi: false };
+const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", lofi: false, micDevice: null, devices: null };
 let current = null;        // aktuelle Jarvis-Antwort {el, text, started}
 let live = { on: false, muted: false };
 
 // ---------- Verbindung ----------
-let ws, retry = 0, firstState = true;
+let ws, retry = 0;
 function connect() {
   ws = new WebSocket(`ws://${DAEMON}/ui`);
-  ws.onopen = () => { retry = 0; firstState = true; setOffline(false); };
+  ws.onopen = () => { retry = 0; setOffline(false); };
   ws.onclose = () => { setOffline(true); setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
@@ -45,10 +45,9 @@ function setOffline(off) {
 function handle(m) {
   switch (m.type) {
     case "state":
-      Object.assign(state, m); renderState();
-      // Nach Neuladen: Daemon denkt noch "live", diese Oberfläche aber nicht -> einmalig schließen.
-      // Nur beim ersten Zustand einer Verbindung, sonst würde eine zweite offene Oberfläche Live abwürgen.
-      if (firstState) { firstState = false; if (state.voice === "live" && !live.on && !dictating) send({ type: "voice", mode: "off" }); }
+      Object.assign(state, m); renderState(); fillAudioDevices();
+      // Früher schickte jede Oberfläche beim ersten "live"-State sofort voice:off und hat damit den
+      // Sprachmodus anderer Clients abgewürgt. Der Daemon klärt jetzt die Zuständigkeit (voiceOwner).
       break;
     case "delta": appendText(m.text); break;
     case "tool": toolEvent(m); break;
@@ -419,6 +418,27 @@ function fillVoiceModels() {
 }
 $("#setVoiceModel").onchange = e => send({ type: "settings", settings: { voiceModel: e.target.value } });
 
+// Audiogeräte: Der Sidecar meldet sie im "ready"-Event, der Daemon cached sie im State.
+function fillAudioDevices() {
+  const inputs = state.devices?.input ?? [];
+  const sel = $("#setMic");
+  const key = inputs.map(d => `${d.id}:${d.name}`).join("|");
+  if (sel.dataset.key !== key) {
+    sel.dataset.key = key;
+    sel.innerHTML = "";
+    sel.add(new Option("Systemstandard", ""));
+    const count = new Map();
+    for (const d of inputs) count.set(d.name, (count.get(d.name) ?? 0) + 1);
+    // Windows listet dasselbe Mikrofon mehrfach (WASAPI/DirectSound). Die ID macht die Auswahl eindeutig.
+    for (const d of inputs) sel.add(new Option(count.get(d.name) > 1 ? `${d.name} (#${d.id})` : d.name, String(d.id)));
+  }
+  const want = state.micDevice == null ? "" : String(state.micDevice);
+  if (want && !inputs.some(d => String(d.id) === want) && ![...sel.options].some(o => o.value === want))
+    sel.add(new Option(`${want} (nicht verbunden)`, want));
+  sel.value = want;
+}
+$("#setMic").onchange = e => send({ type: "settings", settings: { micDevice: e.target.value === "" ? null : Number(e.target.value) } });
+
 // ---------- Sprachmodus (Live) ----------
 const liveEl = $("#live");
 function liveCaption(text, user) {
@@ -454,6 +474,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && live.on) c
 const glow = $("#liveGlow");
 let level = 0;
 function speechEvent(m) {
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
   switch (m.event) {
     case "level": {
       const target = Math.min(1, Math.max(m.mic ?? 0, m.out ?? 0) * 1.6);
