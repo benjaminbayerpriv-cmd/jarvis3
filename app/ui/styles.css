@@ -497,11 +497,8 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 
 /* ---------- Seitenleisten-Umschalter ---------- */
 /* Zu: Symbol mittig bei x=36 wie alle Rail-Symbole. Auf: wandert mit der aufklappenden Leiste an deren rechten Rand
-   (Leistenbreite 280 - 72 = 208 px Versatz, gleiche Dauer und Kurve wie die Leiste). Links erscheint das Jarvis-Logo. */
+   (Leistenbreite 280 - 72 = 208 px Versatz, gleiche Dauer und Kurve wie die Leiste).  */
 .rail-top { position: relative; }
 #railToggle { position: relative; z-index: 1; margin-left: 0; transition: transform var(--d-m2) var(--ease), background-color var(--d-s3) var(--ease); }
 .app[data-rail="open"] #railToggle { transform: translateX(208px); }
-.rail-logo { position: absolute; left: 24px; top: calc(var(--inset-top) + (var(--header-h) - 24px) / 2); width: 24px; height: 24px;
-  opacity: 0; transform: scale(.6); pointer-events: none; transition: opacity var(--d-s3) linear, transform var(--d-m2) var(--ease); }
-.app[data-rail="open"] .rail-logo { opacity: 1; transform: none; transition-delay: var(--d-s2); }
 #railToggle svg { transition: opacity var(--d-s3) linear; }
