@@ -22,6 +22,7 @@ import { parseRange, readUsage, summarize } from "./usage";
 import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
 import { defaults, parseSettings, type Settings } from "./settings";
+import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, type Visual } from "./visuals";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -54,7 +55,7 @@ const BASE_OPENCODE_CONFIG = {
 };
 writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
-const brain = new OpenCode(4096, workspace);
+const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
 const projects = new Projects();
@@ -349,7 +350,8 @@ type SavedAttachments = { text: string; images: PromptImage[]; names: string[] }
 function readChatMessage(message: any) {
   const parts = message.parts ?? [];
   const role = message.info?.role;
-  const blocks: string[] = [], names: string[] = [], images: PromptImage[] = [], text: string[] = [];
+  const blocks: string[] = [], names: string[] = [], images: PromptImage[] = [], text: string[] = [], visuals: Visual[] = [];
+  const order: ({ text: string } | { visual: Visual })[] = []; // Reihenfolge von Text und Grafiken in einer Antwort
   for (const part of parts) {
     if (part.type === "text" && !part.synthetic && typeof part.text === "string") {
       if (role === "user" && part.text.startsWith(ATTACHMENT_HEADER) && part.text.includes("\n")) {
@@ -363,12 +365,15 @@ function readChatMessage(message: any) {
         } catch { /* normaler Nachrichtentext */ }
       }
       text.push(part.text);
+      if (role === "assistant") order.push({ text: part.text });
+    } else if (part.type === "tool" && typeof part.state?.output === "string") {
+      for (const id of markers(part.state.output)) { const v = getVisual(id); if (v) { visuals.push(v); order.push({ visual: v }); } }
     } else if (role === "user" && part.type === "file" && /^data:image\/(png|jpe?g|gif|webp);base64,/.test(part.url)) {
       images.push({ mime: part.mime, url: part.url, filename: part.filename });
     }
   }
   if (!names.length) names.push(...images.map(image => image.filename || "Bild"));
-  const view = { id: message.info?.id, role, text: text.join(""), files: names.map(name => ({ name })) };
+  const view = { id: message.info?.id, role, text: text.join(""), files: names.map(name => ({ name })), visuals, ...(visuals.length ? { order } : {}) };
   return { view, saved: { text: blocks.join("\n\n"), images, names } };
 }
 
@@ -382,7 +387,7 @@ const chatHistory = (messages: any[], running = false) => {
     const lastUser = messages.map(message => message.info?.role).lastIndexOf("user");
     if (lastUser >= 0) messages = messages.slice(0, lastUser + 1);
   }
-  return messages.map(message => readChatMessage(message).view).filter(message => message.text || message.files.length);
+  return messages.map(message => readChatMessage(message).view).filter(message => message.text || message.files.length || message.visuals.length);
 };
 
 async function openSession(id: string) {
@@ -916,6 +921,31 @@ function guardDesktopClick(cmd: Record<string, any>, turn: ActiveTurn) {
   return { window: scan.window, scanToken: scan.token };
 }
 
+// ---------- Visualisierungen (visuals.ts) ----------
+async function visualize(b: Record<string, any>) {
+  if (Date.now() < stoppedUntil) return { ok: false, error: "vom Nutzer gestoppt" };
+  const title = String(b.title ?? "").trim() || "Visualisierung";
+  let v: Visual;
+  try {
+    if (b.kind === "python" && typeof b.code === "string" && b.code.trim()) v = await runPython(b.code, title);
+    else if (b.kind === "html" && typeof b.html === "string" && b.html.trim()) v = saveHtml(b.html, title);
+    else return { ok: false, error: "kind=python mit code oder kind=html mit html erwartet" };
+  } catch (error) {
+    recordError({ category: "tool", source: "jarvisd/visualize", message: "Visualisierung fehlgeschlagen", error, context: { kind: b.kind, title } });
+    return { ok: false, error: String((error as Error)?.message ?? error) };
+  }
+  if (v.files.length) { // dem Chat zuordnen, der das Werkzeug gerade benutzt
+    const sid = activeTurn?.sid && busySessions.has(activeTurn.sid) ? activeTurn.sid : busySessions.size === 1 ? [...busySessions][0] : undefined;
+    const m = { type: "visual", ...v, ...(sid ? { session: sid } : {}) };
+    if (sid) runBuffer.add(sid, m as any);
+    broadcast(m);
+  }
+  if (v.error && !v.files.length) return { ok: false, error: v.error, stdout: v.stdout };
+  return { ok: true, ...v, marker: MARKER(v.id), url: `http://127.0.0.1:${PORT}/visual/${v.id}/` };
+}
+// Python-Pakete einmal vorab laden, damit die erste Grafik nicht eine Minute braucht
+setTimeout(() => { void runPython("import numpy, matplotlib, pandas, scipy, sympy, PIL", "Vorbereitung").catch(() => {}); }, 15_000);
+
 async function runTool(target: string, cmd: Record<string, any>) {
   const turn = activeTurn?.sid && busySessions.has(activeTurn.sid) ? activeTurn : undefined;
   const click = cmd.cmd === "click" && turn?.click ? turn : undefined;
@@ -1238,6 +1268,8 @@ async function route(req: Request, srv: any) {
       const r = await projectAction(await req.json() as Record<string, any>);
       return Response.json(r, { status: r.ok ? 200 : 400 });
     }
+    if (u.pathname.startsWith("/visual/") && req.method === "GET") return serveVisual(u.pathname);
+    if (u.pathname === "/visualize" && req.method === "POST") return Response.json(await visualize(await req.json() as Record<string, any>));
     if (u.pathname === "/tool" && req.method === "POST") {
       const { target, cmd } = await req.json();
       return Response.json(await runTool(target, cmd));

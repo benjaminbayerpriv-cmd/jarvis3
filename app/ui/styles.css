@@ -867,3 +867,22 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .usage-models { margin: 12px 0; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow: auto; }
 .usage-models div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .usage-models span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Visualisierungen (Chat-Karte + Vorschau) ---------- */
+.visual { margin: 8px 0 12px; border: 1px solid var(--outline-variant); border-radius: var(--r-l); overflow: hidden; background: #131314; max-width: 680px; }
+.visual-media { display: grid; gap: 1px; background: var(--outline-variant); }
+.visual-media.multi { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.visual-media img { display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; background: #131314; cursor: zoom-in; }
+.visual-media img:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.visual-frame { display: block; width: 100%; height: 400px; border: 0; background: #131314; }
+.visual figcaption { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; font-size: 13px; color: var(--on-surface-variant); border-top: 1px solid var(--outline-variant); }
+.visual figcaption .visual-ic { width: 16px; height: 16px; color: var(--brand-blue-2); flex: none; }
+.visual-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn.small { width: 32px; height: 32px; }
+.icon-btn.small .ic { width: 18px; height: 18px; }
+.viewer-visual { position: absolute; inset: 0; display: grid; place-items: center; background: #131314; overflow: auto; }
+.viewer-visual.multi { grid-auto-rows: max-content; gap: 12px; padding: 12px; place-items: start center; }
+.viewer-visual img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-visual.multi img { max-height: none; }
+.viewer-visual iframe { width: 100%; height: 100%; border: 0; background: #131314; }
+.viewer[data-mode="visual"] canvas { visibility: hidden; }
