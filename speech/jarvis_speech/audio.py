@@ -185,6 +185,23 @@ class NativeAudio:
             for index, side in enumerate(("input", "output"))
         }
 
+    def refresh_devices(self):
+        """PortAudio liest die Geräteliste nur beim Start. Kommen oder gehen Geräte (AirPods, virtuelle Mikrofone), zeigen
+        Nummern und Systemstandard im laufenden Sidecar auf falsche Geräte: das Mikrofon liefert Stille. Darum wird die
+        Liste vor jedem neuen Öffnen der Eingabe neu geladen. Die Ausgabe wird dafür kurz geschlossen und wieder geöffnet."""
+        try:
+            had_output, output_device = self.output is not None, self.output_device
+            if had_output:
+                self.output.close()
+                self.output = None
+            self.sd._terminate()
+            self.sd._initialize()
+            if had_output:
+                self.set_output(output_device)
+        except Exception as error:  # nie am Aktualisieren scheitern: dann gilt die alte Liste
+            import logging
+            logging.getLogger(__name__).warning("Audiogeräte konnten nicht neu geladen werden: %s", error)
+
     def set_input(self, device, enabled):
         if not enabled and self.input is None:
             self.input_device = device
@@ -196,6 +213,8 @@ class NativeAudio:
             self.input = None
             self.input_device = device
             return
+        if self.input is None:
+            self.refresh_devices()
         # Ask PortAudio for 16 kHz first. Some Windows hardware needs its native rate.
         info = self.sd.query_devices(device, "input")
         rate = RATE
