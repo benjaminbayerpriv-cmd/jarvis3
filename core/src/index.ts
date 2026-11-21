@@ -591,7 +591,14 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         const alt = attempts === 0 ? model : (nextModel([...tried, model], !!click?.corner) ?? model);
         vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
         broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal." });
-        brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); });
+        brain.abort(sid).catch(() => {}).then(async () => {
+          // die leere Runde samt Nutzer-Nachricht zurücknehmen, sonst steht die Frage nach jedem Versuch noch einmal im Chat
+          try {
+            const last = (await sessionMessages(sid)).filter(m => m.info?.role === "user").pop();
+            if (last?.info?.id) await fetch(`${brain.url}/session/${sid}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID: last.info.id }) });
+          } catch { /* dann eben doppelt */ }
+          busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved);
+        });
         return;
       }
       recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
@@ -1099,6 +1106,11 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
+      else if (msg.type === "message_ids") { // IDs der Nutzer-Nachrichten, damit Bearbeiten/Erneut senden auch bei gerade geschriebenen Nachrichten gehen
+        const id = String(msg.id ?? "");
+        const users = id ? chatHistory(await sessionMessages(id)).filter(m => m.role === "user") : [];
+        ws.send(JSON.stringify({ type: "message_ids", session: id, users }));
+      }
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
       else if (msg.type === "new") { session = undefined; broadcast(state()); }

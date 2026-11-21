@@ -75,6 +75,7 @@ function handle(m) {
     case "history": chatFolderNames = m.folders || chatFolderNames; renderHistory(m.sessions); break;
     case "messages": renderMessages(m.messages); break;
     case "session": currentSession = m.id; break;
+    case "message_ids": applyMessageIds(m); break;
     case "projects": renderProjects(m); break;
   }
   if (m.type === "state" && !m.busy && current) finishTurn();
@@ -107,6 +108,20 @@ const stickToBottom = () => { if (conv.scrollHeight - conv.scrollTop - conv.clie
 
 const setZero = on => { $("#zero").classList.toggle("gone", !on); document.querySelector(".main").classList.toggle("is-zero", on); };
 setZero(true);
+// Nachrichten, die gerade erst geschrieben wurden, kennen ihre ID noch nicht: beim Klick vom Daemon holen
+let idWaiters = [];
+function withMessageId(n, run) {
+  if (n.__message?.id) return run();
+  if (!currentSession) return showNotice("Dieser Chat ist noch nicht gespeichert. Bitte kurz warten und noch einmal versuchen.");
+  idWaiters.push(() => { if (n.__message?.id) run(); else showNotice("Die Nachricht wurde nicht gefunden. Bitte den Chat neu öffnen."); });
+  send({ type: "message_ids", id: currentSession });
+}
+function applyMessageIds(m) {
+  if (m.session !== currentSession) return;
+  const nodes = [...turns.querySelectorAll(".turn.user")], users = m.users || [];
+  nodes.forEach((n, i) => { const u = users[users.length - nodes.length + i]; if (u) n.__message = u; });
+  for (const w of idWaiters.splice(0)) w();
+}
 function addUser(text, files = []) {
   setZero(false);
   const n = $("#tplUser").content.firstElementChild.cloneNode(true);
@@ -122,8 +137,8 @@ function addUser(text, files = []) {
   const edit = document.createElement("button"); edit.type = "button"; edit.title = "Bearbeiten"; edit.setAttribute("aria-label", "Nachricht bearbeiten"); edit.innerHTML = icon("edit");
   const resend = document.createElement("button"); resend.type = "button"; resend.title = "Erneut senden"; resend.setAttribute("aria-label", "Nachricht erneut senden"); resend.innerHTML = icon("refresh");
   tools.append(edit, resend); n.append(tools);
-  edit.onclick = () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id, hasFiles: !!msg.files?.length }; input.value = text; autosize(); updateSend(); input.focus(); };
-  resend.onclick = () => { const msg = n.__message; if (msg?.id && currentSession) { turns.innerHTML = ""; send({ type: "resend", id: currentSession, messageID: msg.id, text }); } };
+  edit.onclick = () => withMessageId(n, () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id, hasFiles: !!msg.files?.length }; input.value = text; autosize(); updateSend(); input.focus(); });
+  resend.onclick = () => withMessageId(n, () => { const msg = n.__message; if (msg?.id && currentSession) { turns.innerHTML = ""; send({ type: "resend", id: currentSession, messageID: msg.id, text }); } });
   turns.append(n);
   return n;
 }
