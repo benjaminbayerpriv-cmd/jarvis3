@@ -766,3 +766,23 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
   font: 400 17px/24px var(--font); font-variation-settings: "wdth" 92; padding: 8px 4px; color: var(--on-surface); }
 .composer[data-voice="dictate"] .ta-mirror { display: block; }
 .composer[data-voice="dictate"] textarea { color: transparent; caret-color: var(--on-surface); }
+
+/* Einstellungen: Reiter und Nutzung */
+.tabs { display: flex; gap: 4px; padding: 0 16px 8px; border-bottom: 1px solid var(--outline-variant, var(--surface-highest)); }
+.tab { background: none; border: 0; color: var(--on-surface-low); font: inherit; font-size: 14px; padding: 8px 14px; border-radius: var(--r-full); cursor: pointer; }
+.tab.active { background: var(--surface-highest); color: var(--on-surface); }
+#paneUsage { padding: 8px 16px 0; }
+.usage-range { display: flex; gap: 8px; }
+.usage-range .chip { background: var(--surface); color: var(--on-surface); border: 0; border-radius: var(--r-full); padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.usage-range .chip.active { background: var(--primary); color: var(--on-primary, #fff); }
+.usage-total { display: flex; align-items: baseline; gap: 8px; margin: 16px 0 2px; }
+.usage-total span { font-size: 40px; line-height: 44px; font-weight: 400; }
+.usage-total small, .usage-split, .usage-note { color: var(--on-surface-low); font-size: 13px; line-height: 18px; margin: 0; }
+.usage-chart { display: flex; align-items: flex-end; gap: 2px; height: 120px; margin: 16px 0 4px; }
+.usage-chart .bar { flex: 1 1 0; min-width: 2px; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.usage-chart .bar i { display: block; background: var(--primary); border-radius: 2px 2px 0 0; min-height: 0; }
+.usage-chart .bar i.out { background: var(--on-surface-low); opacity: .55; }
+.usage-chart .empty { margin: auto; color: var(--on-surface-low); font-size: 13px; }
+.usage-models { margin: 12px 0; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow: auto; }
+.usage-models div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.usage-models span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

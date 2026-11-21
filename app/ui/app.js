@@ -78,6 +78,7 @@ function handle(m) {
     case "session": currentSession = m.id; break;
     case "message_ids": applyMessageIds(m); break;
     case "projects": renderProjects(m); break;
+    case "usage": renderUsage(m); break;
   }
   if (m.type === "state" && !m.busy && current) finishTurn();
 }
@@ -1135,7 +1136,45 @@ $("#chatActionValue").addEventListener("keydown", e => {
 });
 $("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
-$("#openSettings").onclick = () => $("#settingsDialog").showModal();
+$("#openSettings").onclick = () => { $("#settingsDialog").showModal(); if (!$("#paneUsage").hidden) requestUsage(); };
+let usageRange = "7d";
+const requestUsage = () => send({ type: "usage", range: usageRange });
+function showSettingsTab(usage) {
+  $("#paneGeneral").hidden = usage; $("#paneUsage").hidden = !usage;
+  for (const [id, on] of [["#tabGeneral", !usage], ["#tabUsage", usage]]) { $(id).classList.toggle("active", on); $(id).setAttribute("aria-selected", String(on)); }
+  if (usage) requestUsage();
+}
+$("#tabGeneral").onclick = () => showSettingsTab(false);
+$("#tabUsage").onclick = () => showSettingsTab(true);
+for (const b of document.querySelectorAll(".usage-range .chip")) b.onclick = () => {
+  usageRange = b.dataset.range;
+  for (const c of document.querySelectorAll(".usage-range .chip")) c.classList.toggle("active", c === b);
+  requestUsage();
+};
+const fmtTokens = n => n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)} Mio.` : n >= 1e4 ? `${Math.round(n / 1e3)} Tsd.` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} Tsd.` : String(n);
+function renderUsage(m) {
+  if (m.range !== usageRange) return; // veraltete Antwort
+  $("#usageTotal").textContent = m.total.toLocaleString("de-DE");
+  $("#usageSplit").textContent = `${m.input.toLocaleString("de-DE")} Eingabe · ${m.output.toLocaleString("de-DE")} Ausgabe · ${m.calls} Aufrufe`;
+  const chart = $("#usageChart"); chart.textContent = "";
+  const max = Math.max(1, ...m.buckets.map(b => b.input + b.output));
+  if (!m.total) { const e = document.createElement("span"); e.className = "empty"; e.textContent = "Noch keine Nutzung in diesem Zeitraum"; chart.append(e); }
+  else for (const b of m.buckets) {
+    const bar = document.createElement("div"); bar.className = "bar";
+    bar.title = `${b.label}: ${(b.input + b.output).toLocaleString("de-DE")} Tokens (${b.input.toLocaleString("de-DE")} Eingabe, ${b.output.toLocaleString("de-DE")} Ausgabe)`;
+    const out = document.createElement("i"); out.className = "out"; out.style.height = `${b.output / max * 100}%`;
+    const inp = document.createElement("i"); inp.style.height = `${b.input / max * 100}%`;
+    bar.append(out, inp); chart.append(bar);
+  }
+  const list = $("#usageModels"); list.textContent = "";
+  for (const x of m.models) {
+    const row = document.createElement("div"), a = document.createElement("span"), c = document.createElement("span");
+    a.textContent = x.model; c.textContent = `${fmtTokens(x.total)} · ${x.calls}×`; row.append(a, c); list.append(row);
+  }
+  const first = m.buckets[0]?.label, last = m.buckets.at(-1)?.label;
+  $("#usageNote").textContent = (m.total && first ? `${first} bis ${last}. ` : "") +
+    (m.estimatedShare > 0 ? `${Math.round(m.estimatedShare * 100)} % der Tokens sind geschätzt (Anbieter lieferte keine Zahlen).` : "");
+}
 function fillVoiceModels() {
   const sel = $("#setVoiceModel");
   const want = state.voiceModel || "opencode/deepseek-v4.1-flash-free";

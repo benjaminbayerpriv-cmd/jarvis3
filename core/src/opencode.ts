@@ -1,6 +1,7 @@
 // OpenCode als Gehirn: Modellliste, headless Server, Sitzungen und Token-Stream.
 import { join } from "node:path";
 import { recordError } from "./errorlog";
+import { estimateTokens, recordUsage, usageFromInfo } from "./usage";
 
 export type ModelGroup = "free" | "lmstudio" | "nvidia" | "other";
 export interface ModelInfo { id: string; provider: string; model: string; group: ModelGroup; vision: boolean }
@@ -37,6 +38,9 @@ export class OpenCode {
   private lastStreamError = 0;
   private lastEvent = new Map<string, number>(); // Sitzung -> letztes Ereignis bzw. Start des Laufs
   private watchdog?: ReturnType<typeof setInterval>;
+  // Verbrauch: pro Lauf gemerkt, ob echte Zahlen kamen; sonst wird am Ende geschätzt (nur Zeichenzahlen, keine Inhalte)
+  private runs = new Map<string, { model: string; inChars: number; outChars: number; real: boolean }>();
+  private seenUsage = new Set<string>();
   /** Diagnose (jarvisd schreibt es in voice.log). */
   onLog: (line: string) => void = () => {};
 
@@ -85,6 +89,7 @@ export class OpenCode {
                images: PromptImage[] = [], attachmentText = "") {
     const [providerID, ...rest] = model.split("/");
     this.listeners.set(session, onEvent);
+    this.runs.set(session, { model, inChars: text.length + system.length + attachmentText.length, outChars: 0, real: false });
     this.lastEvent.set(session, Date.now());
     this.started.delete(session); // ein spätes "idle" des vorherigen (abgebrochenen) Laufs darf diesen nicht beenden
     const parts: unknown[] = [{ type: "text", text }];
@@ -95,6 +100,14 @@ export class OpenCode {
       body: JSON.stringify({ model: { providerID, modelID: rest.join("/") }, system, parts }),
     });
     if (!r.ok) { this.listeners.delete(session); onEvent({ kind: "error", message: `${r.status} ${await r.text()}` }); }
+  }
+
+  /** Lauf zu Ende: gab es keine echten Zahlen der API, wird der Verbrauch geschätzt und als geschätzt gespeichert. */
+  private finishRun(session: string) {
+    const r = this.runs.get(session);
+    this.runs.delete(session);
+    if (!r || r.real) return;
+    recordUsage({ ts: Date.now(), model: r.model, input: estimateTokens(r.inChars), output: estimateTokens(r.outChars), estimated: true });
   }
 
   /** Wartet, bis OpenCode die Sitzung wirklich im Leerlauf meldet (nach einem Abbruch läuft noch Aufräumarbeit). */
@@ -119,6 +132,7 @@ export class OpenCode {
     await fetch(`${this.url}/session/${session}/abort`, { method: "POST" }).catch(() => {});
     this.listeners.get(session)?.({ kind: "done", aborted: true });
     this.listeners.delete(session);
+    this.finishRun(session);
     if (wait) await this.idle(session);
   }
 
@@ -138,6 +152,7 @@ export class OpenCode {
       const cb = this.listeners.get(sid);
       if (!cb) continue;
       this.listeners.delete(sid);
+      this.finishRun(sid);
       this.onLog(`OpenCode: Sitzung ${sid} im Leerlauf, aber kein idle-Ereignis angekommen -> Lauf beendet`);
       recordError({ category: "model", source: "opencode/missing-idle", message: "Lauf-Ende (session.idle) nicht angekommen, vom Wächter beendet",
         context: { session: sid, started: this.started.has(sid) } });
@@ -173,9 +188,20 @@ export class OpenCode {
     }
   }
 
+  /** Echte Token-Zahlen einer fertigen Assistentennachricht (jede Nachricht höchstens einmal). */
+  private noteUsage(sid: string, info: any) {
+    const u = usageFromInfo(info);
+    if (!u || this.seenUsage.has(info.id)) return;
+    this.seenUsage.add(info.id);
+    if (this.seenUsage.size > 5000) this.seenUsage.delete(this.seenUsage.values().next().value!);
+    const r = this.runs.get(sid); if (r) r.real = true;
+    recordUsage({ ts: Date.now(), model: u.model, input: u.input, output: u.output, estimated: false });
+  }
+
   private dispatch(e: any) {
     const p = e.properties ?? {};
     const sid = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID;
+    if (e.type === "message.updated" && sid) this.noteUsage(sid, p.info);
     const cb = this.listeners.get(sid);
     if (!cb) return;
     this.lastEvent.set(sid, Date.now());
@@ -190,6 +216,7 @@ export class OpenCode {
       case "message.part.delta": {
         const kind = this.partKinds.get(p.partID);
         if (p.field !== "text") break;
+        if (kind === "text" || kind === "reasoning") { const r = this.runs.get(sid); if (r) r.outChars += String(p.delta ?? "").length; }
         if (kind === "text") cb({ kind: "text", delta: p.delta });
         else if (kind === "reasoning") cb({ kind: "reasoning", delta: p.delta });
         break;
@@ -208,6 +235,7 @@ export class OpenCode {
         if (!this.started.has(p.sessionID)) break; // veraltetes Ereignis eines früheren Laufs
         cb({ kind: "done" });
         this.listeners.delete(p.sessionID);
+        this.finishRun(p.sessionID);
         break;
     }
   }
