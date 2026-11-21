@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jarvis</title>
   <link rel="icon" href="icons/jarvis.svg">
+  <script>if (window.__TAURI__) document.documentElement.classList.add("tauri");</script>
   <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -13,7 +14,7 @@
     <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
     <nav class="rail" aria-label="Navigation">
       <div class="rail-top" data-tauri-drag-region>
-        <button class="icon-btn" id="railToggle" data-icon="menu-2" aria-label="Menü"></button>
+        <button class="rail-item" id="railToggle" aria-label="Menü"><span data-icon="menu-2"></span></button>
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <div class="rail-section rail-label">Zuletzt</div>

@@ -107,8 +107,11 @@ function setVoice(mode: typeof voice) {
 async function history() {
   try {
     const list = await (await fetch(`${brain.url}/session`)).json() as any[];
-    return list.filter(s => !s.parentID).sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
-      .map(s => ({ id: s.id, title: s.title, active: s.id === session }));
+    // Nur echte Unterhaltungen: Testläufe ("Test") und leere Sitzungen ohne eigenen Titel ausblenden
+    const isEmpty = (t: string) => !t || t === "Jarvis" || /^New session/i.test(t) || /^Child session/i.test(t);
+    return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
+      .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
+      .map(s => ({ id: s.id, title: isEmpty(s.title) ? "Neuer Chat" : s.title, active: s.id === session }));
   } catch { return []; }
 }
 async function openSession(id: string) {
@@ -148,7 +151,14 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     const alt = nextModel([...tried, model]);
     if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh); }
   }
+  const isNew = !fresh && !session;
   const sid = fresh ? await brain.createSession("Test") : (session ??= await brain.createSession());
+  // Titel aus dem Anfang der ersten Nachricht (statt 20 Mal "Jarvis" im Verlauf)
+  if (isNew) {
+    const title = text.replace(/\s+/g, " ").trim().slice(0, 48) + (text.trim().length > 48 ? "…" : "");
+    void fetch(`${brain.url}/session/${sid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) })
+      .then(() => { for (const ui of uis) history().then(h => ui.send(JSON.stringify({ type: "history", sessions: h }))); }).catch(() => {});
+  }
   busy = true; broadcast(state());
   const started = performance.now();
   let first = true, switching = false, textSeen = false, announced = false;
