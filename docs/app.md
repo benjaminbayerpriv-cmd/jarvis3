@@ -44,6 +44,14 @@ Im Live-Modus und beim Diktat klappt das Eingabefeld nach oben auf (`#voice`, `c
 - WebSocket: `{type:"projects", projects, chats, root}` kommt bei Verbindung und nach jeder Änderung; `{type:"projects"}` erfragt den Baum, `{type:"project_action", op:"create|update|delete|assign|analyze|sync", …}` ändert ihn. Die Oberfläche bietet dafür „Projekte“ in der Seitenleiste mit Baum, Neues-Projekt-Formular, Chat-Zuordnung und Lösen.
 - HTTP für das MCP: `GET /projects` → Baum, `POST /projects` → dieselben Aktionen wie `project_action`.
 
+## Parallele Chats
+Mehrere Chats laufen gleichzeitig; jeder hat seinen eigenen Lauf (OpenCode-Sitzung) und Stopp.
+- jarvisd führt `busySessions` (Set der laufenden Chats) und `latestRun` (neueste Lauf-Nummer je Chat). Eine neue Nachricht löst nur den Lauf **desselben** Chats ab. `state` enthält `busySessions`; `busy` gilt nur für den gezeigten Chat (`session`).
+- Chat-Ereignisse (`delta`, `reasoning`, `tool`, `latency`, `error`, `done`, `stopped`) tragen `session`. Die Oberfläche zeigt nur Ereignisse ihres gerade offenen Chats; laufende Chats markiert die Seitenleiste mit einem Punkt (`running` im Verlauf).
+- `chat` und `run_command` tragen `session` (null = neuer Chat). `stop` stoppt nur `session` bzw. den gezeigten Chat; `stop {all:true}` und `POST /stop` (Not-Aus) stoppen alle.
+- Wechselt man zu einem laufenden Chat (`open`), antwortet jarvisd mit `messages {running:true}` ohne die halbe Antwort und spielt die gepufferten Ereignisse (`core/src/runbuf.ts`) nach.
+- Browser und Bildschirm sind gemeinsame Werkzeuge: zwei Chats, die gleichzeitig dieselben Tabs bedienen, können sich in die Quere kommen.
+
 ## jarvisd-Endpunkte für die Hülle
 - `GET /health` → `{ok, opencode, browser}`
 - `POST /stop` → Not-Aus (bricht Modell ab, sperrt Werkzeuge kurz, stoppt Sprache)

@@ -43,7 +43,7 @@ function connect() {
   ws.onopen = () => { retry = 0; setOffline(false); };
   // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
   // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
-  ws.onclose = () => { state.busy = false; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
+  ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
@@ -55,10 +55,18 @@ function setOffline(off) {
   $("#footModel").textContent = off ? "– Jarvis-Dienst nicht erreichbar, verbinde neu …" : state.model;
 }
 
+// Mehrere Chats laufen gleichzeitig: Ereignisse tragen die Chat-ID und gelten nur für den Chat, den diese Oberfläche gerade zeigt.
+// "Läuft" und der Stopp-Knopf beziehen sich auf den gezeigten Chat; die übrigen laufenden Chats stehen in der Seitenleiste.
+const CHAT_EVENTS = new Set(["delta", "reasoning", "tool", "latency", "error", "stopped", "done", "notice", "messages"]);
+const syncBusy = () => { state.busy = !!currentSession && (state.busySessions || []).includes(currentSession); };
+const openChat = id => { currentSession = id; renderState(); send({ type: "open", id }); };
+let runningKey = "";
 function handle(m) {
+  if (CHAT_EVENTS.has(m.type) && m.session !== undefined && m.session !== currentSession) return;
   switch (m.type) {
     case "state":
       Object.assign(state, m); renderState(); renderSettingsState();
+      { const key = (m.busySessions || []).join(","); if (key !== runningKey) { runningKey = key; send({ type: "history" }); } } // Lauf-Markierung in der Seitenleiste
       // Früher schickte jede Oberfläche beim ersten "live"-State sofort voice:off und hat damit den
       // Sprachmodus anderer Clients abgewürgt. Der Daemon klärt jetzt die Zuständigkeit (voiceOwner).
       break;
@@ -83,18 +91,19 @@ function handle(m) {
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
     case "history": chatFolderNames = m.folders || chatFolderNames; renderHistory(m.sessions); break;
-    case "messages": renderMessages(m.messages); break;
-    case "session": currentSession = m.id; break;
+    case "messages": renderMessages(m.messages); if (m.running) startJarvis(); break; // läuft der Chat noch, kommt die halbe Antwort gleich als Ereignisse
+    case "session": if (!currentSession || m.id === null || m.replaces === currentSession) { currentSession = m.id; renderState(); } break;
     case "message_ids": applyMessageIds(m); break;
     case "projects": renderProjects(m); break;
     case "usage": renderUsage(m); break;
   }
-  if (m.type === "state" && !m.busy && current) finishTurn();
+  if (m.type === "state" && !state.busy && current) finishTurn();
 }
 
 // ---------- Kopfzeile / Status ----------
 const short = id => id ? id.split("/").pop().replace(/-free$/, "") : "…";
 function renderState() {
+  syncBusy();
   $("#modelName").textContent = short(state.model);
   $("#footModel").textContent = state.model;
   const pill = $("#browserPill");
@@ -347,7 +356,7 @@ async function ask(text) {
     editingMessage = null;
     turns.innerHTML = "";
   } else {
-    send({ type: "chat", text, attachments });
+    send({ type: "chat", text, attachments, session: currentSession });
     addUser(text, files);
     startJarvis();
   }
@@ -395,7 +404,7 @@ $("#composer").addEventListener("submit", e => {
   });
 });
 $("#stop").onclick = () => send({ type: "stop" });
-$("#emergencyStop").onclick = () => send({ type: "stop" });
+$("#emergencyStop").onclick = () => send({ type: "stop", all: true });
 
 // ---------- Anhänge (Fotos und Dateien) ----------
 // Grenzen wie im Daemon (core/src/attachments.ts); der Daemon prüft nochmals.
@@ -508,7 +517,7 @@ const setRail = open => {
 railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
 try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
 $("#newChat").onclick = () => {
-  send({ type: "new" }); currentSession = null; editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
+  send({ type: "new" }); currentSession = null; renderState(); editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
 };
 
 // Chatzeilen werden innerhalb der WebView verschoben. Das native Datei-Drag-and-drop
@@ -618,11 +627,11 @@ function renderHistory(list = []) {
     return isSearching || !collapsedSections.has(key);
   };
   const appendChat = (s, parent) => {
-    const li = document.createElement("li"); li.className = "history-chat"; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
+    const li = document.createElement("li"); li.className = "history-chat"; li.classList.toggle("active", !!s.active); li.classList.toggle("running", !!s.running); li.dataset.id = s.id;
     if (!s.folder) li.dataset.chatDropFolder = "";
     const title = document.createElement("button"); title.className = "history-title";
     title.textContent = s.title || "Unterhaltung";
-    title.onclick = () => { currentSession = s.id; send({ type: "open", id: s.id }); };
+    title.onclick = () => openChat(s.id);
     const menu = document.createElement("div"); menu.className = "history-menu";
     const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
     menuToggle.title = "Chataktionen"; menuToggle.setAttribute("aria-label", `Aktionen für ${s.title || "Chat"}`);
@@ -753,7 +762,7 @@ function exChatRow(c) {
   const li = document.createElement("li"); li.className = "ex-row is-chat"; li.tabIndex = 0;
   li.innerHTML = `<span class="ex-name">${icon("message")}<span class="ex-text"></span></span><span class="ex-type">Chat${c.assignedBy === "ki" ? " · KI" : ""}</span><span class="ex-date">${fmtDate(c.updated)}</span><span class="ex-acts"></span>`;
   li.querySelector(".ex-text").textContent = c.title;
-  const open = () => { currentSession = c.id; send({ type: "open", id: c.id }); $("#projectsDialog").close(); };
+  const open = () => { openChat(c.id); $("#projectsDialog").close(); };
   li.onclick = open; li.onkeydown = e => { if (e.key === "Enter") open(); };
   li.querySelector(".ex-acts").append(
     exBtn("move", "In Projekt verschieben", b => exMoveMenu(b, to => projectAction({ op: "assign", id: c.id, projectId: to, by: "manual" }))));
@@ -1474,7 +1483,7 @@ async function runSlash(text) {
   if (!known) { showNotice(`Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.`); return false; }
   addUser("/" + name + (args ? " " + args : ""));
   startJarvis();
-  send({ type: "run_command", name: known.name, args });
+  send({ type: "run_command", name: known.name, args, session: currentSession });
   return done();
 }
 

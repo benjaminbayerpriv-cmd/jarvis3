@@ -146,6 +146,9 @@ html.tauri { --inset-top: 28px; }
 .folder-toggle:hover { background:var(--state-hover); color:var(--on-surface); }
 .history-chat[data-id] { user-select:none; touch-action:none; }
 .history-chat.chat-drag-source { opacity:.45; }
+.history-chat.running::after { content:""; position:absolute; left:4px; top:50%; width:5px; height:5px; margin-top:-2.5px; border-radius:50%; background:var(--text-secondary, currentColor); animation:chat-running 1.2s ease-in-out infinite alternate; pointer-events:none; }
+@keyframes chat-running { to { opacity:.15; } }
+@media (prefers-reduced-motion: reduce) { .history-chat.running::after { animation:none; } }
 .history [data-chat-drop-folder].drop-target { background:var(--primary-container); color:var(--on-primary-container); }
 .chat-drag-preview {
   position:fixed; top:0; left:0; z-index:1000; pointer-events:none; max-width:240px;
