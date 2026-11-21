@@ -129,6 +129,10 @@ function restartSidecar(reason: string) {
 const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
   if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
+  if (e.type === "speech_start" || e.type === "partial") lastUserActivityAt = Date.now();
+  // Der Nutzer unterbricht: der Sidecar verwirft seine Warteschlange ohne say_start/say_end zu melden, und angesammelte
+  // Ansagen ("gehalten") würden danach mitten in seinen Satz platzen.
+  if (e.type === "speech_start" && voice === "live") { speech.sayTimes.clear(); clearHolds(); }
   // Sätze ohne hörbaren Ton (z. B. nur "1.") bekommen nie ein say_start: alles bis zur gestarteten/beendeten ID gilt als erledigt
   const doneUpTo = (id: number) => { for (const k of [...speech.sayTimes.keys()]) if (k <= id) speech.sayTimes.delete(k); };
   if (e.type === "say_start") { speaking.add(Number(e.id)); doneUpTo(Number(e.id)); }
@@ -184,14 +188,30 @@ let pendingUtterance = "";
 let utterTimer: ReturnType<typeof setTimeout> | undefined;
 let lastRun: { text: string; toolSeen: boolean; startedAt: number } | undefined;
 const STOP_WORDS = /^(stopp?|halt|abbrechen|hör auf|hoer auf|lass das|stop it)[.!?\s]*$/i;
+// Wann ist der Nutzer wirklich fertig? Der Sidecar meldet schon nach ~0,3 s Pause einen "final". Bei einem langen Satz mit Atempausen
+// würde das den Satz in Stücke schneiden und das erste Stück zu früh abschicken. Darum wartet jarvisd mit dem Absenden, solange
+// (a) der Nutzer erneut zu sprechen anfängt (speech_start/partial), (b) der Satz offensichtlich unfertig ist (kurzes Bruchstück,
+// endet auf "und/dass/auf/…" oder ohne Satzzeichen) – dann bis zu 3,5 s, insgesamt höchstens 8 s.
+let lastUserActivityAt = 0, pendingSince = 0;
+function looksUnfinished(text: string) {
+  const t = text.trim();
+  // Die Erkennung setzt am Ende eines vollständigen Satzes fast immer ein Satzzeichen; abgeschnittene Bruchstücke haben keins.
+  if (/[.!?…]["»“]?$/.test(t)) return false;
+  return true;
+}
 function hear(text: string) {
   if (STOP_WORDS.test(text.trim())) { pendingUtterance = ""; clearTimeout(utterTimer); void stop(); return; }
   if (!worthAnswering(text) && !pendingUtterance) return;
+  if (!pendingUtterance) pendingSince = Date.now();
   pendingUtterance = `${pendingUtterance} ${text}`.trim();
   clearTimeout(utterTimer);
-  utterTimer = setTimeout(sendUtterance, UTTER_WAIT_MS);
+  utterTimer = setTimeout(sendUtterance, looksUnfinished(pendingUtterance) ? 3500 : UTTER_WAIT_MS);
 }
 function sendUtterance() {
+  // Der Nutzer redet noch (neue Sprache seit kurzem): weiter warten, aber nie länger als 8 s seit dem ersten Stück
+  if (pendingUtterance && voice === "live" && Date.now() - lastUserActivityAt < 1200 && Date.now() - pendingSince < 8000) {
+    utterTimer = setTimeout(sendUtterance, 600); return;
+  }
   const text = pendingUtterance.trim(); pendingUtterance = "";
   if (!worthAnswering(text) || voice !== "live") return;
   let full = text, replace = false;
@@ -217,7 +237,8 @@ setInterval(() => {   // Wächter: hängt der Sidecar (keine Pegel mehr) oder di
   const now = Date.now();
   if (voice !== "off" && lastLevelAt && now - lastLevelAt > 5000) { lastLevelAt = now; restartSidecar("Das Sprachmodul reagierte nicht mehr"); return; }
   const oldest = Math.min(Infinity, ...speech.sayTimes.values());
-  if (speaking.size === 0 && Number.isFinite(oldest) && now - oldest > 12_000) { speech.sayTimes.clear(); restartSidecar("Die Sprachausgabe hing"); }
+  // nur wenn der Nutzer lange still war: nach einer Unterbrechung fehlen say_start-Meldungen zu Recht
+  if (speaking.size === 0 && Number.isFinite(oldest) && now - oldest > 30_000 && now - lastUserActivityAt > 20_000) { speech.sayTimes.clear(); restartSidecar("Die Sprachausgabe hing"); }
 }, 2000);
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
