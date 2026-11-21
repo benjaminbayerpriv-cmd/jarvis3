@@ -1673,7 +1673,16 @@ function extRow(title, sub, { chip, chipClass, toggle, onToggle, onRemove } = {}
   if (sub) { const p = document.createElement("p"); p.textContent = sub; text.append(p); }
   li.append(text);
   if (chip) { const c = document.createElement("span"); c.className = "ext-chip " + (chipClass || ""); c.textContent = chip; li.append(c); }
-  if (onToggle) { const b = document.createElement("button"); b.type = "button"; b.className = "toggle-lg small"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(!!toggle)); b.setAttribute("aria-label", title); b.onclick = () => { if (ws?.readyState !== WebSocket.OPEN) return showNotice("Jarvis ist gerade nicht verbunden."); b.disabled = true; onToggle(!toggle); }; li.append(b); }
+  if (onToggle) { const b = document.createElement("button"); b.type = "button"; b.className = "toggle-lg small"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(!!toggle)); b.setAttribute("aria-label", title); b.onclick = () => { if (ws?.readyState !== WebSocket.OPEN) return showNotice("Jarvis ist gerade nicht verbunden."); b.disabled = true;
+    b.setAttribute("aria-checked", String(!toggle));
+    onToggle(!toggle);
+    setTimeout(() => {
+      if (!b.isConnected || !b.disabled) return;
+      b.disabled = false;
+      b.setAttribute("aria-checked", String(!!toggle));
+      showNotice("Die Änderung dauert zu lange. Bitte versuche es erneut.");
+      send({ type: "ext_list" });
+    }, 12000); }; li.append(b); }
   if (onRemove) { const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn ext-remove"; b.title = "Entfernen"; b.setAttribute("aria-label", "Entfernen"); b.innerHTML = icon("trash"); b.onclick = onRemove; li.append(b); }
   return li;
 }
