@@ -36,7 +36,7 @@ func axText(_ root: AXUIElement, limit: Int = 4000) -> String {
     return joined.count > limit ? String(joined.prefix(limit)) + "…" : joined
 }
 
-private func capture(_ rect: CGRect) throws -> (URL, CGImage) {
+func capture(_ rect: CGRect) throws -> (URL, CGImage) {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("uimap-\(UUID().uuidString.prefix(8)).png")
     let task = Process()
@@ -71,8 +71,8 @@ func ocr(_ rect: CGRect) throws -> String {
 }
 
 /// Screenshot als PNG; optional mit nummerierten Rahmen (Set-of-Marks) für Vision-Modelle.
-func screenshot(_ rect: CGRect, marks: [Target]) throws -> String {
-    let (url, image) = try capture(rect)
+func screenshot(_ rect: CGRect, marks: [Target], window: CGWindowID? = nil) throws -> String {
+    let (url, image) = try window.map { try captureWindow($0) } ?? capture(rect)
     guard !marks.isEmpty else { return url.path }
     let scale = CGFloat(image.width) / rect.width
     guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,

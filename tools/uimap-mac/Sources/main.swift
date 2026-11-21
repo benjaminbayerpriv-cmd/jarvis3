@@ -30,9 +30,14 @@ func pid(_ bundle: String) -> pid_t? {
 final class Session {
     var display = 0
     var targets: [Target] = []
+    /// Fenster-Modus: Jarvis steuert genau dieses Fenster (auch verdeckt); nil = ganzer Monitor
+    var window: WindowInfo?
+    let streamer = WindowStreamer()
+    func mark(_ point: CGPoint) { streamer.cursor = point }   // virtuelle Maus im Live-Bild
 
     // Für die KI unwichtig: riesige Container und namenlose Gruppen/Texte.
     func useful(_ t: Target, _ screen: CGRect) -> Bool {
+        if t.kind == .text { return !t.label.isEmpty }
         if t.rect.width * t.rect.height > screen.width * screen.height * 0.35 { return false }
         let generic: Set<String> = ["Gruppe", "Text", "Bedienelement", "HTML-Inhalte", "Bild"]
         if ["AXGroup", "AXStaticText", "AXWebArea", "AXImage", "AXScrollArea", "AXUnknown"].contains(t.role),
@@ -40,11 +45,16 @@ final class Session {
         return true
     }
 
-    func scanNow(all: Bool = false) -> [[String: Any]] {
+    func scanNow(all: Bool = false) throws -> [[String: Any]] {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let screen = displayRect(display)
-        targets = scan(display: screen, frontPID: front,
-                       dockPID: pid("com.apple.dock"), menuExtrasPID: pid("com.apple.systemuiserver"))
+        var screen = displayRect(display)
+        if let w = window {
+            screen = w.bounds
+            targets = try scanWindow(w)
+        } else {
+            targets = scan(display: screen, frontPID: front,
+                           dockPID: pid("com.apple.dock"), menuExtrasPID: pid("com.apple.systemuiserver"))
+        }
         if !all { targets = targets.filter { useful($0, screen) } }
         return targets.enumerated().map { index, t in
             [
@@ -74,6 +84,7 @@ final class Session {
             }
         }
         let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
+        if let w = window { clickInApp(w.pid, at: point); return "app-mouse" }   // echte Maus bleibt, wo sie ist
         for type in [CGEventType.leftMouseDown, .leftMouseUp] {
             CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
                 .post(tap: .cghidEventTap)
@@ -96,12 +107,14 @@ final class Session {
         }
         if !focus(t) { _ = click(t) }
         usleep(80_000)
+        if let w = window { typeInApp(w.pid, text); return "app-keys" }
         postText(text)
         return "keys"
     }
 
     func scroll(_ t: Target, _ dy: Int) {
         let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
+        if let w = window { scrollInApp(w.pid, at: point, dy: dy); return }
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
             .post(tap: .cghidEventTap)
         CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: Int32(-dy), wheel2: 0, wheel3: 0)?
@@ -112,18 +125,22 @@ final class Session {
         do {
             switch request["cmd"] as? String {
             case "scan":
-                if let d = request["display"] as? Int { display = d }
+                if let d = request["display"] as? Int { display = d; window = nil }
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                else if request["display"] != nil || request["window"] is NSNull { window = nil }
                 let started = Date()
-                let list = scanNow(all: request["all"] as? Bool ?? false)
+                let list = try scanNow(all: request["all"] as? Bool ?? false)
                 var reply: [String: Any] = ["ok": true, "targets": list, "ms": Int(Date().timeIntervalSince(started) * 1000)]
                 if request["text"] as? Bool == true { reply["text"] = textList(list) }
                 return reply
             case "click":
-                return ["ok": true, "via": click(try target(request["id"] as? Int))]
+                let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
+                return ["ok": true, "via": click(t)]
             case "focus":
                 return ["ok": focus(try target(request["id"] as? Int))]
             case "type":
-                return ["ok": true, "via": try type(try target(request["id"] as? Int), request["text"] as? String ?? "")]
+                let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
+                return ["ok": true, "via": try type(t, request["text"] as? String ?? "")]
             case "scroll":
                 scroll(try target(request["id"] as? Int), request["dy"] as? Int ?? 3)
                 return ["ok": true]
@@ -139,8 +156,11 @@ final class Session {
                 return ["ok": true, "text": try ocr(CGRect(x: r[0], y: r[1], width: r[2], height: r[3])), "via": "ocr"]
             case "shot":
                 var rect = displayRect(display)
-                if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
-                let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [])
+                var shotWindow: CGWindowID?
+                if let id = request["window"] as? Int { let w = try windowInfo(CGWindowID(id)); rect = w.bounds; shotWindow = w.id }
+                else if let w = window, request["rect"] == nil, request["display"] == nil { rect = w.bounds; shotWindow = w.id }
+                if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]); shotWindow = nil }
+                let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [], window: shotWindow)
                 return ["ok": true, "path": path, "rect": [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)]]
             case "typetext":
                 // Text ohne Element-ID in das gerade fokussierte Feld schreiben (Rechner, Notizen, Suchfelder …)
@@ -152,10 +172,27 @@ final class Session {
                     if AXUIElementCopyAttributeValue(focused, "AXRole" as CFString, &roleRef) == .success,
                        (roleRef as? String) == "AXSecureTextField" { throw Failure(message: "Passwortfelder sind gesperrt") }
                 }
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                if let w = window { typeInApp(w.pid, request["text"] as? String ?? ""); return ["ok": true, "via": "app-keys", "window": Int(w.id)] }
                 postText(request["text"] as? String ?? "")
                 return ["ok": true, "via": "keys"]
             case "key":
-                try pressCombo(request["combo"] as? String ?? "")
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                try pressCombo(request["combo"] as? String ?? "", pid: window?.pid)
+                return ["ok": true]
+            case "windows":
+                let screens = displays().indices.map { displayRect($0) }
+                return ["ok": true, "windows": listWindows().map { w in
+                    ["id": Int(w.id), "app": w.app, "title": w.title, "pid": Int(w.pid), "onScreen": w.onScreen,
+                     "display": screens.firstIndex(where: { $0.intersects(w.bounds) }) ?? -1,
+                     "rect": [Int(w.bounds.minX), Int(w.bounds.minY), Int(w.bounds.width), Int(w.bounds.height)]] as [String: Any]
+                }]
+            case "stream_start":
+                guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                try streamer.start(try windowInfo(CGWindowID(id)), fps: request["fps"] as? Int ?? 20)
+                return ["ok": true]
+            case "stream_stop":
+                streamer.stop()
                 return ["ok": true]
             case "displays":
                 return ["ok": true, "displays": displays().indices.map { i in
@@ -181,6 +218,7 @@ func kindName(_ kind: Target.Kind) -> String {
     case .field: return "field"
     case .link: return "link"
     case .control: return "control"
+    case .text: return "text"
     }
 }
 
@@ -194,10 +232,11 @@ func textList(_ list: [[String: Any]]) -> String {
     }.joined(separator: "\n")
 }
 
+private let emitLock = NSLock()
 func emit(_ object: [String: Any]) {
-    let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
-    FileHandle.standardOutput.write(data)
-    FileHandle.standardOutput.write(Data("\n".utf8))
+    var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+    data.append(Data("\n".utf8))
+    emitLock.lock(); FileHandle.standardOutput.write(data); emitLock.unlock()
 }
 
 let args = Array(CommandLine.arguments.dropFirst())

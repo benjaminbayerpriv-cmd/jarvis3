@@ -52,7 +52,7 @@ private let aliases: [String: String] = [
     "apostrophe": "'", "hash": "#", "at": "@", "underscore": "_", "bracketleft": "[", "bracketright": "]",
 ]
 
-func pressCombo(_ combo: String) throws {
+func pressCombo(_ combo: String, pid: pid_t? = nil) throws {
     var flags: CGEventFlags = []
     var key: CGKeyCode?
     let layout = layoutKeys()
@@ -72,7 +72,7 @@ func pressCombo(_ combo: String) throws {
     for down in [true, false] {
         let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)
         e?.flags = flags
-        e?.post(tap: .cghidEventTap)
+        if let pid { e?.postToPid(pid) } else { e?.post(tap: .cghidEventTap) }
     }
 }
 
