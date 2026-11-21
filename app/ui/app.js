@@ -300,18 +300,6 @@ $("#dictate").onclick = () => {
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
 };
 
-// Vorschläge im Startzustand
-const SUGGEST = [
-  ["world", "Öffne YouTube und such nach Lofi-Musik"],
-  ["device-desktop", "Was ist gerade auf meinem Bildschirm?"],
-  ["search", "Fasse die Nachrichten von heute zusammen"],
-  ["edit", "Schreib mir eine kurze E-Mail-Vorlage"],
-];
-$("#suggestions").innerHTML = SUGGEST.map(([i, t], k) =>
-  `<button class="chip" style="animation-delay:${120 + k * 40}ms">${icon(i)}<span></span></button>`).join("");
-$("#suggestions").querySelectorAll(".chip span").forEach((s, k) => s.textContent = SUGGEST[k][1]);
-$("#suggestions").addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) ask(c.textContent); });
-
 // ---------- Seitenleiste / Verlauf ----------
 $("#railToggle").onclick = () => { const a = $("#app"); a.dataset.rail = a.dataset.rail === "open" ? "collapsed" : "open"; };
 $("#newChat").onclick = () => {
