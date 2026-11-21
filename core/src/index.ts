@@ -8,7 +8,7 @@ import { Desktop } from "./desktop";
 import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech } from "./speech";
-import { clickOutcome, conciseSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
+import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
 import { prepare, validate, hasImages, type Attachment } from "./attachments";
 import { correct, recognitionPrompt } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
@@ -604,7 +604,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
   }, 1300);
-  const system = spoken ? SYSTEM_PROMPT + "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll." : SYSTEM_PROMPT;
+  const system = spoken ? SYSTEM_PROMPT + "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll. Antworte knapp und direkt in vollständigen Sätzen. Wenn der Nutzer um Details bittet oder etwas vorgelesen haben möchte, gib den gewünschten Inhalt vollständig wieder. Erwähne Koordinaten und Elementnummern nur auf Nachfrage." : SYSTEM_PROMPT;
   const attachmentBlocks = saved?.text ? [saved.text] : [];
   const attachmentNames = [...(saved?.names ?? []), ...atts.map(file => file.name)];
   const images = canSee(model) ? [...(saved?.images ?? [])] : [];
@@ -701,7 +701,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       const aborted = e.kind === "done" && e.aborted;
       if (!aborted) {
         const result = click ? clickOutcome(click, !!turn.clickSent) : "";
-        const toRead = result || conciseSpeech(finalSpeech || (!toolSeen ? responseText : ""), text);
+        const toRead = result || formatLiveSpeech(finalSpeech || (!toolSeen ? responseText : ""), text);
         if (spoken || result) emit({ type: "delta", text: toRead || "Ich konnte die Antwort nicht abschließen." });
         if (spoken) {
           trace.add(runId, `lauf-ende ${e.kind}`, `${Math.round(performance.now() - started)} ms text=${responseText.length} zeichen werkzeug=${toolSeen} voice=${voice}`);
