@@ -127,6 +127,7 @@ html.tauri { --inset-top: 28px; }
 .history li:hover { background: var(--state-hover); }
 .history li.active { background: var(--primary-container); color: var(--on-primary-container); }
 .history li.history-chat { position:relative; height:36px; display:flex; align-items:center; gap:2px; padding:0 4px 0 12px; line-height:normal; overflow:visible; }
+.history li.folder-chat { height:auto; min-height:36px; display:block; padding:0; }
 .history-title { min-width:0; flex:1; overflow:hidden; text-align:left; text-overflow:ellipsis; white-space:nowrap; color:inherit; font-size:14px; }
 .history-menu { position:relative; flex:none; }
 .history-menu-toggle { width:28px; height:28px; border-radius:var(--r-full); display:grid; place-items:center; color:var(--on-surface-low); }
@@ -136,11 +137,10 @@ html.tauri { --inset-top: 28px; }
 .history-actions button { width:100%; min-height:36px; display:flex; align-items:center; gap:10px; padding:0 10px; border-radius:8px; color:var(--on-surface); text-align:left; }
 .history-actions button:hover { background:var(--state-hover); }
 .history-actions svg { width:17px!important; height:17px!important; }
-.folder-row { list-style:none; margin-top:6px; border-radius:10px; }
-.folder-toggle { width:100%; min-height:34px; display:flex; align-items:center; gap:8px; padding:0 10px; border-radius:var(--r-full); text-align:left; color:var(--on-surface-low); font-size:13px; }
-.folder-toggle:hover, .folder-row.drop-target { background:var(--state-hover); color:var(--on-surface); }
-.folder-toggle svg { width:16px; height:16px; }
-.loose-row { padding:8px 12px 2px; color:var(--on-surface-low); font-size:13px; }
+.folder-toggle { width:100%; height:36px; display:flex; align-items:center; gap:10px; padding:0 12px; border-radius:var(--r-full); color:var(--on-surface-variant); text-align:left; font-size:14px; }
+.folder-chat:hover > .folder-toggle, .folder-chat.drop-target > .folder-toggle { background:var(--state-hover); color:var(--on-surface); }
+.folder-toggle svg { width:18px; height:18px; }
+.folder-children { list-style:none; margin:0; padding:0 0 0 14px; }
 .app:not([data-rail="open"]) .history { visibility: hidden; }
 .rail-spacer { display: none; }
 
@@ -382,7 +382,10 @@ html.tauri { --inset-top: 28px; }
 .send-btn.stop { background: var(--primary-container); }
 .send-btn svg { width: 20px; height: 20px; }
 @keyframes expand-in { from { opacity: .25; transform: scale(.5); } to { opacity: 1; transform: none; } }
-#dictate.rec { color: var(--brand-pink); background: color-mix(in srgb, var(--brand-pink) 14%, transparent); }
+/* Diktat läuft: Mikro-Knopf wird zum Stopp-Knopf (gefüllter Kreis), kein rotes Leuchten */
+#dictate.rec { color: var(--on-primary-container); background: var(--primary-container); }
+#dictate.rec svg { width: 18px; height: 18px; }
+.send-btn:disabled { opacity: .45; cursor: default; }
 .disclaimer { max-width: 708px; margin: 8px auto 0; text-align: center; font-size: 12px; line-height: 16px; color: var(--on-surface-low); }
 
 .stop-banner { max-width: 708px; margin: 0 auto 8px; display: flex; justify-content: center; }

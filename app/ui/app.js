@@ -29,6 +29,7 @@ let chatFolderNames = [];
 let editingMessage = null;
 let pendingChatAction = null;
 let live = { on: false, muted: false };
+let dictating = false;   // Diktat läuft (Mikro-Knopf wird zum Stopp, Live-Knopf zum Senden)
 
 // ---------- Verbindung ----------
 let ws, retry = 0;
@@ -306,8 +307,9 @@ const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
 function updateSend() {
   const has = input.value.trim().length > 0;
-  $("#send").hidden = state.busy || !has;
-  $("#liveBtn").hidden = has || state.busy;
+  $("#send").hidden = state.busy || !(has || dictating);
+  $("#send").disabled = !has;
+  $("#liveBtn").hidden = has || dictating || state.busy;
 }
 input.addEventListener("input", () => {
   if (dictating) dictBase = input.value;   // eigene Änderungen während des Diktierens bleiben erhalten
@@ -320,7 +322,8 @@ input.addEventListener("keydown", e => {
 });
 $("#composer").addEventListener("submit", e => {
   e.preventDefault();
-  if (state.busy) return;
+  if (state.busy || !input.value.trim()) return;
+  if (dictating) $("#dictate").click();   // Absenden beendet das Diktat
   ask(input.value); input.value = ""; autosize(); updateSend();
 });
 $("#stop").onclick = () => send({ type: "stop" });
@@ -328,7 +331,6 @@ $("#emergencyStop").onclick = () => send({ type: "stop" });
 $("#attach").onclick = () => input.focus();
 
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
-let dictating = false;
 let dictBase = "";   // bereits fertig diktierter Text; jeder neue Satz wird angehängt statt das Feld zu überschreiben
 const dictJoin = t => dictBase && t ? dictBase + (/\s$/.test(dictBase) ? "" : " ") + t : dictBase || t;
 function dictShow(t) {
@@ -339,6 +341,9 @@ $("#dictate").onclick = () => {
   dictating = !dictating;
   if (dictating) dictBase = input.value;
   $("#dictate").classList.toggle("rec", dictating);
+  $("#dictate").innerHTML = icon(dictating ? "player-stop-filled" : "microphone");
+  $("#dictate").setAttribute("aria-label", dictating ? "Diktat beenden" : "Diktieren");
+  updateSend();
   if (!live.on) setVoiceUi(dictating ? "dictate" : "off");
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
 };
@@ -382,15 +387,25 @@ function renderHistory(list = []) {
   };
   const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
   const addFolder = name => {
-    const row = document.createElement("li"); row.className = "folder-row"; row.dataset.folder = name;
-    const toggle = document.createElement("button"); toggle.className = "folder-toggle"; toggle.innerHTML = icon(collapsed.has(name) ? "folder" : "folder-open"); const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel); toggle.setAttribute("aria-expanded", String(!collapsed.has(name)));
+    const row = document.createElement("li"); row.className = "history-chat folder-chat"; row.dataset.folder = name;
+    const toggle = document.createElement("button"); toggle.className = "folder-toggle";
+    toggle.innerHTML = icon(collapsed.has(name) ? "folder" : "folder-open");
+    const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel);
+    toggle.setAttribute("aria-expanded", String(!collapsed.has(name)));
+    toggle.setAttribute("aria-label", `${collapsed.has(name) ? "Ordner öffnen" : "Ordner schließen"}: ${name}`);
     toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
-    row.append(toggle); row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drop-target"); }); row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
-    row.addEventListener("drop", e => { e.preventDefault(); row.classList.remove("drop-target"); send({type:"chat_action", action:"move", id:e.dataTransfer.getData("text/plain"), folder:name}); }); ul.append(row);
-    if (!collapsed.has(name)) visible.filter(s => s.folder === name).forEach(s => appendChat(s, ul));
+    row.append(toggle);
+    row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drop-target"); }); row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
+    row.addEventListener("drop", e => { e.preventDefault(); row.classList.remove("drop-target"); send({type:"chat_action", action:"move", id:e.dataTransfer.getData("text/plain"), folder:name}); });
+    if (!collapsed.has(name)) {
+      const children = document.createElement("ul"); children.className = "folder-children";
+      visible.filter(s => s.folder === name).forEach(s => appendChat(s, children));
+      row.append(children);
+    }
+    ul.append(row);
   };
   folders.forEach(addFolder);
-  const loose = visible.filter(s => !s.folder); if (loose.length) { const section = document.createElement("li"); section.className = "folder-row loose-row"; section.textContent = "Zuletzt"; ul.append(section); loose.forEach(s => appendChat(s, ul)); }
+  visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
 }
 document.addEventListener("click", () => {
   document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
@@ -476,7 +491,7 @@ function renderModels(filter = "") {
 }
 $("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
 $(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
-$("#newFolder").onclick = () => showChatAction("folder");
+$("#newFolder").onclick = () => { setRail(true); showChatAction("folder"); };
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
   const labels = { folder: "Ordner erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?" };
@@ -495,7 +510,11 @@ $("#chatActionDialog").addEventListener("close", () => {
   pendingChatAction = null;
   if (!action || result !== "apply") return;
   const value = $("#chatActionValue").value.trim();
-  if (action.action === "folder" && value) send({ type:"chat_action", action:"folder", name:value });
+  if (action.action === "folder" && value) {
+    if (!chatFolderNames.includes(value)) chatFolderNames.push(value);
+    renderHistory(historySessions);
+    send({ type:"chat_action", action:"folder", name:value });
+  }
   else if (action.action === "rename" && value) send({ type:"chat_action", action:"rename", id:action.id, title:value });
   else if (action.action === "move") send({ type:"chat_action", action:"move", id:action.id, folder:value });
   else if (action.action === "delete") send({ type:"chat_action", action:"delete", id:action.id });
