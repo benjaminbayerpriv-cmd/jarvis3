@@ -681,7 +681,6 @@ function renderHistory(list = []) {
     const isFolderCollapsed = !isSearching && collapsed.has(name);
     const toggle = document.createElement("button"); toggle.className = "folder-toggle";
     toggle.dataset.chatDropFolder = name;
-    toggle.innerHTML = icon(isFolderCollapsed ? "folder" : "folder-open");
     const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel);
     toggle.setAttribute("aria-expanded", String(!isFolderCollapsed));
     toggle.setAttribute("aria-label", `${isFolderCollapsed ? "Projekt öffnen" : "Projekt schließen"}: ${name}`);
