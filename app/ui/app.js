@@ -15,6 +15,7 @@ export function icon(name, cls = "ic") {
     ? `<svg class="${cls}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${i.d}</svg>`
     : `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${i.d}</svg>`;
 }
+TABLER.file ??= { d: '<path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />', fill: false };
 const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").forEach(el => {
   if (!el.dataset.painted) { el.insertAdjacentHTML("afterbegin", icon(el.dataset.icon)); el.dataset.painted = "1"; }
 });
@@ -93,10 +94,17 @@ const stickToBottom = () => { if (conv.scrollHeight - conv.scrollTop - conv.clie
 
 const setZero = on => { $("#zero").classList.toggle("gone", !on); document.querySelector(".main").classList.toggle("is-zero", on); };
 setZero(true);
-function addUser(text) {
+function addUser(text, files = []) {
   setZero(false);
   const n = $("#tplUser").content.firstElementChild.cloneNode(true);
-  n.querySelector(".bubble").textContent = text;
+  const bubble = n.querySelector(".bubble");
+  if (files.length) {
+    const row = document.createElement("div");
+    row.className = "bubble-files";
+    for (const f of files) row.append(fileChip(f, false));
+    bubble.append(row);
+  }
+  if (text) { const t = document.createElement("div"); t.textContent = text; bubble.append(t); }
   turns.append(n);
 }
 function startJarvis() {
@@ -274,19 +282,27 @@ function showError(msg) {
   current.blocks.push({ kind: "error", el: p });
 }
 
-function ask(text) {
+async function ask(text) {
   text = text.trim();
-  if (!text) return;
-  addUser(text);
+  const files = pending.splice(0);
+  renderChips();
+  if (!text && !files.length) return;
+  let attachments = [];
+  try { attachments = await Promise.all(files.map(readFile)); } catch (error) {
+    reportError("attachments", error);
+    showError(`Anhang nicht lesbar: ${error?.message ?? error}`);
+    return;
+  }
+  addUser(text, files);
   startJarvis();
-  send({ type: "chat", text });
+  send({ type: "chat", text, attachments });
 }
 
 // ---------- Eingabe ----------
 const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
 function updateSend() {
-  const has = input.value.trim().length > 0;
+  const has = input.value.trim().length > 0 || pending.length > 0;
   $("#send").hidden = state.busy || !has;
   $("#liveBtn").hidden = has || state.busy;
 }
@@ -301,11 +317,87 @@ input.addEventListener("keydown", e => {
 $("#composer").addEventListener("submit", e => {
   e.preventDefault();
   if (state.busy) return;
-  ask(input.value); input.value = ""; autosize(); updateSend();
+  const text = input.value;
+  input.value = ""; autosize();
+  ask(text).finally(updateSend);
 });
 $("#stop").onclick = () => send({ type: "stop" });
 $("#emergencyStop").onclick = () => send({ type: "stop" });
-$("#attach").onclick = () => input.focus();
+
+// ---------- Anhänge (Fotos und Dateien) ----------
+// Grenzen wie im Daemon (core/src/attachments.ts); der Daemon prüft nochmals.
+const ATT = { files: 8, fileBytes: 10 * 1024 * 1024, totalBytes: 25 * 1024 * 1024 };
+const pending = [];
+const isImage = f => /^image\/(png|jpe?g|gif|webp)$/.test(f.type);
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+function fileChip(f, removable) {
+  const c = document.createElement("div");
+  c.className = "chip";
+  if (isImage(f)) {
+    f._url ??= URL.createObjectURL(f);
+    const im = document.createElement("img"); im.src = f._url; im.alt = ""; c.append(im);
+  } else {
+    const ic = document.createElement("span"); ic.className = "chip-ic"; ic.dataset.icon = "file"; c.append(ic);
+  }
+  const t = document.createElement("span"); t.className = "chip-name"; t.textContent = f.name; t.title = `${f.name} · ${fmtSize(f.size)}`; c.append(t);
+  if (removable) {
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "chip-x"; x.setAttribute("aria-label", `${f.name} entfernen`); x.dataset.icon = "x";
+    x.onclick = () => { const i = pending.indexOf(f); if (i >= 0) pending.splice(i, 1); renderChips(); updateSend(); };
+    c.append(x);
+  }
+  paintIcons(c);
+  return c;
+}
+function renderChips() {
+  const box = $("#chips");
+  box.replaceChildren(...pending.map(f => fileChip(f, true)));
+  box.hidden = pending.length === 0;
+}
+function addFiles(list) {
+  const problems = [];
+  for (const f of list) {
+    const total = pending.reduce((n, p) => n + p.size, 0) + f.size;
+    if (pending.length >= ATT.files) { problems.push(`Höchstens ${ATT.files} Anhänge pro Nachricht.`); break; }
+    if (f.size === 0) problems.push(`„${f.name}“ ist leer.`);
+    else if (f.size > ATT.fileBytes) problems.push(`„${f.name}“ ist größer als ${ATT.fileBytes / 1048576} MB (${fmtSize(f.size)}).`);
+    else if (total > ATT.totalBytes) problems.push(`„${f.name}“ passt nicht mehr dazu (zusammen höchstens ${ATT.totalBytes / 1048576} MB).`);
+    else pending.push(f);
+  }
+  renderChips(); updateSend();
+  if (problems.length) {
+    toast(problems.join(" "));
+    send({ type: "client_error", where: "attachments", message: problems.join(" ") });
+  }
+}
+function toast(text) {
+  const t = $("#attachNote");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 6000);
+}
+const readFile = f => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve({ name: f.name, mime: f.type || "", data: String(r.result).split(",")[1] ?? "" });
+  r.onerror = () => reject(r.error ?? new Error(`„${f.name}“ nicht lesbar`));
+  r.readAsDataURL(f);
+});
+$("#attach").onclick = () => $("#fileInput").click();
+$("#fileInput").onchange = e => { addFiles([...e.target.files]); e.target.value = ""; input.focus(); };
+// Drag and Drop auf das ganze Fenster, Einfügen (Strg/Cmd+V) von Bildern aus der Zwischenablage
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types ?? [])].includes("Files");
+addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; document.body.classList.add("dropping"); });
+addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("dragleave", e => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
+addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping");
+  addFiles([...e.dataTransfer.files]);
+});
+input.addEventListener("paste", e => {
+  const files = [...(e.clipboardData?.files ?? [])];
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
 
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
 let dictating = false;

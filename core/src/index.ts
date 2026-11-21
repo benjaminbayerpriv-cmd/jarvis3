@@ -8,6 +8,7 @@ import { Desktop } from "./desktop";
 import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
+import { prepare, validate, hasImages, type Attachment } from "./attachments";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -189,12 +190,21 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
   return "Ich kümmere mich darum, einen Moment.";
 }
 
-async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false) {
+const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
+
+async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = []) {
   if (busy && session && !fresh) await brain.abort(session);
+  // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
+  if (hasImages(atts) && !canSee(model)) {
+    const free = (m: ModelInfo) => m.vision && (limited.get(m.id) ?? 0) < Date.now() && !tried.includes(m.id);
+    const vm = models.find(m => free(m) && m.group === "free") ?? models.find(free);
+    if (vm) { broadcast({ type: "notice", text: `${model.split("/").pop()} kann keine Bilder sehen – für dieses Bild nutze ich ${vm.model}.` }); model = vm.id; }
+    else broadcast({ type: "notice", text: `${model.split("/").pop()} kann keine Bilder sehen und es ist kein Bildmodell verfügbar. Wähle in der Modellliste eins mit „Bild“.` });
+  }
   // Ein Modell, das gerade am Limit ist, gar nicht erst anfragen
   if ((limited.get(model) ?? 0) > Date.now()) {
     const alt = nextModel([...tried, model]);
-    if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh); }
+    if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts); }
   }
   const isNew = !fresh && !session;
   const sid = fresh ? await brain.createSession("Test") : (session ??= await brain.createSession());
@@ -221,7 +231,16 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
   };
   const system = spoken ? SYSTEM_PROMPT + "\n\nDu bist gerade im Sprachmodus: antworte in höchstens zwei kurzen Sätzen, ohne Listen." : SYSTEM_PROMPT;
-  await brain.prompt(sid, text, model, system, (e: BrainEvent) => {
+  let prompt = text, images: { mime: string; url: string }[] = [];
+  if (atts.length) {
+    const prep = await prepare(atts, join(workspace, "uploads"), canSee(model));
+    prompt = (text.trim() || "Sieh dir die angehängten Dateien an.") + prep.text;
+    images = prep.images;
+    if (prep.notes.length) broadcast({ type: "notice", text: prep.notes.join(" ") });
+    for (const p of prep.problems) recordError({ category: "ui", source: "jarvisd/attachment", message: p.message,
+      context: { ...p.context, name: p.name, model, session: sid } });
+  }
+  await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
     if (switching) return;
     if (e.kind === "error" && isLimit(e.message)) {
       limited.set(model, Date.now() + 30 * 60_000);
@@ -229,7 +248,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (alt) {
         switching = true;
         broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` });
-        brain.abort(sid).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh); });
+        brain.abort(sid).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts); });
         return;
       }
       e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
@@ -270,7 +289,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "done" || e.kind === "error") { busy = false; broadcast(state()); }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }
       : { type: e.kind, ...e });
-  });
+  }, images);
 }
 
 // ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
@@ -392,6 +411,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
     }
   },
   websocket: {
+    maxPayloadLength: 48 * 1024 * 1024, // Anhänge kommen Base64-kodiert (bis ~25 MB Dateien)
     open(ws) {
       if (ws.data.kind === "browser") { browser.attach(ws); broadcast(state()); }
       else {
@@ -472,7 +492,15 @@ async function route(req: Request, srv: any) {
 async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
       const msg = JSON.parse(raw);
-      if (msg.type === "chat") await chat(msg.text, msg.model, false, [], ws.data.fresh);
+      if (msg.type === "chat") {
+        const atts: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : [];
+        const bad = validate(atts);
+        if (bad) {
+          recordError({ category: "ui", source: "jarvisd/attachment", message: bad, context: { count: atts.length, names: atts.map(a => String(a?.name).slice(0, 80)) } });
+          ws.send(JSON.stringify({ type: "error", message: bad })); return;
+        }
+        await chat(msg.text ?? "", msg.model, false, [], ws.data.fresh, atts);
+      }
       else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
         context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
       else if (msg.type === "stop") await stop();
