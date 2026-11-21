@@ -548,13 +548,6 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 ::-webkit-scrollbar-thumb:hover { background: var(--outline); background-clip: content-box; border: 3px solid transparent; }
 ::selection { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 
-.composer { transition: box-shadow var(--d-s2), max-width var(--d-m2) var(--ease); }
-.main.is-zero .composer { max-width: 660px; }
-
-/* ---------- Seitenleisten-Umschalter ---------- */
-/* Zu: Symbol mittig bei x=36 wie alle Rail-Symbole. Auf: wandert mit der aufklappenden Leiste an deren rechten Rand
-   (Leistenbreite 280 - 72 = 208 px Versatz, gleiche Dauer und Kurve wie die Leiste).  */
-.rail-top { position: relative; }
-#railToggle { position: relative; z-index: 1; margin-left: 0; transition: transform var(--d-m2) var(--ease), background-color var(--d-s3) var(--ease); }
-.app[data-rail="open"] #railToggle { transform: translateX(208px); }
-#railToggle svg { transition: opacity var(--d-s3) linear; }
+/* Leeres Eingabefeld: die eingeklappte Sprach-Zeile darf keinen Zeilenabstand erzeugen, sonst ist es 68 statt 64 px hoch
+   und die Enden sind kein perfekter Halbkreis (Radius 32 = halbe Höhe). */
+.composer:not([data-voice="live"]):not([data-voice="dictate"]) { row-gap: 0; }
