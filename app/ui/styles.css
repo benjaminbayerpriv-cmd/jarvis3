@@ -353,7 +353,7 @@ html.tauri { --inset-top: 28px; }
   min-height: 64px; padding: 12px; background: var(--surface); border-radius: var(--r-xl-inc);
   box-shadow: var(--shadow-input); transition: box-shadow var(--d-s2), border-radius var(--d-m1) var(--ease);
 }
-.composer:focus-within { box-shadow: var(--shadow-input), 0 0 0 1px var(--outline-variant); }
+.composer textarea:focus, .composer textarea:focus-visible { outline: none; }   /* kein Randhighlight im Eingabefeld */
 .composer.pulse { animation: populated-pulse 1.2s var(--ease); }
 @keyframes populated-pulse {
   0% { box-shadow: 0 0 0 0 transparent, var(--shadow-input); }
