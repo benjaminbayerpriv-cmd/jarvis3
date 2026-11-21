@@ -165,7 +165,7 @@ html.tauri { --inset-top: 28px; }
 .brand { font-size: 22px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; }
 .model-name { font-size: 14px; color: var(--on-surface-low); }
 .chev svg { width: 18px; height: 18px; color: var(--on-surface-low); }
-.topbar-right { display: flex; align-items: center; gap: 8px; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .status-pill {
   display: flex; align-items: center; gap: 6px; height: var(--ctl); padding: 0 12px; border-radius: var(--r-full);
   font-size: 13px; color: var(--on-surface-low); background: var(--surface);
@@ -448,3 +448,107 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .app[data-rail="open"] .model-chip .brand { font-size: 18px; flex: none; }
 .app[data-rail="open"] .model-chip .model-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; }
 .app[data-rail="open"] .model-chip .chev { display: none; }
+
+/* ---------- Dialoge ---------- */
+.sheet {
+  border: 0; padding: 0; border-radius: var(--r-xl); background: var(--surface-high); color: var(--on-surface);
+  width: min(520px, calc(100vw - 32px)); max-height: min(640px, calc(100vh - 64px));
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
+}
+.sheet[open] { animation: menu-in var(--d-m1) var(--ease-decel) both; }
+.sheet::backdrop { background: rgba(0, 0, 0, .5); animation: live-in var(--d-m1) linear both; }
+@keyframes menu-in { from { opacity: 0; transform: scale(.92) translateY(-8px); } to { opacity: 1; transform: none; } }
+.sheet-inner { display: flex; flex-direction: column; max-height: inherit; padding: 8px 8px 16px; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 8px 16px; }
+.sheet-head h2 { margin: 0; font-size: 22px; font-weight: 400; }
+.search { display: flex; align-items: center; gap: 8px; margin: 4px 8px 8px; padding: 0 12px; height: 44px;
+  border-radius: var(--r-full); background: var(--surface); color: var(--on-surface-low); }
+.search input { flex: 1; border: 0; outline: 0; background: none; color: var(--on-surface); font: inherit; }
+.model-list { overflow-y: auto; padding: 0 4px; }
+.model-group { font-size: 13px; color: var(--on-surface-low); padding: 12px 12px 4px; }
+.model-opt {
+  width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; padding: 10px 12px; border-radius: var(--r-m);
+  transition: background-color var(--d-s3) var(--ease);
+}
+.model-opt:hover { background: var(--state-hover); }
+.model-opt .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-opt .tag { font-size: 12px; padding: 2px 8px; border-radius: var(--r-full); background: var(--surface); color: var(--on-surface-low); }
+.model-opt .check { width: 20px; color: var(--primary); }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; }
+.setting p { margin: 2px 0 0; font-size: 13px; line-height: 18px; color: var(--on-surface-low); }
+.setting b { font-weight: 500; }
+.setting select { background: var(--surface); color: var(--on-surface); border: 0; border-radius: var(--r-s); padding: 8px; font: inherit; font-size: 14px; max-width: 200px; }
+.toggle-lg { width: 52px; height: 32px; border-radius: var(--r-full); background: var(--surface-highest); border: 2px solid var(--outline);
+  position: relative; flex: none; transition: background-color var(--d-m1) var(--ease), border-color var(--d-m1) var(--ease); }
+.toggle-lg::after { content: ""; position: absolute; top: 6px; left: 6px; width: 16px; height: 16px; border-radius: 50%; background: var(--outline);
+  transition: transform var(--d-m1) var(--ease), width var(--d-m1) var(--ease), height var(--d-m1) var(--ease), top var(--d-m1) var(--ease), background-color var(--d-m1) var(--ease); }
+.toggle-lg[aria-checked="true"] { background: var(--primary); border-color: var(--primary); }
+.toggle-lg[aria-checked="true"]::after { transform: translateX(20px); top: 2px; width: 24px; height: 24px; left: 2px; background: var(--primary-container); }
+
+@media (max-width: 640px) {
+  .rail { display: none; }
+  .app { grid-template-columns: 1fr; }
+  .mode-label, .status-pill span:last-child { display: none; }
+  .greeting { font-size: 28px; line-height: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
+
+/* ---------- Live-Ansicht des Tabs ---------- */
+.view-toggle { width: var(--ctl); height: var(--ctl); }
+.view-toggle[aria-pressed="false"] { color: var(--on-surface-low); opacity: .6; }
+.viewer {
+  position: fixed; right: 24px; bottom: 112px; z-index: 12; width: min(600px, 46vw); min-width: 320px; max-width: calc(100vw - 48px);
+  background: var(--surface); border-radius: var(--r-l); overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45), 0 0 0 1px var(--outline-variant);
+  animation: move-up var(--d-m4) var(--ease) both; transition: width var(--d-m2) var(--ease);
+}
+.viewer.big { width: min(1100px, calc(100vw - 48px)); }
+.viewer.leaving { animation: live-out var(--d-m1) var(--ease-accel) both; }
+.viewer-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 4px 0 14px; cursor: pointer; user-select: none; }
+.viewer-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; animation: pulse 1.6s var(--ease) infinite; }
+.viewer-title { font-size: 13px; line-height: 18px; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.viewer-host { font-size: 12px; color: var(--on-surface-low); margin-left: auto; flex: none; }
+.viewer-close { width: 32px; height: 32px; flex: none; }
+.viewer-close svg { width: 18px; height: 18px; }
+.viewer-frame { background: #000; line-height: 0; aspect-ratio: var(--ar, 16 / 10); max-height: 62vh; width: 100%; }
+/* Das Panel folgt der Auflösung des Tabs (Seitenverhältnis), nicht dem einzelnen Bild: die ganze Seite bleibt sichtbar */
+.viewer-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+@media (max-width: 640px) { .viewer { right: 12px; bottom: 96px; width: calc(100vw - 24px); } }
+
+/* ---------- Politur ---------- */
+/* sanftes Leuchten hinter der Startseite (Gemini: lm-glow, Farbe #1f3b9b); wächst einmal ein und verschwindet mit der ersten Nachricht */
+.main { position: relative; isolation: isolate; }
+.main::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse 46% 34% at 50% 47%, color-mix(in srgb, var(--glow-chat) 62%, transparent) 0%, color-mix(in srgb, var(--glow-chat) 26%, transparent) 45%, transparent 100%);
+  transition: opacity var(--d-l2) var(--ease);
+}
+.main.is-zero::before { opacity: .9; animation: glow-grow 1s var(--ease) both; }
+@keyframes glow-grow { from { opacity: 0; transform: scale(.6); } to { opacity: .9; transform: none; } }
+
+/* Kopieren unter fertigen Antworten */
+.copy-btn { width: 32px; height: 32px; margin: 8px 0 0 -6px; border-radius: var(--r-full); display: inline-grid; place-items: center;
+  color: var(--on-surface-low); transition: background-color var(--d-s3) var(--ease), color var(--d-s3) var(--ease); }
+.copy-btn:hover { background: var(--state-hover); color: var(--on-surface); }
+.copy-btn svg { width: 18px; height: 18px; }
+.copy-btn.done { color: var(--success); }
+
+/* Scrollleisten und Textauswahl */
+* { scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--outline-variant); border-radius: var(--r-full); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--outline); background-clip: content-box; border: 3px solid transparent; }
+::selection { background: color-mix(in srgb, var(--primary) 38%, transparent); }
+
+.composer { transition: box-shadow var(--d-s2), max-width var(--d-m2) var(--ease); }
+.main.is-zero .composer { max-width: 660px; }
+
+/* ---------- Seitenleisten-Umschalter ---------- */
+/* Zu: Symbol mittig bei x=36 wie alle Rail-Symbole. Auf: wandert mit der aufklappenden Leiste an deren rechten Rand
+   (Leistenbreite 280 - 72 = 208 px Versatz, gleiche Dauer und Kurve wie die Leiste).  */
+.rail-top { position: relative; }
+#railToggle { position: relative; z-index: 1; margin-left: 0; transition: transform var(--d-m2) var(--ease), background-color var(--d-s3) var(--ease); }
+.app[data-rail="open"] #railToggle { transform: translateX(208px); }
+#railToggle svg { transition: opacity var(--d-s3) linear; }
