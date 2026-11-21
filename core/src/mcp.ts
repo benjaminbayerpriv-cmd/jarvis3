@@ -170,6 +170,41 @@ server.tool("project_assign", "Legt einen Chat in ein Projekt (projectId=null l�
 server.tool("project_analyze", "Prüft die Zuordnung aller noch nicht zugeordneten Chats erneut mit dem Modell.",
   {}, async () => result(await projectCall({ op: "analyze" })));
 
+// ---------- Visualisierungen (Chat + Vorschau) ----------
+async function visualize(body: Record<string, unknown>, showMe = false) {
+  let r: Record<string, any>;
+  try {
+    r = await (await fetch(`${JARVISD}/visualize`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json() as Record<string, any>;
+  } catch { return { ...text("Fehler: jarvisd nicht erreichbar"), isError: true }; }
+  if (!r.ok) return { ...text(`Fehler: ${r.error}${r.stdout ? `\nAusgabe:\n${r.stdout}` : ""}`), isError: true };
+  const files: string[] = r.files ?? [];
+  const lines = [
+    `${r.marker} „${r.title}“ wird dem Nutzer im Chat und in der Vorschau angezeigt${files.length ? ` (${files.join(", ")})` : ""}.`,
+    files.length ? "Beschreibe nicht den Code, sondern kurz, was die Grafik zeigt. Kein Link nötig." : "Es ist kein Bild entstanden: Figur mit matplotlib zeichnen oder eine Datei (png/svg/html) im aktuellen Ordner speichern.",
+    r.stdout?.trim() ? `Ausgabe:\n${String(r.stdout).trim()}` : "",
+    r.error ? `Warnungen/Fehler:\n${r.error}` : "",
+  ].filter(Boolean);
+  const content: any[] = [{ type: "text", text: lines.join("\n") }];
+  const png = files.find(f => /\.(png|jpe?g)$/i.test(f));
+  if (showMe && png) {
+    try {
+      const img = await fetch(`${JARVISD}/visual/${r.id}/${png}`);
+      content.push({ type: "image", data: Buffer.from(await img.arrayBuffer()).toString("base64"), mimeType: png.endsWith(".png") ? "image/png" : "image/jpeg" });
+    } catch {}
+  }
+  return { content };
+}
+const vtitle = z.string().max(120).describe("Kurzer Titel, z. B. „Sinus und Kosinus“");
+server.tool("visualize_python",
+  "Rechnet und zeichnet mit Python und zeigt das Ergebnis als Bild im Chat und in der Vorschau. Für Funktionsplots, Diagramme aus Daten, Statistik, Geometrie, Fraktale, generierte Bilder, Rechnungen mit Ergebnis-Grafik. Verfügbar: numpy, matplotlib, pandas, scipy, sympy, pillow. Jede matplotlib-Figur wird automatisch gespeichert (plt.show() genügt, kein savefig nötig); eigene Bilder (PIL, SVG, HTML) einfach im aktuellen Ordner speichern. print-Ausgaben bekommst du zurück. Kein Internet, keine Dateien des Nutzers ändern.",
+  { code: z.string().max(60_000).describe("Vollständiges Python-Skript"), title: vtitle,
+    check: z.boolean().optional().describe("true: du bekommst das erste Bild zurück, um es zu prüfen (nur mit Bildmodell)") },
+  async a => visualize({ kind: "python", code: a.code, title: a.title }, a.check));
+server.tool("visualize_html",
+  "Zeigt eine eigene HTML-Seite im Chat und in der Vorschau: interaktive Diagramme (Chart.js, Plotly, D3, ECharts), Flussdiagramme/Mindmaps (Mermaid), Formeln (KaTeX/MathJax), Animationen (Canvas, three.js), Tabellen, Zeitstrahlen, kleine Rechner. Bibliotheken per <script src> von cdn.jsdelivr.net, unpkg.com oder cdnjs.cloudflare.com laden. Dunkler Hintergrund #131314, Text #e3e3e3, Akzentfarben #4fa0ff #d8627e #00a5b7. Ein reines <svg> wird als Bild gezeigt. Die Seite läuft abgeschottet (kein Zugriff auf Jarvis oder lokale Dateien).",
+  { html: z.string().max(200_000).describe("HTML-Inhalt (ganzes Dokument oder nur der Body) oder ein <svg>"), title: vtitle },
+  async a => visualize({ kind: "html", html: a.html, title: a.title }));
+
 // ---------- Fehler-Log (docs/errors.md) ----------
 server.tool("error_report", "Meldet einen Fehler ins zentrale Fehler-Log, wenn etwas nicht klappt und du es nicht selbst lösen kannst (Seite reagiert falsch, Element fehlt, Werkzeug liefert Unsinn). Bei Bildschirmbezug target angeben: es wird ein Screenshot gespeichert und die Stelle (id aus dem letzten scan oder rect) rot markiert.",
   { message: z.string().describe("Was ist schiefgegangen, was hast du erwartet?"),

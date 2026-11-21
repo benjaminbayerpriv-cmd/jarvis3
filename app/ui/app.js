@@ -87,6 +87,7 @@ function handle(m) {
     case "extensions": renderExtensions(m); break;
     case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
+    case "visual": visualEvent(m); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -214,6 +215,7 @@ const TOOL_LABEL = {
   browser_read: "Seite lesen", browser_look: "Screenshot vom Tab",
   webfetch: "Webseite abrufen", bash: "Befehl ausführen", read: "Datei lesen", write: "Datei schreiben", edit: "Datei bearbeiten",
   glob: "Dateien suchen", grep: "Text suchen", list: "Ordner lesen",
+  visualize_python: "Grafik zeichnen", visualize_html: "Visualisierung bauen",
 };
 // Laufzeitform für die Kopfzeile ("Öffnet Tab …")
 const TOOL_RUNNING = {
@@ -222,6 +224,7 @@ const TOOL_RUNNING = {
   browser_wait: "Wartet auf die Seite", browser_scan: "Sieht sich die Seite an", browser_click: "Klickt auf der Seite",
   browser_type: "Schreibt auf der Seite", browser_read: "Liest die Seite", browser_scroll: "Scrollt", bash: "Führt einen Befehl aus",
   webfetch: "Ruft eine Webseite ab", read: "Liest eine Datei", edit: "Bearbeitet eine Datei", write: "Schreibt eine Datei",
+  visualize_python: "Zeichnet eine Grafik", visualize_html: "Baut eine Visualisierung",
 };
 const baseName = n => n.replace(/^jarvis_/, "");
 function detail(input = {}, title) {
@@ -686,15 +689,15 @@ document.addEventListener("keydown", e => {
   document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
 });
 function renderMessages(msgs = []) {
-  turns.innerHTML = ""; current = null;
+  turns.innerHTML = ""; current = null; viewerVisuals = [];
   setZero(msgs.length === 0);
   for (const m of msgs) {
     if (m.role === "user") { const n = addUser(m.text, m.files); n.__message = m; }
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");
-      const md = document.createElement("div"); md.className = "md"; md.innerHTML = renderMarkdown(m.text);
-      n.querySelector(".blocks").append(md);
+      for (const v of m.visuals || []) { n.querySelector(".blocks").append(visualCard(v)); rememberVisual(v); }
+      if (m.text) { const md = document.createElement("div"); md.className = "md"; md.innerHTML = renderMarkdown(m.text); n.querySelector(".blocks").append(md); }
       turns.append(n);
     }
   }
@@ -946,8 +949,13 @@ function renderViewerTabs() {
     mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
       icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
   }
+  for (const v of viewerVisuals) {
+    const key = `vis:${v.id}`;
+    mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
+  }
   const empty = $("#viewerEmpty");
-  if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
+  else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
   else empty.textContent = "";
 }
 const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
@@ -976,17 +984,20 @@ function resetViewerFrame() {
   document.documentElement.style.removeProperty("--viewer-frame-width");
 }
 function hideViewer() {
+  clearVisual();
   clearTimeout(viewerTimer); clearInterval(viewerPoll);
   viewer.hidden = true; viewerPicker = false; viewerPinned = null;
   resetViewerFrame();
   syncViewerButtons();
 }
 function viewerIdle() {
+  if (String(viewerPinned).startsWith("vis:")) return; // eine Visualisierung bleibt stehen, bis der Nutzer umschaltet
   viewerPinned = null;
   if (!viewerPicker) hideViewer();
   else { resetViewerFrame(); renderViewerTabs(); }
 }
 function chooseViewer(target) {
+  clearVisual();
   viewerPinned = target;
   if (target !== null) viewerPicker = false;
   resetViewerFrame();
@@ -1087,6 +1098,80 @@ function resetViewerWidth() {
   try { localStorage.removeItem("jarvis.viewerW"); } catch {}
 }
 viewerGrip.addEventListener("dblclick", resetViewerWidth);
+
+// ---------- Visualisierungen (Werkzeuge visualize_python / visualize_html) ----------
+// Bilder und HTML-Seiten liefert jarvisd unter /visual/<id>/<datei>; HTML läuft in einer abgeschotteten Sandbox.
+let viewerVisuals = [];
+const visualUrl = (v, f) => `http://${DAEMON}/visual/${v.id}/${encodeURIComponent(f)}`;
+const isHtml = f => /\.html$/i.test(f);
+function visualMedia(v, f, big = false) {
+  if (isHtml(f)) {
+    const fr = document.createElement("iframe");
+    fr.src = visualUrl(v, f); fr.title = v.title; fr.loading = "lazy";
+    fr.setAttribute("sandbox", "allow-scripts allow-popups");
+    if (!big) fr.className = "visual-frame";
+    return fr;
+  }
+  const img = document.createElement("img");
+  img.src = visualUrl(v, f); img.alt = v.title; img.loading = "lazy"; img.decoding = "async";
+  return img;
+}
+function rememberVisual(v) {
+  viewerVisuals = [v, ...viewerVisuals.filter(x => x.id !== v.id)].slice(0, 8);
+  if (!viewer.hidden) renderViewerTabs();
+}
+function visualCard(v) {
+  const fig = document.createElement("figure");
+  fig.className = "visual"; fig.dataset.id = v.id;
+  const files = v.files || [];
+  const media = document.createElement("div"); media.className = "visual-media" + (files.length > 1 ? " multi" : "");
+  for (const f of files) {
+    const el = visualMedia(v, f);
+    if (el.tagName === "IMG") { el.tabIndex = 0; el.title = "In der Vorschau öffnen"; el.onclick = () => showVisual(v, f); el.onkeydown = e => { if (e.key === "Enter") showVisual(v, f); }; }
+    media.append(el);
+  }
+  const cap = document.createElement("figcaption");
+  const t = document.createElement("span"); t.className = "visual-title"; t.textContent = v.title;
+  const btn = (ic, label, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn small"; b.title = label; b.setAttribute("aria-label", label); b.innerHTML = icon(ic); b.onclick = fn; return b; };
+  cap.insertAdjacentHTML("beforeend", icon("chart-line", "ic visual-ic")); cap.append(t);
+  const first = files[0];
+  if (first && !isHtml(first)) cap.append(btn("download", "Bild speichern", () => { const a = document.createElement("a"); a.href = visualUrl(v, first); a.download = `${v.title}${first.slice(first.lastIndexOf("."))}`; a.target = "_blank"; a.click(); }));
+  cap.append(btn("arrow-up-right", "In der Vorschau öffnen", () => showVisual(v)));
+  fig.append(media, cap);
+  return fig;
+}
+function clearVisual() {
+  const box = $("#viewerVisual");
+  if (box && !box.hidden) { box.hidden = true; box.replaceChildren(); }
+  delete viewer.dataset.mode;
+}
+function showVisual(v, file) {
+  rememberVisual(v);
+  if (viewer.hidden) openViewer();
+  viewerPicker = false;
+  resetViewerFrame();
+  viewerPinned = `vis:${v.id}`;
+  const box = $("#viewerVisual");
+  box.replaceChildren(...(file ? [file] : v.files).map(f => visualMedia(v, f, true)));
+  box.classList.toggle("multi", !file && v.files.length > 1);
+  box.hidden = false;
+  viewer.dataset.mode = "visual";
+  delete viewer.dataset.idle;
+  $("#viewerTitle").textContent = v.title;
+  $("#viewerHost").textContent = v.kind === "python" ? "Python" : "HTML";
+  renderViewerTabs();
+}
+function visualEvent(v) {
+  if (!v.files?.length) return;
+  if (!current) startJarvis();
+  current.el.classList.remove("empty");
+  const card = visualCard(v);
+  blocksOf().append(card);
+  current.blocks.push({ kind: "visual", el: card });
+  stickToBottom();
+  if (state.liveView !== false || live.on) showVisual(v);
+  else rememberVisual(v);
+}
 
 // ---------- Modus „Computer übernehmen“ ----------
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
