@@ -67,6 +67,7 @@ function handle(m) {
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
     case "spoken": if (live.on) liveSpoken(m.text); break;
+    case "live_unspoken": if (live.on) liveUnspoken(m.text); break; // Antwort konnte nicht gesprochen werden: wenigstens zeigen
     case "tabs": viewerTabsMessage(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "error": showError(m.message); break;
@@ -1213,6 +1214,13 @@ function liveSpoken(sentence) {
     const n = revealQ.length > 140 ? 4 : revealQ.length > 70 ? 2 : 1;
     spokenText += revealQ.slice(0, n); revealQ = revealQ.slice(n); showSpoken();
   }, 48);
+}
+// Der Daemon meldet eine Antwort, die nicht gesprochen werden konnte (Sprachausgabe hing, Nutzer sprach lange weiter …).
+// Früher verschwand sie dann still aus der Live-Ansicht und stand nur im Chat.
+function liveUnspoken(text) {
+  revealStop();
+  $("#liveCaption").classList.remove("user");
+  liveBT.set(String(text || "").trim().slice(0, 260), { animate: false });
 }
 function flushSpoken() { if (revealQ) { spokenText += revealQ; revealQ = ""; showSpoken(); } }  // Satz ist zu Ende gesprochen: Rest sofort zeigen
 function openLive() {

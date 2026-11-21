@@ -35,6 +35,10 @@ export class OpenCode {
   private listeners = new Map<string, (e: BrainEvent) => void>();
   private started = new Set<string>(); // Sitzungen, in denen der aktuelle Lauf schon Ereignisse geliefert hat
   private lastStreamError = 0;
+  private lastEvent = new Map<string, number>(); // Sitzung -> letztes Ereignis bzw. Start des Laufs
+  private watchdog?: ReturnType<typeof setInterval>;
+  /** Diagnose (jarvisd schreibt es in voice.log). */
+  onLog: (line: string) => void = () => {};
 
   constructor(public port = 4096, public workspace = join(import.meta.dir, "../../workspace")) {
     this.url = `http://127.0.0.1:${port}`;
@@ -81,6 +85,7 @@ export class OpenCode {
                images: PromptImage[] = [], attachmentText = "") {
     const [providerID, ...rest] = model.split("/");
     this.listeners.set(session, onEvent);
+    this.lastEvent.set(session, Date.now());
     this.started.delete(session); // ein spätes "idle" des vorherigen (abgebrochenen) Laufs darf diesen nicht beenden
     const parts: unknown[] = [{ type: "text", text }];
     if (attachmentText) parts.push({ type: "text", text: attachmentText });
@@ -117,15 +122,40 @@ export class OpenCode {
     if (wait) await this.idle(session);
   }
 
+  /**
+   * Wächter: Geht das "idle" eines Laufs verloren (Ereignisstrom kurz getrennt, neu verbunden), bliebe jarvisd für immer
+   * "beschäftigt" und die Antwort käme nie an. Ist eine Sitzung mit Zuhörer 30 s still und meldet OpenCode sie im Leerlauf,
+   * wird der Lauf hier beendet.
+   */
+  private async checkStalled() {
+    const now = Date.now();
+    const quiet = [...this.listeners.keys()].filter(sid => now - (this.lastEvent.get(sid) ?? now) > 30_000);
+    if (!quiet.length) return;
+    let status: Record<string, unknown>;
+    try { status = await (await fetch(`${this.url}/session/status`)).json() as Record<string, unknown>; } catch { return; }
+    for (const sid of quiet) {
+      if (status[sid]) { this.lastEvent.set(sid, Date.now()); continue; } // arbeitet noch (z. B. langes Werkzeug)
+      const cb = this.listeners.get(sid);
+      if (!cb) continue;
+      this.listeners.delete(sid);
+      this.onLog(`OpenCode: Sitzung ${sid} im Leerlauf, aber kein idle-Ereignis angekommen -> Lauf beendet`);
+      recordError({ category: "model", source: "opencode/missing-idle", message: "Lauf-Ende (session.idle) nicht angekommen, vom Wächter beendet",
+        context: { session: sid, started: this.started.has(sid) } });
+      cb({ kind: "done" });
+    }
+  }
+
   private async listen() {
+    this.watchdog ??= setInterval(() => void this.checkStalled(), 5000);
     for (;;) {
       try {
         const r = await fetch(`${this.url}/event`);
+        if (this.lastStreamError || this.listeners.size) this.onLog(`OpenCode-Ereignisstrom verbunden (laufende Sitzungen: ${this.listeners.size})`);
         const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
         let buf = "";
         for (;;) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done) { this.onLog("OpenCode-Ereignisstrom beendet, verbinde neu"); break; }
           buf += value;
           let i;
           while ((i = buf.indexOf("\n")) >= 0) {
@@ -148,6 +178,7 @@ export class OpenCode {
     const sid = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID;
     const cb = this.listeners.get(sid);
     if (!cb) return;
+    this.lastEvent.set(sid, Date.now());
     if (e.type === "message.part.delta" || (e.type === "message.part.updated" && p.part?.type !== "text") || (e.type === "session.status" && p.status?.type === "busy")) this.started.add(sid); // die Nutzer-Nachricht (Textteil) zählt nicht
     switch (e.type) {
       case "message.part.updated": {
