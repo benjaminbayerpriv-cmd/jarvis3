@@ -8,6 +8,7 @@
 //       {"cmd":"scroll","id":2,"dy":-3} {"cmd":"focus","id":4} {"cmd":"displays"}
 //   IDs gelten bis zum nächsten scan.
 import AppKit
+import CoreImage
 import ApplicationServices
 
 struct Failure: Error { let message: String }
@@ -187,6 +188,23 @@ final class Session {
                      "display": screens.firstIndex(where: { $0.intersects(w.bounds) }) ?? -1,
                      "rect": [Int(w.bounds.minX), Int(w.bounds.minY), Int(w.bounds.width), Int(w.bounds.height)]] as [String: Any]
                 }]
+            case "framejpeg":
+                // Einzelbild für die Vorschau, wenn der Aufnahme-Dienst (noch) keine Freigabe hat: sichtbarer Fensterbereich
+                guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                let w = try windowInfo(CGWindowID(id))
+                let (url, image) = try captureWindow(w.id)
+                try? FileManager.default.removeItem(at: url)
+                let maxWidth = CGFloat(request["maxWidth"] as? Int ?? 1280)
+                let scale = min(1, maxWidth / CGFloat(image.width))
+                let ci = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      let jpeg = CIContext().jpegRepresentation(of: ci, colorSpace: space,
+                                                               options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]) else {
+                    throw Failure(message: "Bild konnte nicht kodiert werden")
+                }
+                return ["ok": true, "data": jpeg.base64EncodedString(), "w": Int(ci.extent.width), "h": Int(ci.extent.height),
+                        "bounds": [Int(w.bounds.minX), Int(w.bounds.minY), Int(w.bounds.width), Int(w.bounds.height)],
+                        "title": w.title, "app": w.app]
             case "stream_start":
                 guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
                 try streamer.start(try windowInfo(CGWindowID(id)), fps: request["fps"] as? Int ?? 20)

@@ -728,6 +728,7 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
   if (cmd.cmd === "shot" && Number.isInteger(cmd.window) && !cmd.marks && capture.available()) {
     const r = await capture.call({ cmd: "windowshot", window: cmd.window });
     if (r.ok) return r;
+    vlog(`Aufnahme-Dienst: ${r.error}`);
   }
   const r = await desktop.call(cmd);
   if (Array.isArray(r.point)) { lastDesktopPoint = r.point as [number, number]; if (streamWin !== undefined) void capture.call({ cmd: "cursor", point: r.point }); }
@@ -744,21 +745,50 @@ capture.onEvent = m => {
     title: m.title ? `${m.app} – ${m.title}` : m.app, url: "", cursor: lastDesktopPoint });
   else if (m.event === "stream_ended") { if (m.window === streamWin) streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${m.window}` }); }
 };
+let pinnedWin: number | undefined;   // vom Nutzer in der Vorschau gewähltes Fenster
+let lowFpsNoticeAt = 0;
 async function stopWindowStream() {
   clearTimeout(streamWinTimer);
   if (streamWin === undefined) return;
   streamWin = undefined;
   await capture.call({ cmd: "stream_stop" }, 4000).catch(() => {});
 }
-async function ensureWindowStream(win: number) {
-  if (!settings.liveView || uis.size === 0 || !capture.available()) return;
+/** Rückfall ohne Bildschirmaufnahme-Freigabe: Einzelbilder des sichtbaren Fensterbereichs über uimap (ca. 4–6 Bilder/s). */
+async function windowFallbackLoop(win: number) {
+  while (streamWin === win && uis.size > 0) {
+    const f: any = await desktop.call({ cmd: "framejpeg", window: win, maxWidth: 1280 }, 6000);
+    if (streamWin !== win) break;
+    if (!f.ok) { vlog(`Fenster-Vorschau (Rückfall) beendet: ${f.error}`); streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${win}` }); break; }
+    broadcast({ type: "frame", tab: `win:${win}`, data: f.data, w: f.w, h: f.h, bounds: f.bounds,
+      title: f.title ? `${f.app} – ${f.title}` : f.app, url: "", cursor: lastDesktopPoint });
+    await Bun.sleep(80);
+  }
+}
+async function ensureWindowStream(win: number, manual = false) {
+  if (!manual && (!settings.liveView || (pinnedWin !== undefined && pinnedWin !== win))) return;
+  if (uis.size === 0) return;
   clearTimeout(streamWinTimer);
-  streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000);  // 20 s nach der letzten Aktion endet das Live-Bild
+  if (pinnedWin === undefined) streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000);  // 20 s nach der letzten Aktion
   if (streamWin === win) return;
+  await stopWindowStream();
   await stopStream();   // ein Live-Bild zur Zeit: Browser-Tab-Übertragung beenden
-  const r = await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000);
-  if (r.ok) { streamWin = win; lastDesktopPoint = undefined; }
-  else vlog(`Fenster-Live-Bild nicht möglich: ${r.error}`);
+  lastDesktopPoint = undefined;
+  const r = capture.available() ? await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000) : { ok: false, error: "kein Aufnahme-Dienst" };
+  streamWin = win;
+  if (r.ok) return;
+  vlog(`Fenster-Live-Bild über den Aufnahme-Dienst nicht möglich (${r.error}) – Rückfall auf Einzelbilder`);
+  if (/TCC|abgelehnt|Freigabe/i.test(String(r.error)) && Date.now() - lowFpsNoticeAt > 10 * 60_000) {
+    lowFpsNoticeAt = Date.now();
+    broadcast({ type: "notice", text: "Fenster-Vorschau im Sparmodus (nur sichtbare Fenster, ruckelig). Für das flüssige Bild „Jarvis Bildschirm“ unter Bildschirmaufnahme erlauben." });
+  }
+  void windowFallbackLoop(win);
+}
+/** Fenster für die Auswahl oben in der Vorschau */
+async function previewWindows() {
+  const r: any = await desktop.call({ cmd: "windows" }, 5000).catch(() => ({}));
+  return (Array.isArray(r?.windows) ? r.windows : [])
+    .filter((w: any) => w.title && w.rect?.[3] >= 150 && !/^Jarvis/.test(w.title) && !/AuthWarn|UserNotificationCenter|loginwindow/i.test(w.app))
+    .slice(0, 12).map((w: any) => ({ id: w.id, app: w.app, title: w.title, onScreen: w.onScreen }));
 }
 
 Bun.serve<{ kind: string; fresh?: boolean }, {}>({
@@ -896,13 +926,18 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice });
         broadcast(state());
       }
-      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; await stopStream(); } broadcast(state()); }
-      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; pinnedWin = undefined; await stopStream(); await stopWindowStream(); } broadcast(state()); }
+      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
+      else if (msg.type === "viewer_window") { // Nutzer wählt ein Programmfenster für die Vorschau
+        pinnedTab = undefined;
+        if (Number.isInteger(msg.window)) { pinnedWin = msg.window; await ensureWindowStream(msg.window, true); }
+        else { pinnedWin = undefined; await stopWindowStream(); }
+      }
       else if (msg.type === "viewer_tab") {
         // Nutzer wählt einen Tab (Zahl) oder "Automatisch" (null: Jarvis' aktuellem Tab folgen)
-        if (Number.isInteger(msg.tab)) { pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
-        else { pinnedTab = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); }
-        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+        if (Number.isInteger(msg.tab)) { pinnedWin = undefined; await stopWindowStream(); pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
+        else { pinnedTab = undefined; pinnedWin = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); clearTimeout(streamWinTimer); streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000); }
+        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
       }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }

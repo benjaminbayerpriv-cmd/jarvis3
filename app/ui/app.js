@@ -779,7 +779,7 @@ $("#exNew").onclick = () => {
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
 let viewerTimer, viewerPoll;
-let viewerTabs = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
+let viewerTabs = [], viewerWindows = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
 const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
 function renderViewerTabs() {
@@ -794,8 +794,14 @@ function renderViewerTabs() {
     const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
     mk(t.title || t.url || "Tab", t.tab === viewerStreaming, () => { viewerStreaming = t.tab; viewerPinned = t.tab; renderViewerTabs(); send({ type: "viewer_tab", tab: t.tab }); }, fav, t.url || t.title);
   }
+  // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
+  for (const w of viewerWindows) {
+    const key = `win:${w.id}`;
+    mk(w.title || w.app, viewerStreaming === key, () => { viewerStreaming = key; viewerPinned = key; renderViewerTabs(); send({ type: "viewer_window", window: w.id }); },
+      icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
+  }
   const empty = $("#viewerEmpty");
-  if (!viewerGotFrame) empty.textContent = viewerTabs.length ? "Wähle oben einen Tab, um ihn live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
   else empty.textContent = "";
 }
 const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
@@ -845,7 +851,7 @@ function showFrame(m) {
   viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
 }
 function viewerTabsMessage(m) {
-  viewerTabs = m.tabs || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
+  viewerTabs = m.tabs || []; viewerWindows = m.windows || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
   if (!viewer.hidden) renderViewerTabs();
 }
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };

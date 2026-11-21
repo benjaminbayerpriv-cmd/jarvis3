@@ -6,6 +6,12 @@ cd "$(dirname "$0")"
 mkdir -p bin
 swiftc -O Sources/*.swift -o bin/uimap
 APP="bin/Jarvis Bildschirm.app"
+# macOS bindet die Bildschirmaufnahme-Freigabe an die Signatur der App. Ohne festes Zertifikat (ad-hoc) ist jeder Neubau eine
+# "neue" App und die erteilte Freigabe gilt nicht mehr. Darum die App nur bauen, wenn sie fehlt oder ausdrücklich --app.
+if [ -x "$APP/Contents/MacOS/uimap" ] && [ "$1" != "--app" ]; then
+  echo "gebaut: $(pwd)/bin/uimap (Jarvis Bildschirm.app unverändert, Freigabe bleibt gültig; neu bauen mit --app)"
+  exit 0
+fi
 mkdir -p "$APP/Contents/MacOS"
 cp bin/uimap "$APP/Contents/MacOS/uimap"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

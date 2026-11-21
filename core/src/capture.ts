@@ -63,7 +63,27 @@ export class Capture {
     })();
   }
 
+  private lastRestart = 0;
+  /** Nach dem Erteilen der Bildschirmaufnahme-Freigabe muss der Dienst neu starten, sonst gilt die alte Ablehnung weiter. */
+  private async restartIfDenied(r: Reply) {
+    if (r.ok || !/TCC|abgelehnt|denied|declined|Freigabe/i.test(String(r.error ?? "")) || Date.now() - this.lastRestart < 30_000) return false;
+    this.lastRestart = Date.now();
+    try {
+      const pids = Bun.spawnSync(["lsof", "-ti", `tcp:${this.port}`, "-sTCP:LISTEN"]).stdout.toString().trim().split(/\s+/).filter(Boolean);
+      for (const pid of pids) { try { process.kill(Number(pid), "SIGTERM"); } catch {} }
+    } catch {}
+    this.sock?.destroy(); this.sock = undefined;
+    await Bun.sleep(500);
+    return true;
+  }
+
   async call(cmd: Record<string, unknown>, timeoutMs = 10_000): Promise<Reply> {
+    const r = await this.callOnce(cmd, timeoutMs);
+    if (await this.restartIfDenied(r)) return this.callOnce(cmd, timeoutMs);
+    return r;
+  }
+
+  private async callOnce(cmd: Record<string, unknown>, timeoutMs: number): Promise<Reply> {
     if (!(await this.ensure())) return { ok: false, error: "Aufnahme-Dienst nicht verfügbar (tools/uimap-mac/build.sh ausführen)" };
     const rid = ++this.rid;
     return new Promise(resolve => {
