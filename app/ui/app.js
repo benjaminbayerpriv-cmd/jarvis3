@@ -40,7 +40,9 @@ let ws, retry = 0;
 function connect() {
   ws = new WebSocket(`ws://${DAEMON}/ui`);
   ws.onopen = () => { retry = 0; setOffline(false); };
-  ws.onclose = () => { setOffline(true); setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
+  // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
+  // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
+  ws.onclose = () => { state.busy = false; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
@@ -101,6 +103,8 @@ function renderState() {
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
   if (state.liveView === false && !viewer.hidden) hideViewer();
   $("#stop").hidden = !state.busy;
+  const stopKeys = $("#stopKeys");
+  if (stopKeys) stopKeys.textContent = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? "⌘⇧⎋" : "Strg+Alt+Umschalt+Esc";
   updateSend();
   $("#stopBanner").hidden = !(state.busy && state.mode === "computer");
   fillVoiceModels();
