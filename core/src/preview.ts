@@ -39,6 +39,11 @@ export class Preview {
       Math.max(this.timing.settle, this.lastSwitch + this.timing.hold - Date.now()));
   }
 
+  setIdle(ms: number) {
+    this.timing.idle = ms;
+    if (this.pinned === undefined && this.recent !== undefined) this.armIdle();
+  }
+
   pin(target?: PreviewTarget) {
     this.pinned = target;
     clearTimeout(this.idleTimer);

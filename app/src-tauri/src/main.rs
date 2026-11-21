@@ -105,6 +105,24 @@ fn handle_window(window: &WebviewWindow, action: Action) -> tauri::Result<()> {
     window.emit_to(window.label(), event, ())
 }
 
+#[tauri::command]
+fn get_launch_at_login(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let manager = app.autolaunch();
+    let result = if enabled { manager.enable() } else { manager.disable() };
+    result.map_err(|error| error.to_string())?;
+    let checked = get_launch_at_login(app.clone())?;
+    if let Some(item) = app.try_state::<CheckMenuItem<tauri::Wry>>() {
+        let _ = item.set_checked(checked);
+    }
+    let _ = app.emit("jarvis:autostart", checked);
+    Ok(checked)
+}
+
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Öffnen", true, None::<&str>)?;
     let voice = MenuItem::with_id(app, "voice", "Sprachmodus", true, None::<&str>)?;
@@ -121,6 +139,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         enabled.unwrap_or(false),
         None::<&str>,
     )?;
+    app.manage(autostart.clone());
     let quit = MenuItem::with_id(app, "quit", "Beenden", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &voice, &stop, &autostart, &quit])?;
 
@@ -138,16 +157,12 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             "voice" => dispatch(app, Action::Voice),
             "stop" => dispatch(app, Action::Stop),
             "autostart" => {
-                let result = if autostart.is_checked().unwrap_or(false) {
-                    app.autolaunch().enable()
-                } else {
-                    app.autolaunch().disable()
-                };
-                if let Err(error) = result {
+                let checked = autostart.is_checked().unwrap_or(false);
+                if let Err(error) = set_launch_at_login(app.clone(), checked) {
                     eprintln!("Jarvis3: Autostart konnte nicht geändert werden: {error}");
-                }
-                if let Ok(enabled) = app.autolaunch().is_enabled() {
-                    let _ = autostart.set_checked(enabled);
+                    if let Ok(enabled) = get_launch_at_login(app.clone()) {
+                        let _ = autostart.set_checked(enabled);
+                    }
                 }
             }
             "quit" => app.exit(0),
@@ -161,6 +176,7 @@ fn main() -> tauri::Result<()> {
     errorlog::install_panic_hook();
     let background = std::env::args_os().any(|arg| arg == "--background");
     let application = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![get_launch_at_login, set_launch_at_login])
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
