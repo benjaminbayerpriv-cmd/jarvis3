@@ -20,6 +20,7 @@ import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
 import { parseRange, readUsage, summarize } from "./usage";
 import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
+import { RunBuffer } from "./runbuf";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -80,8 +81,12 @@ function migrateFolders() {
 }
 migrateFolders();
 let models: ModelInfo[] = [];
-let session: string | undefined;
-let busy = false;
+let session: string | undefined;   // der Chat, den die Oberfläche gerade zeigt und an den neue Nachrichten gehen
+// Mehrere Chats laufen parallel: pro Chat ein eigener Lauf. latestRun merkt die neueste Lauf-Nummer je Chat; nur sie gilt als aktuell.
+const busySessions = new Set<string>();
+const latestRun = new Map<string, number>();
+const runBuffer = new RunBuffer();
+const isBusy = () => !!session && busySessions.has(session);
 let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 
 const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
@@ -97,7 +102,7 @@ type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
 const state = () => ({ type: "state", model: settings.model, voiceModel: settings.voiceModel, mode: settings.mode,
-                       lofi: settings.lofi, sttMode: settings.sttMode, liveView: settings.liveView, extStale: extensionStale, busy, browser: browser.connected, speech: speech.connected, voice, models,
+                       lofi: settings.lofi, sttMode: settings.sttMode, liveView: settings.liveView, extStale: extensionStale, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected, speech: speech.connected, voice, models,
                        micDevice: settings.micDevice, devices: audioDevices });
 
 // ---------- Sprache ----------
@@ -139,7 +144,7 @@ const recentSaid: { text: string; at: number }[] = []; // für den Echo-Filter
 const liveAnswer = new LiveAnswer({
   say: text => say(text),
   blocked: () => voice === "off" || voice === "dictate" ? { reason: `Live beendet (voice=${voice})`, expected: true } : undefined,
-  currentRun: () => runSeq,
+  currentRun: () => voiceRun,
   mustWait: () => userSpeaking ? "Nutzer spricht gerade" : pendingUtterance ? "Äußerung des Nutzers noch offen"
     : !speech.connected ? "Sprachmodul nicht verbunden" : undefined,
   log: (run, ev, info) => trace.add(run, ev, info),
@@ -159,7 +164,7 @@ const speech = new Speech(e => {
   // Ansagen ("gehalten") würden danach mitten in seinen Satz platzen.
   if (e.type === "speech_start" && voice === "live") {
     speech.sayTimes.clear(); speechEpoch++; userSpeaking = true;
-    trace.add(runSeq, "nutzer-spricht", `busy=${busy}${liveAnswer.playing ? ` antwort=say#${liveAnswer.playing.id}${liveAnswer.playing.started ? "(läuft)" : "(wartet)"}` : ""}`);
+    trace.add(runSeq, "nutzer-spricht", `busy=${isBusy()}${liveAnswer.playing ? ` antwort=say#${liveAnswer.playing.id}${liveAnswer.playing.started ? "(läuft)" : "(wartet)"}` : ""}`);
     liveAnswer.onUserSpeech();
   }
   if (e.type === "final" || e.type === "connected" || e.type === "disconnected") userSpeaking = false;
@@ -254,7 +259,7 @@ function sendUtterance() {
   if (!worthAnswering(text) || voice !== "live") { liveAnswer.release(); return; }
   let full = text, replace = false;
   // Antwort läuft noch, hat aber keine Werkzeuge benutzt und der Nutzer spricht weiter: zu EINER Äußerung zusammenführen
-  if (busy && lastRun && !lastRun.toolSeen && Date.now() - lastRun.startedAt < 20_000) { full = `${lastRun.text} ${text}`; replace = true; }
+  if (isBusy() && lastRun && !lastRun.toolSeen && Date.now() - lastRun.startedAt < 20_000) { full = `${lastRun.text} ${text}`; replace = true; }
   lastRun = { text: full, toolSeen: false, startedAt: Date.now() };
   vlog(`Äußerung: ${full.slice(0, 160)}${replace ? " (zusammengeführt)" : ""}`);
   broadcast({ type: "user", text: full, replace });
@@ -315,10 +320,10 @@ async function history() {
     const list = await (await fetch(`${brain.url}/session`)).json() as any[];
     // Nur echte Unterhaltungen: Testläufe ("Test") und leere Sitzungen ohne eigenen Titel ausblenden
     const isEmpty = (t: string) => !t || t === "Jarvis" || /^New session/i.test(t) || /^Child session/i.test(t);
-    return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
+    return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session || busySessions.has(s.id)))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title),
-                   folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session,
+                   folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session, running: busySessions.has(s.id),
                    updated: s.time?.updated ?? 0, projectId: projects.chat(s.id)?.projectId ?? null,
                    project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
   } catch (error) {
@@ -360,13 +365,19 @@ async function sessionMessages(id: string) {
   if (!response.ok) throw new Error(`Nachrichten konnten nicht geladen werden (${response.status})`);
   return (await response.json()) as any[];
 }
-const chatHistory = (messages: any[]) => messages.map(message => readChatMessage(message).view)
-  .filter(message => message.text || message.files.length);
+const chatHistory = (messages: any[], running = false) => {
+  if (running) { // die halbfertige Antwort des laufenden Chats weglassen; sie wird aus dem Ereignispuffer nachgereicht
+    const lastUser = messages.map(message => message.info?.role).lastIndexOf("user");
+    if (lastUser >= 0) messages = messages.slice(0, lastUser + 1);
+  }
+  return messages.map(message => readChatMessage(message).view).filter(message => message.text || message.files.length);
+};
 
 async function openSession(id: string) {
-  const messages = chatHistory(await sessionMessages(id));
+  const running = busySessions.has(id);
+  const messages = chatHistory(await sessionMessages(id), running);
   session = id;
-  return messages;
+  return { messages, running: running && busySessions.has(id) };
 }
 
 // ---------- Projekte: Sitzungen übernehmen, Zuordnung durch das Modell ----------
@@ -478,8 +489,8 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
-let runSeq = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
-type ActiveTurn = { run: number; spoken: boolean; click?: ClickIntent; clickSent?: boolean; clickInFlight?: boolean; firstAction?: Promise<void> };
+let runSeq = 0, voiceRun = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
+type ActiveTurn = { run: number; sid?: string; spoken: boolean; click?: ClickIntent; clickSent?: boolean; clickInFlight?: boolean; firstAction?: Promise<void> };
 let activeTurn: ActiveTurn | undefined;
 let recentClick: { session: string; intent: ClickIntent; text: string; at: number } | undefined;
 
@@ -508,7 +519,7 @@ const announcedActions: Record<string, string> = {
 async function announceToolAction(target: "browser" | "desktop", cmd: Record<string, any>) {
   const turn = activeTurn;
   const action = announcedActions[cmd.cmd];
-  if (!action || !turn?.spoken || !busy || voice !== "live" || !speech.connected) return true;
+  if (!action || !turn?.spoken || !turn.sid || !busySessions.has(turn.sid) || voice !== "live" || !speech.connected) return true;
   const stopBefore = stoppedUntil;
   const userBefore = speechEpoch;
   if (!turn.firstAction) {
@@ -516,21 +527,26 @@ async function announceToolAction(target: "browser" | "desktop", cmd: Record<str
     turn.firstAction = waitUntilSpoken(say(line));
   }
   await turn.firstAction;
-  return stoppedUntil === stopBefore && runSeq === turn.run && speechEpoch === userBefore;
+  return stoppedUntil === stopBefore && latestRun.get(turn.sid) === turn.run && speechEpoch === userBefore;
 }
 
-async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments) {
+async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments,
+                    target?: string | null, replaces?: string) {
+  // target: der Chat, an den die Nachricht geht (Standard: der gezeigte); null = neuen Chat anlegen; replaces: der verlorene Chat, den er ersetzt
+  const existing = fresh || target === null ? undefined : (target ?? session);
   const runId = ++runSeq;
   let click = requestedClick(text);
   let clickContext: string | undefined;
-  if (click?.followUp && recentClick && recentClick.session === session && Date.now() - recentClick.at < 120_000) {
+  if (click?.followUp && recentClick && recentClick.session === existing && Date.now() - recentClick.at < 120_000) {
     click = { ...recentClick.intent, english: click.english };
     clickContext = recentClick.text;
   }
   const turn: ActiveTurn = { run: runId, spoken, click };
   activeTurn = turn;
-  if (spoken) trace.add(runId, "lauf-start", `model=${model}${tried.length ? ` versuch=${tried.length + 1}` : ""} busy=${busy} text=${JSON.stringify(text.slice(0, 80))}`);
-  if (busy && session && !fresh) await brain.abort(session);
+  if (spoken) voiceRun = runId;
+  if (existing) latestRun.set(existing, runId); // ab jetzt gilt ein laufender Lauf dieses Chats als abgelöst
+  if (spoken) trace.add(runId, "lauf-start", `model=${model}${tried.length ? ` versuch=${tried.length + 1}` : ""} busy=${isBusy()} text=${JSON.stringify(text.slice(0, 80))}`);
+  if (existing && busySessions.has(existing)) await brain.abort(existing);
   // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
   if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
     const free = (m: ModelInfo) => m.vision && (limited.get(m.id) ?? 0) < Date.now() && !tried.includes(m.id);
@@ -545,25 +561,27 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   // Ein Modell, das gerade am Limit ist, gar nicht erst anfragen
   if ((limited.get(model) ?? 0) > Date.now()) {
     const alt = nextModel([...tried, model], !!click?.corner);
-    if (alt) { if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); }
+    if (alt) { if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, target, replaces); }
   }
-  const isNew = !fresh && !session;
-  const sid = fresh ? await brain.createSession("Test") : (session ??= await brain.createSession());
-  if (!fresh) broadcast({ type: "session", id: sid });
+  const isNew = !fresh && !existing;
+  const sid = fresh ? await brain.createSession("Test") : (existing ?? (session = await brain.createSession()));
+  turn.sid = sid; latestRun.set(sid, runId);
+  if (isNew) broadcast({ type: "session", id: sid, replaces });
   if (click && !fresh) recentClick = { session: sid, intent: click, text: clickContext ?? text, at: Date.now() };
   // Erste Titelfassung nach der ersten Nachricht; nach der Antwort wird ein thematischer Titel gesetzt.
   if (isNew) {
     const title = topicTitle(text || atts.map(file => file.name).join(" "));
     if (!chatMeta[sid]?.title) void setSessionTitle(sid, title, true);
   }
-  busy = true; broadcast(state());
+  busySessions.add(sid); runBuffer.start(sid); broadcast(state());
+  const emit = (msg: Record<string, unknown>) => { const m = { ...msg, session: sid }; runBuffer.add(sid, m as any); broadcast(m); };
   const started = performance.now();
   let first = true, switching = false, finished = false, textSeen = false, toolSeen = false, responseText = "", finalSpeech = "";
   // Nur ein abgelöster Lauf (neue Frage), Stopp oder Live-Ende verhindern das Sprechen. Ein Geräusch während des Nachdenkens
   // (speech_start ohne neue Frage) tut es NICHT mehr; die Antwort wird dann gehalten und nachgeholt (live-turn.ts).
-  const maySpeak = () => spoken && runId === runSeq && voice !== "off" && voice !== "dictate" && !userSpeaking && !pendingUtterance;
+  const maySpeak = () => spoken && runId === latestRun.get(sid) && voice !== "off" && voice !== "dictate" && !userSpeaking && !pendingUtterance;
   const ackTimer = setTimeout(() => {
-    if (maySpeak() && busy && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
+    if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
   }, 1300);
   const system = spoken ? SYSTEM_PROMPT + "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll." : SYSTEM_PROMPT;
@@ -586,9 +604,9 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
     // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
     // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
-    if (runId !== runSeq) {
+    if (runId !== latestRun.get(sid)) {
       if (e.kind === "done" || e.kind === "error") { clearTimeout(ackTimer); if (spoken) trace.add(runId, `ereignis-nach-ablösung ${e.kind}`, e.kind === "done" ? `aborted=${!!e.aborted}` : e.message); }
-      if (e.kind === "done" && e.aborted) broadcast({ type: "done", ...e }); // Oberfläche schließt die abgebrochene Antwort ab
+      if (e.kind === "done" && e.aborted) emit({ type: "done", ...e }); // Oberfläche schließt die abgebrochene Antwort ab
       return;
     }
     if (switching || finished) return;
@@ -598,7 +616,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (alt) {
         switching = true; clearTimeout(ackTimer);
         if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` });
-        brain.abort(sid).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); });
+        brain.abort(sid).then(() => { busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid); });
         return;
       }
       e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
@@ -621,8 +639,8 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     // Sitzung existiert nicht mehr (z. B. in OpenCode gelöscht): neue Sitzung anlegen und einmal erneut senden
     if (e.kind === "error" && /Session not found|NotFoundError/i.test(e.message) && !turn.clickSent && !tried.includes("__session")) {
       switching = true; clearTimeout(ackTimer);
-      if (!fresh) session = undefined;
-      brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, model, spoken, [...tried, "__session"], fresh, atts, saved); });
+      if (!fresh && session === sid) session = undefined;
+      brain.abort(sid).catch(() => {}).then(() => { busySessions.delete(sid); return chat(text, model, spoken, [...tried, "__session"], fresh, atts, saved, null, sid); });
       return;
     }
     // Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an: bis zu zweimal automatisch neu versuchen
@@ -633,27 +651,27 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         switching = true; clearTimeout(ackTimer);
         const alt = attempts === 0 ? model : (nextModel([...tried, model], !!click?.corner) ?? model);
         vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
-        broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal." });
+        broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal.", session: sid });
         brain.abort(sid).catch(() => {}).then(async () => {
           // die leere Runde samt Nutzer-Nachricht zurücknehmen, sonst steht die Frage nach jedem Versuch noch einmal im Chat
           try {
             const last = (await sessionMessages(sid)).filter(m => m.info?.role === "user").pop();
             if (last?.info?.id) await fetch(`${brain.url}/session/${sid}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID: last.info.id }) });
           } catch { /* dann eben doppelt */ }
-          busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved);
+          busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid);
         });
         return;
       }
       recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
         context: { model, request: text, mode: settings.mode, spoken, voice, session: sid, tried } });
-      broadcast({ type: "error", message: "Jarvis hat nicht geantwortet. Bitte sag es noch einmal oder wähle ein anderes Modell." });
+      emit({ type: "error", message: "Jarvis hat nicht geantwortet. Bitte sag es noch einmal oder wähle ein anderes Modell." });
     }
     if (spoken && e.kind === "tool" && (e.status === "running" || e.status === "error")) trace.add(runId, `werkzeug-${e.status}`, e.name);
     if (spoken && e.kind === "error") trace.add(runId, "fehler", `${e.retry ? "(retry) " : ""}${e.message}`);
     if (e.kind === "text" && first) {
       first = false;
       if (spoken) trace.add(runId, "erster-text", `${Math.round(performance.now() - started)} ms`);
-      broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model });
+      emit({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model });
     }
     if (e.kind === "done" || e.kind === "error") {
       finished = true;
@@ -662,13 +680,13 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (!aborted) {
         const result = click ? clickOutcome(click, !!turn.clickSent) : "";
         const toRead = result || conciseSpeech(finalSpeech || (!toolSeen ? responseText : ""), text);
-        if (spoken || result) broadcast({ type: "delta", text: toRead || "Ich konnte die Antwort nicht abschließen." });
+        if (spoken || result) emit({ type: "delta", text: toRead || "Ich konnte die Antwort nicht abschließen." });
         if (spoken) {
           trace.add(runId, `lauf-ende ${e.kind}`, `${Math.round(performance.now() - started)} ms text=${responseText.length} zeichen werkzeug=${toolSeen} voice=${voice}`);
           liveAnswer.deliver(runId, toRead || "Ich konnte die Antwort nicht abschließen.");
         }
       } else if (spoken) trace.add(runId, "lauf-ende abgebrochen");
-      busy = false;
+      busySessions.delete(sid); runBuffer.clear(sid);
       if (activeTurn === turn) activeTurn = undefined;
       broadcast(state());
       if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
@@ -676,10 +694,10 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
           .then(title => setSessionTitle(sid, title ?? topicTitle(text), true));
     }
     if (e.kind === "text") {
-      if (!spoken && !click) broadcast({ type: "delta", text: e.delta });
+      if (!spoken && !click) emit({ type: "delta", text: e.delta });
     } else if (e.kind === "reasoning") {
-      if (!spoken && !click) broadcast({ type: "reasoning", text: e.delta });
-    } else broadcast({ type: e.kind, ...e });
+      if (!spoken && !click) emit({ type: "reasoning", text: e.delta });
+    } else emit({ type: e.kind, ...e });
   }, images, attachmentText);
 }
 
@@ -730,19 +748,20 @@ async function updateChat(msg: any) {
     projects.upsertChat({ id, title: chatMeta[id]?.title || id });
     projects.assign(id, target?.id ?? null, "manual");
   } else if (msg.action === "delete") {
+    if (busySessions.has(id)) await brain.abort(id);
     const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
     if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`);
     delete chatMeta[id]; saveChatMeta();
-    if (session === id) { session = undefined; broadcast({ type: "session", id: null }); broadcast({ type: "messages", messages: [] }); }
+    if (session === id) { session = undefined; broadcast({ type: "session", id: null }); broadcast({ type: "messages", session: null, messages: [] }); }
   }
   broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
 async function rewindMessage(id: string, messageID: string) {
-  if (busy && session) await brain.abort(session);
+  if (busySessions.has(id)) await brain.abort(id);
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
   if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
   session = id;
-  broadcast({ type: "messages", messages: chatHistory(await sessionMessages(id)) });
+  broadcast({ type: "messages", session: id, messages: chatHistory(await sessionMessages(id)) });
 }
 
 // ---------- Live-Ansicht des Ziels, in dem Jarvis gerade arbeitet ----------
@@ -781,8 +800,10 @@ browser.onEvent = m => {
   else if (m.type === "frame" && preview.shows(m.tab)) broadcast(m);
 };
 
-async function stop() {
-  stoppedUntil = Date.now() + 1500;
+/** Stoppt den gezeigten Chat; mit all=true (Not-Aus) alle laufenden Chats. Die anderen Chats laufen sonst ungestört weiter. */
+async function stop(all = false, chat = session) {
+  const targets = all ? [...busySessions] : chat && busySessions.has(chat) ? [chat] : [];
+  if (all || targets.length >= busySessions.size) stoppedUntil = Date.now() + 1500; // Werkzeuge nur sperren, wenn kein anderer Chat sie braucht
   preview.clear();
   speechEpoch++;
   speech.stopSpeaking();
@@ -791,8 +812,13 @@ async function stop() {
   lastDesktopPoint = undefined;
   liveAnswer.drop("Stopp");
   trace.add(runSeq, "stopp");
-  if (session) await brain.abort(session);
-  busy = false; broadcast({ type: "stopped" }); broadcast(state());
+  await Promise.all(targets.map(async sid => {
+    await brain.abort(sid);
+    busySessions.delete(sid); runBuffer.clear(sid);
+    broadcast({ type: "stopped", session: sid });
+  }));
+  if (!targets.length) broadcast({ type: "stopped", session: chat });
+  broadcast(state());
 }
 
 // Letzte scan-Ergebnisse je Ziel, damit ein Fehler-Screenshot das betroffene Element markieren kann.
@@ -829,7 +855,7 @@ async function logToolError(target: string, cmd: Record<string, any>, message: s
   const boxes = [el?.rect, Array.isArray(cmd.rect) && cmd.rect.length === 4 ? cmd.rect : undefined].filter(Boolean) as number[][];
   const screenshot = NO_SHOT.test(message) || cmd.cmd === "shot" || cmd.screenshot === false ? undefined : await errorShot(target, cmd.tab, boxes);
   return recordError({ category: opts.category ?? "tool", source: opts.source ?? `${target}/${cmd.cmd}`, message, screenshot,
-    context: { tool: `${target}_${cmd.cmd}`, args: cmd, element: el, mode: settings.mode, model: settings.model, voice, busy, ...opts.context } });
+    context: { tool: `${target}_${cmd.cmd}`, args: cmd, element: el, mode: settings.mode, model: settings.model, voice, busy: isBusy(), ...opts.context } });
 }
 
 type DesktopTarget = { id: number; label?: string; axRole?: string; enabled?: boolean; rect: number[] };
@@ -864,7 +890,7 @@ function guardDesktopClick(cmd: Record<string, any>, turn: ActiveTurn) {
 }
 
 async function runTool(target: string, cmd: Record<string, any>) {
-  const turn = busy ? activeTurn : undefined;
+  const turn = activeTurn?.sid && busySessions.has(activeTurn.sid) ? activeTurn : undefined;
   const click = cmd.cmd === "click" && turn?.click ? turn : undefined;
   if (click?.clickSent || click?.clickInFlight) return { ok: false, error: "Für diesen Auftrag wird bereits ein Klick gesendet." };
   if (click) {
@@ -1189,7 +1215,7 @@ async function route(req: Request, srv: any) {
       const { target, cmd } = await req.json();
       return Response.json(await runTool(target, cmd));
     }
-    if (u.pathname === "/stop" && req.method === "POST") { await stop(); return Response.json({ ok: true }); }
+    if (u.pathname === "/stop" && req.method === "POST") { await stop(true); return Response.json({ ok: true }); }
     if (u.pathname === "/chat" && req.method === "POST") { // für Tests ohne UI
       const { text, model } = await req.json(); await chat(text, model); return Response.json({ ok: true });
     }
@@ -1199,6 +1225,8 @@ async function route(req: Request, srv: any) {
 async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
       const msg = JSON.parse(raw);
+      // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
+      if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
       if (msg.type === "chat" || msg.type === "resend" || msg.type === "replace") {
         const atts: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : [];
         const bad = validate(atts);
@@ -1224,7 +1252,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
         context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
-      else if (msg.type === "stop") await stop();
+      else if (msg.type === "stop") await stop(!!msg.all, msg.session ? String(msg.session) : session);
       else if (msg.type === "settings") {
         settings = { ...settings, ...msg.settings };
         if ("micDevice" in msg.settings) {
@@ -1251,7 +1279,12 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
-      else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
+      else if (msg.type === "open") {
+        const id = String(msg.id);
+        const opened = await openSession(id);
+        ws.send(JSON.stringify({ type: "messages", session: id, messages: opened.messages, running: opened.running }));
+        if (opened.running) for (const event of runBuffer.get(id)) ws.send(JSON.stringify(event)); // halbfertige Antwort nachreichen
+      }
       else if (msg.type === "message_ids") { // IDs der Nutzer-Nachrichten, damit Bearbeiten/Erneut senden auch bei gerade geschriebenen Nachrichten gehen
         const id = String(msg.id ?? "");
         const users = id ? chatHistory(await sessionMessages(id)).filter(m => m.role === "user") : [];
@@ -1289,7 +1322,7 @@ process.on("unhandledRejection", error => {
   console.error(error);
 });
 process.on("uncaughtException", error => {
-  recordError({ category: "daemon", source: "jarvisd/crash", message: error.message, error, context: { mode: settings.mode, model: settings.model, voice, busy } });
+  recordError({ category: "daemon", source: "jarvisd/crash", message: error.message, error, context: { mode: settings.mode, model: settings.model, voice, busy: [...busySessions] } });
   console.error(error);
   process.exit(1);
 });
