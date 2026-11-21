@@ -21,6 +21,7 @@ export interface Store {
   commands: Record<string, CommandEntry>;
   skillDirs: Record<string, { path: string; source: Source }>;   // Name -> Ordner mit SKILL.md
   disabledSkills: string[];
+  mcpOverrides?: Record<string, boolean>;
   plugins: string[];                                            // npm-Pakete oder Dateien für OpenCode
   version?: number;                                             // 2: Importiertes ist standardmäßig aus (jeder aktive MCP-Server und Skill kostet Kontext)
 }
@@ -203,6 +204,10 @@ export function writeWorkspace(workspace: string, base: Record<string, any>, sto
     config.mcp[name] = e.type === "remote"
       ? { type: "remote", url: e.url, ...(e.headers ? { headers: e.headers } : {}), enabled: e.enabled }
       : { type: "local", command: e.command, ...(e.environment ? { environment: e.environment } : {}), enabled: e.enabled };
+  }
+  for (const [name, enabled] of Object.entries(store.mcpOverrides ?? {})) {
+    if (Object.hasOwn(store.mcp, name) && !Object.hasOwn(base.mcp ?? {}, name)) continue;
+    config.mcp[name] = { ...(Object.hasOwn(config.mcp, name) ? config.mcp[name] : {}), enabled };
   }
   config.plugin = store.plugins;
   if (store.disabledSkills.length)
