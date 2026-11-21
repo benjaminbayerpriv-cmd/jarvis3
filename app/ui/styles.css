@@ -773,7 +773,7 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .settings-sheet { width: min(980px, calc(100vw - 48px)); height: min(680px, calc(100vh - 64px)); max-height: none; }
 .settings-sheet[open] { display: block; }
 .set-wrap { height: 100%; display: grid; grid-template-columns: 240px 1fr; }
-.set-nav { display: flex; flex-direction: column; gap: 2px; padding: 20px 12px; border-right: 1px solid var(--outline-variant); background: var(--surface); overflow-y: auto; }
+.set-nav { display: flex; flex-direction: column; gap: 2px; padding: 20px 12px; border-right: 1px solid var(--outline-variant); background: var(--surface); overflow-y: auto; overflow-x: hidden; }
 .set-nav h2 { margin: 0 0 12px 12px; font-size: 22px; font-weight: 400; }
 .set-nav-group { margin: 16px 0 4px 14px; font-size: 12px; color: var(--on-surface-low); }
 .set-nav-item { flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 12px; border-radius: var(--r-full); color: var(--on-surface-variant); font-size: 14px; text-align: left; transition: background-color var(--d-s3) var(--ease); }
@@ -797,7 +797,9 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .settings-sheet .setting select { min-width: 0; max-width: min(46%, 290px); text-overflow: ellipsis; }
 .settings-sheet .setting :disabled { cursor: default; opacity: .5; }
 .settings-sheet .setting .chip-btn { flex-shrink: 0; }
-.set-search { margin: 0 0 8px; flex-shrink: 0; }
+.set-search { margin: 0 0 8px; flex-shrink: 0; min-width: 0; box-sizing: border-box; background: var(--surface-container-high, rgba(255,255,255,.06)); border: 1px solid var(--outline, var(--outline-variant)); }
+.set-search:focus-within { border-color: var(--primary); }
+.set-search input { min-width: 0; width: 100%; }
 .set-results { list-style: none; margin: 0; padding: 0 16px 20px; overflow: auto; }
 .set-results li + li { border-top: 1px solid var(--outline-variant); }
 .set-result { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; text-align: left; padding: 12px; border-radius: 8px; }
@@ -838,7 +840,7 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .import-bar span { flex: 1; font-size: 14px; color: var(--on-surface-variant); }
 .import-check { width: 18px; height: 18px; flex: none; accent-color: var(--primary); }
 .setting-pane-gap { height: 8px; }
-@media (max-width: 760px) { .set-wrap { grid-template-columns: 1fr; } .set-nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--outline-variant); padding: 8px; } .set-nav h2, .set-nav-group { display: none; } .set-nav-item { flex: none; } .set-search { flex: 0 0 200px; margin: 0 8px 0 0; } }
+@media (max-width: 760px) { .set-wrap { grid-template-columns: 1fr; } .set-nav { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--outline-variant); padding: 8px; } .set-nav h2, .set-nav-group { display: none; } .set-nav-item { flex: none; } .set-search { flex: 0 0 200px; margin: 0 8px 0 0; } }
 
 /* ---------- Schrägstrich-Menü ---------- */
 .composer-wrap { position: relative; }
