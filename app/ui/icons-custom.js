@@ -10,4 +10,8 @@ export const CUSTOM = {
   'chevron-right': { d: '<path d="M9 6l6 6-6 6"/>', fill: false },
   home: { d: '<path d="M5 12l-2 0l9-9l9 9l-2 0"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M10 21v-6a2 2 0 0 1 2-2a2 2 0 0 1 2 2v6"/>', fill: false },
   move: { d: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>', fill: false },
+  'arrow-left': { d: '<path d="M5 12h14"/><path d="M5 12l6 6"/><path d="M5 12l6-6"/>', fill: false },
+  pin: { d: '<path d="M15 4.5l-4 4l-4 1.5l-1.5 1.5l7 7l1.5-1.5l1.5-4l4-4"/><path d="M9 15l-4.5 4.5"/><path d="M14.5 4l5.5 5.5"/>', fill: false },
+  archive: { d: '<path d="M3 5a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>', fill: false },
+  'dots-vertical': { d: '<path d="M12 6m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0"/><path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0"/><path d="M12 18m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0"/>', fill: false },
 };

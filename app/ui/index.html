@@ -117,26 +117,46 @@
     </form>
   </dialog>
 
-  <!-- Projekte: Datei-Explorer (Projekte = Ordner, Chats = Dateien) -->
+  <!-- Projekte: Übersicht (Kacheln) und Projektansicht (Explorer: Projekte = Ordner, Chats = Dateien) -->
   <dialog class="sheet explorer" id="projectsDialog">
-    <div class="ex">
-      <header class="ex-head">
-        <h2>Projekte</h2>
-        <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
-        <div class="ex-tools">
-          <button type="button" class="chip-btn" id="exNew"><span data-icon="folder-plus"></span>Neues Projekt</button>
-          <button type="button" class="chip-btn" id="analyzeProjects"><span data-icon="refresh"></span>Automatisch zuordnen</button>
-          <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+    <div class="ex" id="exRoot" data-view="grid">
+      <section class="pg" id="pgView">
+        <header class="pg-head">
+          <h2>Projekte</h2>
+          <button type="button" class="chip-btn pg-new" id="pgNew"><span data-icon="plus"></span>Neues Projekt</button>
+          <button type="button" class="icon-btn" id="closeProjectsGrid" data-icon="x" aria-label="Schließen"></button>
+        </header>
+        <div class="pg-bar">
+          <div class="pg-tabs" role="tablist">
+            <button type="button" role="tab" id="pgTabActive" aria-selected="true">Deine Projekte</button>
+            <button type="button" role="tab" id="pgTabArchived" aria-selected="false">Archiviert</button>
+          </div>
+          <label class="search pg-search"><span data-icon="search"></span><input id="pgSearch" type="search" placeholder="Projekte suchen" autocomplete="off"></label>
+          <div class="pg-sort">
+            <button type="button" class="chip-btn" id="pgSortBtn" aria-haspopup="menu" aria-expanded="false"><span class="pg-sort-label" id="pgSortLabel"></span><span data-icon="chevron-down"></span></button>
+            <div class="ex-menu pg-sort-menu" id="pgSortMenu" role="menu" hidden></div>
+          </div>
         </div>
-      </header>
-      <div class="ex-body">
-        <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
-        <section class="ex-main">
-          <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
-          <ul class="ex-list" id="exList"></ul>
-        </section>
-      </div>
-      <footer class="ex-foot" id="exStatus"></footer>
+        <div class="pg-grid" id="pgGrid"></div>
+      </section>
+      <section class="ex-view" id="exView">
+        <header class="ex-head">
+          <button type="button" class="icon-btn" id="exBack" data-icon="arrow-left" aria-label="Zurück zu allen Projekten"></button>
+          <h2>Projekte</h2>
+          <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
+          <div class="ex-tools">
+            <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+          </div>
+        </header>
+        <div class="ex-body">
+          <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
+          <section class="ex-main">
+            <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
+            <ul class="ex-list" id="exList"></ul>
+          </section>
+        </div>
+        <footer class="ex-foot" id="exStatus"></footer>
+      </section>
     </div>
   </dialog>
 

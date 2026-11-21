@@ -86,3 +86,17 @@ test("Titel und Zeitstempel eines OpenCode-Chats werden aktualisiert, Zuordnung 
   expect(s.chat("id")?.projectId).toBe(p.id);
   expect(s.upsertChat({ id: "id", title: "Neu", updated: 2100 })).toBe(false);
 });
+
+test("Anheften und Archivieren bleiben nach dem Neuladen erhalten", () => {
+  const s = fresh();
+  const a = s.create("A"), b = s.create("B");
+  s.update(a.id, { pinned: true, archived: true });
+  s.update(b.id, { pinned: true }); s.update(b.id, { pinned: false });
+  s.load();
+  expect(s.project(a.id)?.pinned).toBe(true);
+  expect(s.project(a.id)?.archived).toBe(true);
+  expect(s.project(b.id)?.pinned).toBeUndefined();
+  s.update(a.id, { archived: false });
+  s.load();
+  expect(s.project(a.id)?.archived).toBeUndefined();
+});

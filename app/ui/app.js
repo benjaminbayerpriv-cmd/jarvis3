@@ -738,6 +738,8 @@ function exTreeNode(parent, depth, host) {
 function renderProjects(m = projectData) {
   projectData = m;
   if (exSel && !pById(exSel)) exSel = null;
+  $("#exRoot").dataset.view = exSel ? "detail" : "grid";
+  renderProjectGrid();
   // Baum
   const tree = $("#exTree"); tree.innerHTML = "";
   const root = document.createElement("button"); root.type = "button"; root.className = "ex-node" + (exSel === null ? " active" : ""); root.style.setProperty("--d", 0);
@@ -757,23 +759,119 @@ function renderProjects(m = projectData) {
   for (const c of chats) list.append(exChatRow(c));
   if (!subs.length && !chats.length) {
     const e = document.createElement("li"); e.className = "ex-empty";
-    e.textContent = exSel ? "Dieses Projekt ist leer. Ordne Chats zu oder lege Unterprojekte an." : "Noch keine Projekte. Lege oben „Neues Projekt“ an.";
+    e.textContent = exSel ? "Dieses Projekt ist leer. Ordne Chats zu oder lege Unterprojekte an." : "Noch keine Projekte.";
     list.append(e);
   }
   $("#exStatus").textContent = `${subs.length} ${subs.length === 1 ? "Projekt" : "Projekte"} · ${chats.length} ${chats.length === 1 ? "Chat" : "Chats"}${m.root ? ` · ~/${m.root}` : ""}`;
 }
-$("#openProjects").onclick = () => { send({ type: "projects" }); renderProjects(); $("#projectsDialog").showModal(); };
-$("#closeProjects").onclick = () => $("#projectsDialog").close();
-$("#analyzeProjects").onclick = () => projectAction({ op: "analyze" });
-$("#exNew").onclick = () => {
-  const list = $("#exList"); const li = document.createElement("li"); li.className = "ex-row is-folder";
-  li.innerHTML = `<span class="ex-name">${icon("folder")}<input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></span><span class="ex-type">Projekt</span><span class="ex-date"></span><span class="ex-acts"></span>`;
-  list.querySelector(".ex-empty")?.remove(); list.prepend(li);
-  const input = li.querySelector("input"); input.focus(); let done = false;
-  const finish = ok => { if (done) return; done = true; const name = input.value.trim(); if (ok && name) { projectAction({ op: "create", name, description: "", parent: exSel }); if (exSel) exOpen.add(exSel); } else renderProjects(); };
+// ---------- Projekte: Übersicht (Kacheln) ----------
+const SORTS = {
+  recent: ["Zuletzt aktiv", (a, b) => b.act - a.act],
+  oldest: ["Älteste Aktivität", (a, b) => a.act - b.act],
+  az: ["A bis Z", (a, b) => a.p.name.localeCompare(b.p.name, "de")],
+  za: ["Z bis A", (a, b) => b.p.name.localeCompare(a.p.name, "de")],
+  newest: ["Neueste zuerst", (a, b) => b.p.created - a.p.created],
+  created: ["Älteste zuerst", (a, b) => a.p.created - b.p.created],
+  chats: ["Meiste Chats", (a, b) => b.n - a.n],
+};
+const lsGet = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+let pgTab = "active", pgQuery = "", pgSort = SORTS[lsGet("jarvis.projectSort", "recent")] ? lsGet("jarvis.projectSort", "recent") : "recent";
+// letzte Aktivität = jüngster Chat im Projekt samt Unterprojekten, sonst Erstellzeit
+const activityOf = id => { let t = pById(id)?.created ?? 0; for (const c of chatsOf(id)) t = Math.max(t, c.updated || 0); for (const k of childrenOf(id)) t = Math.max(t, activityOf(k.id)); return t; };
+const ago = t => {
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return "gerade eben"; if (m < 60) return `vor ${m} Min.`;
+  const h = Math.floor(m / 60); if (h < 24) return `vor ${h} Std.`;
+  const d = Math.floor(h / 24); if (d < 30) return d === 1 ? "gestern" : `vor ${d} Tagen`;
+  const mo = Math.floor(d / 30); if (mo < 12) return mo === 1 ? "vor 1 Monat" : `vor ${mo} Monaten`;
+  const y = Math.floor(d / 365); return y <= 1 ? "vor 1 Jahr" : `vor ${y} Jahren`;
+};
+function pgMenu(card, p) {
+  document.querySelectorAll(".pg-card .ex-menu").forEach(m => m.remove());
+  const menu = document.createElement("div"); menu.className = "ex-menu pg-card-menu"; menu.setAttribute("role", "menu");
+  const add = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.innerHTML = icon(glyph); b.append(label);
+    b.onclick = e => { e.stopPropagation(); menu.remove(); fn(); }; menu.append(b); };
+  if (!p.archived) add(p.pinned ? "Lösen" : "Anheften", "pin", () => projectAction({ op: "update", id: p.id, patch: { pinned: !p.pinned } }));
+  add("Umbenennen", "edit", () => pgRename(card, p));
+  add(p.archived ? "Wiederherstellen" : "Archivieren", "archive", () => projectAction({ op: "update", id: p.id, patch: { archived: !p.archived } }));
+  add("Löschen", "trash", () => showChatAction("delete-folder", "", projectLabel(p.id)));
+  card.append(menu);
+  const off = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("pointerdown", off, true); } };
+  setTimeout(() => document.addEventListener("pointerdown", off, true));
+}
+function pgRename(card, p) {
+  const t = card.querySelector(".pg-name"); const input = document.createElement("input");
+  input.className = "ex-rename"; input.value = p.name; t.replaceChildren(input); input.focus(); input.select();
+  let done = false; const finish = ok => { if (done) return; done = true; const v = input.value.trim(); if (ok && v && v !== p.name) projectAction({ op: "update", id: p.id, patch: { name: v } }); else renderProjectGrid(); };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true); input.onclick = e => e.stopPropagation();
+}
+function renderProjectGrid() {
+  $("#pgTabActive").setAttribute("aria-selected", String(pgTab === "active"));
+  $("#pgTabArchived").setAttribute("aria-selected", String(pgTab === "archived"));
+  $("#pgSortLabel").textContent = SORTS[pgSort][0];
+  const q = pgQuery.trim().toLocaleLowerCase("de-DE");
+  const rows = projectData.projects
+    .filter(p => !!p.archived === (pgTab === "archived") && (!q || p.name.toLocaleLowerCase("de-DE").includes(q) || (p.description || "").toLocaleLowerCase("de-DE").includes(q)))
+    .map(p => ({ p, act: activityOf(p.id), n: countDeep(p.id) }))
+    .sort((a, b) => (pgTab === "active" ? (b.p.pinned ? 1 : 0) - (a.p.pinned ? 1 : 0) : 0) || SORTS[pgSort][1](a, b));
+  const grid = $("#pgGrid"); grid.replaceChildren();
+  for (const { p, act, n } of rows) {
+    const card = document.createElement("div"); card.className = "pg-card" + (p.pinned ? " pinned" : ""); card.tabIndex = 0; card.setAttribute("role", "button");
+    const where = p.parentId ? projectLabel(p.parentId) : "";
+    card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-name"></div><div class="pg-desc"></div><div class="pg-meta"></div>`
+      + (p.pinned ? `<span class="pg-pin" title="Angeheftet">${icon("pin")}</span>` : "")
+      + `<button type="button" class="pg-more" aria-label="Projektaktionen">${icon("dots-vertical")}</button>`;
+    card.querySelector(".pg-name").textContent = p.name;
+    card.querySelector(".pg-desc").textContent = p.description || where;
+    card.querySelector(".pg-meta").textContent = `Aktualisiert ${ago(act)} · ${n} ${n === 1 ? "Chat" : "Chats"}`;
+    card.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
+    card.onkeydown = e => { if (e.target === card && e.key === "Enter") card.click(); };
+    card.querySelector(".pg-more").onclick = e => { e.stopPropagation(); pgMenu(card, p); };
+    grid.append(card);
+  }
+  if (!rows.length) {
+    const e = document.createElement("div"); e.className = "ex-empty pg-empty";
+    e.textContent = q ? "Keine Projekte gefunden." : pgTab === "archived" ? "Keine archivierten Projekte." : "Noch keine Projekte. Lege oben rechts „Neues Projekt“ an.";
+    grid.append(e);
+  }
+}
+function pgNew() {
+  // neue Kachel mit Namensfeld; Enter legt an, Esc oder leer bricht ab
+  if (pgTab !== "active") { pgTab = "active"; renderProjectGrid(); }
+  const grid = $("#pgGrid"); grid.querySelector(".pg-empty")?.remove();
+  const card = document.createElement("div"); card.className = "pg-card";
+  card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-name"><input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></div><div class="pg-desc"></div><div class="pg-meta">Neues Projekt</div>`;
+  grid.prepend(card);
+  const input = card.querySelector("input"); input.focus(); let done = false;
+  const finish = ok => { if (done) return; done = true; const name = input.value.trim(); if (ok && name) projectAction({ op: "create", name, description: "", parent: null }); else renderProjectGrid(); };
   input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
   input.onblur = () => finish(true);
-};
+}
+function pgSortMenu() {
+  const menu = $("#pgSortMenu"), btn = $("#pgSortBtn");
+  if (!menu.hidden) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); return; }
+  menu.replaceChildren();
+  for (const [key, [label]] of Object.entries(SORTS)) {
+    const b = document.createElement("button"); b.type = "button"; b.setAttribute("role", "menuitemradio"); b.setAttribute("aria-checked", String(key === pgSort));
+    b.innerHTML = `<span class="chk">${key === pgSort ? icon("check") : ""}</span>`; b.append(label);
+    b.onclick = () => { pgSort = key; lsSet("jarvis.projectSort", key); menu.hidden = true; btn.setAttribute("aria-expanded", "false"); renderProjectGrid(); };
+    menu.append(b);
+  }
+  menu.hidden = false; btn.setAttribute("aria-expanded", "true");
+  const off = ev => { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); document.removeEventListener("pointerdown", off, true); } };
+  setTimeout(() => document.addEventListener("pointerdown", off, true));
+}
+$("#openProjects").onclick = () => { send({ type: "projects" }); exSel = null; renderProjects(); $("#projectsDialog").showModal(); };
+$("#closeProjects").onclick = () => $("#projectsDialog").close();
+$("#closeProjectsGrid").onclick = () => $("#projectsDialog").close();
+$("#exBack").onclick = () => { exSel = null; renderProjects(); };
+$("#pgNew").onclick = pgNew;
+$("#pgTabActive").onclick = () => { pgTab = "active"; renderProjectGrid(); };
+$("#pgTabArchived").onclick = () => { pgTab = "archived"; renderProjectGrid(); };
+$("#pgSearch").oninput = e => { pgQuery = e.target.value; renderProjectGrid(); };
+$("#pgSortBtn").onclick = pgSortMenu;
 
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
