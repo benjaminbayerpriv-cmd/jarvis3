@@ -33,6 +33,8 @@ final class Session {
     var targets: [Target] = []
     /// Fenster-Modus: Jarvis steuert genau dieses Fenster (auch verdeckt); nil = ganzer Monitor
     var window: WindowInfo?
+    var scannedWindowID: CGWindowID?
+    var scanToken: String?
     let streamer = WindowStreamer()
     func mark(_ point: CGPoint) { streamer.cursor = point }   // virtuelle Maus im Live-Bild
 
@@ -75,7 +77,7 @@ final class Session {
         return targets[id]
     }
 
-    func click(_ t: Target) -> String {
+    func click(_ t: Target) throws -> String {
         if let element = t.element {
             var actions: CFArray?
             if AXUIElementCopyActionNames(element, &actions) == .success,
@@ -85,13 +87,8 @@ final class Session {
             }
         }
         let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
-        if let w = window { clickInApp(w.pid, at: point); return "app-mouse" }   // echte Maus bleibt, wo sie ist
-        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-            CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
-                .post(tap: .cghidEventTap)
-            usleep(30_000)
-        }
-        return "mouse"
+        try sendClick(to: window?.pid, at: point)
+        return window != nil ? "app-mouse" : "mouse"
     }
 
     func focus(_ t: Target) -> Bool {
@@ -106,7 +103,7 @@ final class Session {
            AXUIElementSetAttributeValue(element, "AXValue" as CFString, text as CFString) == .success {
             return "ax-value"
         }
-        if !focus(t) { _ = click(t) }
+        if !focus(t) { _ = try click(t) }
         usleep(80_000)
         if let w = window { typeInApp(w.pid, text); return "app-keys" }
         postText(text)
@@ -126,17 +123,46 @@ final class Session {
         do {
             switch request["cmd"] as? String {
             case "scan":
+                scannedWindowID = nil
+                scanToken = nil
+                targets.removeAll()
                 if let d = request["display"] as? Int { display = d; window = nil }
                 if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
                 else if request["display"] != nil || request["window"] is NSNull { window = nil }
                 let started = Date()
                 let list = try scanNow(all: request["all"] as? Bool ?? false)
                 var reply: [String: Any] = ["ok": true, "targets": list, "ms": Int(Date().timeIntervalSince(started) * 1000)]
+                let bounds = window?.bounds ?? displayRect(display)
+                reply["bounds"] = [Int(bounds.minX), Int(bounds.minY), Int(bounds.width), Int(bounds.height)]
+                if let window {
+                    scannedWindowID = window.id
+                    reply["window"] = Int(window.id)
+                    reply["app"] = window.app
+                    scanToken = UUID().uuidString
+                    reply["scanToken"] = scanToken
+                }
                 if request["text"] as? Bool == true { reply["text"] = textList(list) }
                 return reply
             case "click":
-                let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
-                return ["ok": true, "via": click(t), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
+                if let token = request["scanToken"] as? String, token != scanToken {
+                    throw Failure(message: "Der Scan ist nicht mehr aktuell. Bitte neu scannen.")
+                }
+                if let expected = request["window"] as? Int {
+                    guard let scannedWindowID, Int(scannedWindowID) == expected, window?.id == scannedWindowID,
+                          try windowInfo(scannedWindowID).bounds == window?.bounds else {
+                        throw Failure(message: "Fenster hat sich geändert. Bitte neu scannen.")
+                    }
+                }
+                let t = try target(request["id"] as? Int)
+                guard t.enabled else { throw Failure(message: "Das Bedienelement ist deaktiviert.") }
+                if request["window"] != nil, let element = t.element {
+                    let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
+                    guard let current = windowFrame(element), current.contains(point), window?.bounds.contains(point) == true else {
+                        throw Failure(message: "Das Bedienelement hat sich verschoben. Bitte neu scannen.")
+                    }
+                }
+                mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
+                return ["ok": true, "via": try click(t), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
             case "focus":
                 return ["ok": focus(try target(request["id"] as? Int))]
             case "type":
