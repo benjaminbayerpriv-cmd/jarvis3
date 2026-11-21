@@ -977,7 +977,6 @@ function renderModels(filter = "") {
 }
 $("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
 $(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
-$("#newFolder").onclick = () => { setRail(true); showChatAction("folder"); };
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
   const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?",
