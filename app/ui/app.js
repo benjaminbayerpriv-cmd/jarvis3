@@ -370,6 +370,17 @@ function renderHistory(list = []) {
   const folders = chatFolderNames.length ? chatFolderNames : [...new Set(list.map(s => s.folder).filter(Boolean))];
   const ul = $("#history"), q = $("#chatSearch").value.trim().toLocaleLowerCase("de-DE"); ul.innerHTML = "";
   const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
+  const collapsedSections = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedHistorySections") || "[]"));
+  const isSearching = !!q;
+  const addSection = (name, key) => {
+    const li = document.createElement("li"); li.className = "history-section";
+    const toggle = document.createElement("button"); toggle.className = "history-section-toggle";
+    toggle.innerHTML = `${icon("chevron-down")}<span>${name}</span>`;
+    toggle.setAttribute("aria-expanded", String(isSearching || !collapsedSections.has(key)));
+    toggle.onclick = () => { collapsedSections.has(key) ? collapsedSections.delete(key) : collapsedSections.add(key); localStorage.setItem("jarvis.collapsedHistorySections", JSON.stringify([...collapsedSections])); renderHistory(historySessions); };
+    li.append(toggle); ul.append(li);
+    return isSearching || !collapsedSections.has(key);
+  };
   const appendChat = (s, parent) => {
     const li = document.createElement("li"); li.className = "history-chat"; li.draggable = true; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
     const title = document.createElement("button"); title.className = "history-title";
@@ -391,24 +402,25 @@ function renderHistory(list = []) {
   const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
   const addFolder = name => {
     const row = document.createElement("li"); row.className = "history-chat folder-chat"; row.dataset.folder = name;
+    const isFolderCollapsed = !isSearching && collapsed.has(name);
     const toggle = document.createElement("button"); toggle.className = "folder-toggle";
-    toggle.innerHTML = icon(collapsed.has(name) ? "folder" : "folder-open");
+    toggle.innerHTML = icon(isFolderCollapsed ? "folder" : "folder-open");
     const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel);
-    toggle.setAttribute("aria-expanded", String(!collapsed.has(name)));
-    toggle.setAttribute("aria-label", `${collapsed.has(name) ? "Ordner öffnen" : "Ordner schließen"}: ${name}`);
+    toggle.setAttribute("aria-expanded", String(!isFolderCollapsed));
+    toggle.setAttribute("aria-label", `${isFolderCollapsed ? "Ordner öffnen" : "Ordner schließen"}: ${name}`);
     toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
     row.append(toggle);
     row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drop-target"); }); row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
     row.addEventListener("drop", e => { e.preventDefault(); row.classList.remove("drop-target"); send({type:"chat_action", action:"move", id:e.dataTransfer.getData("text/plain"), folder:name}); });
-    if (!collapsed.has(name)) {
+    if (!isFolderCollapsed) {
       const children = document.createElement("ul"); children.className = "folder-children";
       visible.filter(s => s.folder === name).forEach(s => appendChat(s, children));
       row.append(children);
     }
     ul.append(row);
   };
-  folders.forEach(addFolder);
-  visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
+  if (addSection("Ordner", "folders")) folders.forEach(addFolder);
+  if (addSection("Chats", "chats")) visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
 }
 document.addEventListener("click", () => {
   document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
