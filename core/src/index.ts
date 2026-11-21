@@ -399,11 +399,23 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "done" || e.kind === "error") {
       busy = false; broadcast(state());
       if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
-        void setSessionTitle(sid, topicTitle(`${text} ${responseText}`), true);
+        void aiTitle(text, responseText).then(title => setSessionTitle(sid, title ?? topicTitle(`${text} ${responseText}`), true));
     }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }
       : { type: e.kind, ...e });
   });
+}
+
+/** Kurzer Chat-Titel vom schnellen Gratis-Modell (2–5 Wörter); null, wenn das Modell nichts Brauchbares liefert. */
+async function aiTitle(user: string, answer: string): Promise<string | null> {
+  try {
+    const system = "Du erzeugst Titel für Chat-Verläufe. Antworte NUR mit dem Titel: 2 bis 5 Wörter, in der Sprache des Nutzers, "
+      + "beschreibt das Thema (kein Satz, keine Frage), ohne Anführungszeichen, ohne Punkt am Ende, ohne Emojis.";
+    const text = `Nutzer: ${user.replace(/\s+/g, " ").slice(0, 400)}\nAntwort: ${answer.replace(/\s+/g, " ").slice(0, 400)}\n\nTitel:`;
+    const raw = await brain.ask(text, CLASSIFY_MODEL, system, 15_000);
+    const title = raw.split("\n").map(l => l.trim()).find(Boolean)?.replace(/^(titel|title)\s*:\s*/i, "").replace(/^["„“'`*#\s]+|["“”'`*.\s]+$/g, "") ?? "";
+    return title.length >= 3 && title.length <= 60 && title.split(/\s+/).length <= 8 ? title : null;
+  } catch { return null; }
 }
 
 function topicTitle(text: string) {
