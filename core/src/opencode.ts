@@ -60,6 +60,21 @@ export class OpenCode {
     return (await r.json()).id;
   }
 
+  /** Eine Frage ohne Nutzer-Sichtbarkeit beantworten (z. B. Projektzuordnung). Liefert nur den Text. */
+  async ask(text: string, model: string, system: string, timeoutMs = 25_000): Promise<string> {
+    const sid = await this.createSession("Test"); // "Test" bleibt im Verlauf verborgen
+    let out = "";
+    return new Promise<string>(resolve => {
+      let finished = false;
+      const finish = () => { if (finished) return; finished = true; clearTimeout(timer); resolve(out); };
+      const timer = setTimeout(() => { void this.abort(sid, false); finish(); }, timeoutMs);
+      void this.prompt(sid, text, model, system, e => {
+        if (e.kind === "text") out += e.delta;
+        else if (e.kind === "done" || e.kind === "error") finish();
+      }).catch(finish);
+    });
+  }
+
   /** Startet einen Prompt; Ereignisse kommen über onEvent, bis "done". */
   async prompt(session: string, text: string, model: string, system: string, onEvent: (e: BrainEvent) => void,
                images: { mime: string; url: string }[] = []) {
