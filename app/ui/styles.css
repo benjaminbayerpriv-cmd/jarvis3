@@ -159,14 +159,15 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 /* ---------- Gespräch ---------- */
 .conversation { overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; padding: 0 24px; }
 .conversation { display: flex; flex-direction: column; }
-.zero { max-width: 708px; width: 100%; margin: auto auto 0; padding-bottom: 32px; transition: opacity var(--d-m1) var(--ease); }
+.zero { max-width: 708px; width: 100%; margin: auto auto 0; padding-bottom: 40px; transition: opacity var(--d-m1) var(--ease); }
 /* Startzustand wie Gemini: Eingabe mittig unter der Begrüßung, gleitet bei der ersten Nachricht nach unten */
 .composer-wrap { transition: margin-bottom var(--d-l2) var(--ease); }
-.main.is-zero .composer-wrap { margin-bottom: calc(50vh - 150px); }
+.main.is-zero .composer-wrap { margin-bottom: calc(46.6vh - 36px); } /* Eingabefeld wie bei Gemini bei ~47 % der Höhe */
 .main.is-zero .disclaimer { opacity: 0; }
-.main.is-zero .zero { text-align: left; }
+.main.is-zero .zero { text-align: center; }
+.main.is-zero .turns { display: none; } /* sonst bleiben 48 px Innenabstand zwischen Begrüßung und Eingabe */
 .zero.gone { display: none; }
-.greeting { margin: 0 0 32px; font-weight: 320; font-size: 36px; line-height: 44px; font-variation-settings: "wdth" 100, "ROND" 100; }
+.greeting { margin: 0; font-weight: 320; font-size: 36px; line-height: 44px; font-variation-settings: "wdth" 100, "ROND" 100; }
 .greeting-q { color: var(--on-surface); animation: greet-in var(--d-l2) var(--ease-decel) both; display: inline-block; }
 @keyframes greet-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
@@ -324,8 +325,8 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .composer textarea::placeholder { color: var(--on-surface-low); }
 .composer-actions { display: flex; align-items: center; gap: 4px; }
 .live-btn {
-  display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px 0 10px; border-radius: var(--r-full);
-  color: var(--on-surface-variant); font-size: 14px; transition: background-color var(--d-s3) var(--ease);
+  width: 40px; height: 40px; padding: 0; border-radius: var(--r-full); display: grid; place-items: center;
+  color: var(--on-surface); transition: background-color var(--d-s3) var(--ease);
 }
 .live-btn:hover { background: var(--state-hover); }
 .live-ic svg { width: 22px; height: 22px; }
@@ -335,7 +336,7 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 .live-btn:hover .b2, .live-btn:hover .b4 { animation-delay: -600ms; }
 @keyframes eq { from { transform: scaleY(1); } to { transform: scaleY(.45); } }
 /* im Live-Button die Balken im Gemini-Verlauf einfärben */
-.live-ic svg { stroke: url(#live-grad); }
+.live-ic svg { stroke: currentColor; }
 .send-btn {
   width: 40px; height: 40px; border-radius: var(--r-full); display: grid; place-items: center;
   background: var(--primary-container); color: var(--on-primary-container);
@@ -456,3 +457,31 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 /* Das Panel folgt der Auflösung des Tabs (Seitenverhältnis), nicht dem einzelnen Bild: die ganze Seite bleibt sichtbar */
 .viewer-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
 @media (max-width: 640px) { .viewer { right: 12px; bottom: 96px; width: calc(100vw - 24px); } }
+
+/* ---------- Politur ---------- */
+/* sanftes Leuchten hinter der Startseite (Gemini: lm-glow, Farbe #1f3b9b); wächst einmal ein und verschwindet mit der ersten Nachricht */
+.main { position: relative; isolation: isolate; }
+.main::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse 46% 34% at 50% 47%, color-mix(in srgb, var(--glow-chat) 62%, transparent) 0%, color-mix(in srgb, var(--glow-chat) 26%, transparent) 45%, transparent 100%);
+  transition: opacity var(--d-l2) var(--ease);
+}
+.main.is-zero::before { opacity: .9; animation: glow-grow 1s var(--ease) both; }
+@keyframes glow-grow { from { opacity: 0; transform: scale(.6); } to { opacity: .9; transform: none; } }
+
+/* Kopieren unter fertigen Antworten */
+.copy-btn { width: 32px; height: 32px; margin: 8px 0 0 -6px; border-radius: var(--r-full); display: inline-grid; place-items: center;
+  color: var(--on-surface-low); transition: background-color var(--d-s3) var(--ease), color var(--d-s3) var(--ease); }
+.copy-btn:hover { background: var(--state-hover); color: var(--on-surface); }
+.copy-btn svg { width: 18px; height: 18px; }
+.copy-btn.done { color: var(--success); }
+
+/* Scrollleisten und Textauswahl */
+* { scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--outline-variant); border-radius: var(--r-full); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--outline); background-clip: content-box; border: 3px solid transparent; }
+::selection { background: color-mix(in srgb, var(--primary) 38%, transparent); }
+
+.composer { transition: box-shadow var(--d-s2), max-width var(--d-m2) var(--ease); }
+.main.is-zero .composer { max-width: 660px; }

@@ -224,6 +224,18 @@ function finishTurn(note) {
     else if (b.kind === "tools") { for (const r of b.rows.values()) if (r.status === "pending" || r.status === "running") { r.status = note ? "error" : "completed"; r.el.classList.remove("running"); } paintToolsHeader(b); }
   }
   if (!current.blocks.some(b => b.kind === "text") && !note && !current.blocks.length) textBlock().el.textContent = "…";
+  if (current.text.trim()) {  // Antwort kopieren
+    const b = document.createElement("button");
+    b.className = "copy-btn"; b.type = "button"; b.title = "Antwort kopieren"; b.setAttribute("aria-label", "Antwort kopieren");
+    b.innerHTML = icon("copy");
+    const text = current.text.trim();
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(text); } catch { return; }
+      b.innerHTML = icon("check"); b.classList.add("done");
+      setTimeout(() => { b.innerHTML = icon("copy"); b.classList.remove("done"); }, 1400);
+    };
+    el.querySelector(".body").insertBefore(b, el.querySelector(".meta"));
+  }
   const secs = ((performance.now() - started) / 1000).toFixed(1);
   el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
     .filter(Boolean).join(" · ");
