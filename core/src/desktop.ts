@@ -1,4 +1,5 @@
 // Desktop-Werkzeug: hält einen `uimap serve`-Prozess (Mac) bzw. uimap.exe (Windows) offen.
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { recordError } from "./errorlog";
 
@@ -13,9 +14,22 @@ export class Desktop {
     ? join(import.meta.dir, "../../tools/uimap-win/bin/uimap.exe")
     : join(import.meta.dir, "../../tools/uimap-mac/bin/uimap")) {}
 
-  private ensure() {
+  /** Klare Anleitung, falls das Bildschirm-Werkzeug fehlt (Windows: nie gebaut, bin/ ist nicht im Repo). */
+  private missingHint() {
+    return process.platform === "win32"
+      ? `Bildschirm-Werkzeug fehlt (${this.bin}). Einmalig bauen: .NET-8-SDK installieren, dann in tools/uimap-win ausführen: dotnet publish ./uimap.csproj -c Release -r win-x64 --self-contained false -o ./bin`
+      : `Bildschirm-Werkzeug fehlt (${this.bin}). In tools/uimap-mac bauen (siehe README).`;
+  }
+
+  /** Startet uimap bei Bedarf. Gibt eine Fehlermeldung zurück, wenn das nicht geht (statt zu werfen). */
+  private ensure(): string | undefined {
     if (this.proc && this.proc.exitCode === null) return;
-    this.proc = Bun.spawn([this.bin, "serve"], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+    if (!existsSync(this.bin)) return this.missingHint();
+    try {
+      this.proc = Bun.spawn([this.bin, "serve"], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+    } catch (error) {
+      return `Bildschirm-Werkzeug lässt sich nicht starten: ${(error as Error)?.message ?? error}`;
+    }
     (async () => {
       const reader = (this.proc!.stdout as ReadableStream<Uint8Array>).pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
@@ -42,7 +56,8 @@ export class Desktop {
   }
 
   call(cmd: Record<string, unknown>, timeoutMs = 15000): Promise<Reply> {
-    this.ensure();
+    const startError = this.ensure();
+    if (startError) return Promise.resolve({ ok: false, error: startError });
     const rid = ++this.rid;
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.pending.delete(rid); resolve({ ok: false, error: "Zeitüberschreitung" }); }, timeoutMs);
