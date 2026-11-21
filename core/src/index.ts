@@ -17,6 +17,7 @@ import { SidecarSupervisor } from "./sidecar";
 import { Capture } from "./capture";
 import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
+import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -127,24 +128,50 @@ function restartSidecar(reason: string) {
   broadcast({ type: "notice", text: `${reason} – das Sprachmodul startet neu (ca. 30 s).` });
   void sidecar.restart();
 }
-const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
+// Diagnose pro Turn: jede Station (Äußerung, Modell, Werkzeug, Fertig, Sprachausgabe) landet als "[T<lauf>] …" in voice.log.
+const trace = new TurnTrace(vlog);
+brain.onLog = vlog;
+let userSpeaking = false;                              // speech_start gesehen, final steht noch aus
+const recentSaid: { text: string; at: number }[] = []; // für den Echo-Filter
+const liveAnswer = new LiveAnswer({
+  say: text => say(text),
+  blocked: () => voice === "off" || voice === "dictate" ? { reason: `Live beendet (voice=${voice})`, expected: true } : undefined,
+  currentRun: () => runSeq,
+  mustWait: () => userSpeaking ? "Nutzer spricht gerade" : pendingUtterance ? "Äußerung des Nutzers noch offen"
+    : !speech.connected ? "Sprachmodul nicht verbunden" : undefined,
+  log: (run, ev, info) => trace.add(run, ev, info),
+  unspoken: (run, text, reason) => {
+    trace.add(run, "antwort-ungesprochen", reason);
+    broadcast({ type: "live_unspoken", text, reason });
+    recordError({ category: "speech", source: "jarvisd/live-answer", message: `Live-Antwort nicht gesprochen: ${reason.replace(/\d+/g, "#")}`,
+      context: { run, reason, text: text.slice(0, 300), voice, speech: speech.connected, model: settings.voiceModel, trace: trace.get(run) } });
+  },
+  now: () => Date.now(),
+});
+const micLabel = () =>audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
   if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
   if (e.type === "speech_start" || e.type === "partial") lastUserActivityAt = Date.now();
   // Der Nutzer unterbricht: der Sidecar verwirft seine Warteschlange ohne say_start/say_end zu melden, und angesammelte
   // Ansagen ("gehalten") würden danach mitten in seinen Satz platzen.
-  if (e.type === "speech_start" && voice === "live") { speech.sayTimes.clear(); speechEpoch++; }
+  if (e.type === "speech_start" && voice === "live") {
+    speech.sayTimes.clear(); speechEpoch++; userSpeaking = true;
+    trace.add(runSeq, "nutzer-spricht", `busy=${busy}${liveAnswer.playing ? ` antwort=say#${liveAnswer.playing.id}${liveAnswer.playing.started ? "(läuft)" : "(wartet)"}` : ""}`);
+    liveAnswer.onUserSpeech();
+  }
+  if (e.type === "final" || e.type === "connected" || e.type === "disconnected") userSpeaking = false;
   // Sätze ohne hörbaren Ton (z. B. nur "1.") bekommen nie ein say_start: alles bis zur gestarteten/beendeten ID gilt als erledigt
   const doneUpTo = (id: number) => { for (const k of [...speech.sayTimes.keys()]) if (k <= id) speech.sayTimes.delete(k); };
   if (e.type === "say_start") {
     speaking.add(Number(e.id)); doneUpTo(Number(e.id));
     speechStarted.get(Number(e.id))?.();
+    liveAnswer.onSayStart(Number(e.id));
   }
-  if (e.type === "say_end") { speaking.delete(Number(e.id)); doneUpTo(Number(e.id)); }
+  if (e.type === "say_end") { speaking.delete(Number(e.id)); doneUpTo(Number(e.id)); liveAnswer.onSayEnd(Number(e.id)); }
   if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
-  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
+  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); liveAnswer.release(); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
@@ -207,7 +234,9 @@ function looksUnfinished(text: string) {
 }
 function hear(text: string) {
   if (STOP_WORDS.test(text.trim())) { pendingUtterance = ""; clearTimeout(utterTimer); void stop(); return; }
-  if (!worthAnswering(text) && !pendingUtterance) return;
+  // Lautsprecher-Echo der eigenen Ansage ("Einen Moment.") wäre sonst eine neue Frage und bräche die echte ab
+  if (!pendingUtterance && isEcho(text, recentSaid, Date.now())) { trace.add(runSeq, "echo-verworfen", text.slice(0, 80)); liveAnswer.release(); return; }
+  if (!worthAnswering(text) && !pendingUtterance) { trace.add(runSeq, "geräusch-ignoriert", JSON.stringify(text.slice(0, 60))); liveAnswer.release(); return; }
   if (!pendingUtterance) pendingSince = Date.now();
   pendingUtterance = `${pendingUtterance} ${text}`.trim();
   clearTimeout(utterTimer);
@@ -219,7 +248,7 @@ function sendUtterance() {
     utterTimer = setTimeout(sendUtterance, 600); return;
   }
   const text = pendingUtterance.trim(); pendingUtterance = "";
-  if (!worthAnswering(text) || voice !== "live") return;
+  if (!worthAnswering(text) || voice !== "live") { liveAnswer.release(); return; }
   let full = text, replace = false;
   // Antwort läuft noch, hat aber keine Werkzeuge benutzt und der Nutzer spricht weiter: zu EINER Äußerung zusammenführen
   if (busy && lastRun && !lastRun.toolSeen && Date.now() - lastRun.startedAt < 20_000) { full = `${lastRun.text} ${text}`; replace = true; }
@@ -240,6 +269,9 @@ const sidecar = process.env.JARVIS_SPEECH_URL || process.env.JARVIS_NO_SIDECAR ?
 // Die Desktop-Hülle startet den Sidecar parallel. Erst nach ihrem Health-Timeout selbst einspringen.
 sidecar?.start(process.env.JARVIS_SHELL_STARTS_SPEECH === "1" ? 45_000 : 0);
 setInterval(() => {   // Wächter: hängt der Sidecar (keine Pegel mehr) oder die Sprachausgabe (Satz gesendet, nie gestartet)?
+  // final verloren (z. B. Moduswechsel setzt den Endpunkt zurück): "Nutzer spricht" darf nicht ewig hängen
+  if (userSpeaking && Date.now() - lastUserActivityAt > 15_000) { userSpeaking = false; trace.add(runSeq, "nutzer-spricht-zurückgesetzt", "kein final nach 15 s"); }
+  liveAnswer.tick();
   if (!speech.connected) return;
   const now = Date.now();
   if (voice !== "off" && lastLevelAt && now - lastLevelAt > 5000) { lastLevelAt = now; restartSidecar("Das Sprachmodul reagierte nicht mehr"); return; }
@@ -253,8 +285,10 @@ function setVoice(mode: typeof voice) {
   armMicWatch();
   if (mode === "off") voiceOwner = undefined;
   speech.mode(mode);
+  if (mode !== "live") userSpeaking = false; // Mikrofon zu: ein offenes speech_start bekommt kein final mehr
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
-  if (mode === "off") { speechEpoch++; speech.stopSpeaking(); }
+  if (mode === "off") { speechEpoch++; speech.stopSpeaking(); liveAnswer.drop("Live beendet"); }
+  else liveAnswer.release();
   broadcast(state());
 }
 let lastIgnoredOffLog = 0;
@@ -448,8 +482,11 @@ let recentClick: { session: string; intent: ClickIntent; text: string; at: numbe
 
 function say(text: string) {
   lastSayAt = Date.now();
-  vlog(`say: ${text.slice(0, 120)}`);
-  return speech.say(text);
+  recentSaid.push({ text, at: lastSayAt });
+  if (recentSaid.length > 10) recentSaid.shift();
+  const id = speech.say(text);
+  vlog(`say#${id ?? "-"}${speech.connected ? "" : " (Sprachmodul getrennt)"}: ${text.slice(0, 120)}`);
+  return id;
 }
 function waitUntilSpoken(id: number | undefined) {
   if (id === undefined || !speech.sayTimes.has(id)) return Promise.resolve();
@@ -489,7 +526,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   }
   const turn: ActiveTurn = { run: runId, spoken, click };
   activeTurn = turn;
-  const startedSpeechEpoch = speechEpoch;
+  if (spoken) trace.add(runId, "lauf-start", `model=${model}${tried.length ? ` versuch=${tried.length + 1}` : ""} busy=${busy} text=${JSON.stringify(text.slice(0, 80))}`);
   if (busy && session && !fresh) await brain.abort(session);
   // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
   if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
@@ -519,7 +556,9 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   busy = true; broadcast(state());
   const started = performance.now();
   let first = true, switching = false, finished = false, textSeen = false, toolSeen = false, responseText = "", finalSpeech = "";
-  const maySpeak = () => spoken && runId === runSeq && voice !== "off" && voice !== "dictate" && speechEpoch === startedSpeechEpoch;
+  // Nur ein abgelöster Lauf (neue Frage), Stopp oder Live-Ende verhindern das Sprechen. Ein Geräusch während des Nachdenkens
+  // (speech_start ohne neue Frage) tut es NICHT mehr; die Antwort wird dann gehalten und nachgeholt (live-turn.ts).
+  const maySpeak = () => spoken && runId === runSeq && voice !== "off" && voice !== "dictate" && !userSpeaking && !pendingUtterance;
   const ackTimer = setTimeout(() => {
     if (maySpeak() && busy && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
@@ -545,7 +584,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
     // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
     if (runId !== runSeq) {
-      if (e.kind === "done" || e.kind === "error") clearTimeout(ackTimer);
+      if (e.kind === "done" || e.kind === "error") { clearTimeout(ackTimer); if (spoken) trace.add(runId, `ereignis-nach-ablösung ${e.kind}`, e.kind === "done" ? `aborted=${!!e.aborted}` : e.message); }
       if (e.kind === "done" && e.aborted) broadcast({ type: "done", ...e }); // Oberfläche schließt die abgebrochene Antwort ab
       return;
     }
@@ -606,8 +645,11 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         context: { model, request: text, mode: settings.mode, spoken, voice, session: sid, tried } });
       broadcast({ type: "error", message: "Jarvis hat nicht geantwortet. Bitte sag es noch einmal oder wähle ein anderes Modell." });
     }
+    if (spoken && e.kind === "tool" && (e.status === "running" || e.status === "error")) trace.add(runId, `werkzeug-${e.status}`, e.name);
+    if (spoken && e.kind === "error") trace.add(runId, "fehler", `${e.retry ? "(retry) " : ""}${e.message}`);
     if (e.kind === "text" && first) {
       first = false;
+      if (spoken) trace.add(runId, "erster-text", `${Math.round(performance.now() - started)} ms`);
       broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model });
     }
     if (e.kind === "done" || e.kind === "error") {
@@ -618,8 +660,11 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         const result = click ? clickOutcome(click, !!turn.clickSent) : "";
         const toRead = result || conciseSpeech(finalSpeech || (!toolSeen ? responseText : ""), text);
         if (spoken || result) broadcast({ type: "delta", text: toRead || "Ich konnte die Antwort nicht abschließen." });
-        if (maySpeak()) say(toRead || "Ich konnte die Antwort nicht abschließen.");
-      }
+        if (spoken) {
+          trace.add(runId, `lauf-ende ${e.kind}`, `${Math.round(performance.now() - started)} ms text=${responseText.length} zeichen werkzeug=${toolSeen} voice=${voice}`);
+          liveAnswer.deliver(runId, toRead || "Ich konnte die Antwort nicht abschließen.");
+        }
+      } else if (spoken) trace.add(runId, "lauf-ende abgebrochen");
       busy = false;
       if (activeTurn === turn) activeTurn = undefined;
       broadcast(state());
@@ -741,6 +786,8 @@ async function stop() {
   if (lastDesktopPoint && Date.now() - lastDesktopPoint.at < 4000 && capture.available())
     void capture.call({ cmd: "cursor_hide" }, 3000);
   lastDesktopPoint = undefined;
+  liveAnswer.drop("Stopp");
+  trace.add(runSeq, "stopp");
   if (session) await brain.abort(session);
   busy = false; broadcast({ type: "stopped" }); broadcast(state());
 }

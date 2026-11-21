@@ -39,3 +39,18 @@ Mikrofon und Lautsprecher gehören dem Sidecar (native Aufnahme, keine Browser-A
 ## Überwachung des Sidecars (jarvisd)
 - `core/src/sidecar.ts` startet den Sidecar (`uv run --project speech python -m jarvis_speech`, abgekoppelt, Log `~/.jarvis3/sidecar.log`), wenn Port 7778 nicht erreichbar ist, und startet ihn bei Bedarf neu. Mit `JARVIS_NO_SIDECAR=1` oder `JARVIS_SPEECH_URL` ist das aus.
 - Wächter in `core/src/index.ts` (höchstens ein Neustart pro 30 s, mit Hinweis in der Oberfläche): (1) kommt nach dem Start des Zuhörens 7 s lang kein Mikro-Pegel, wird einmal pro Gespräch neu gestartet (liest die Audiogeräte frisch ein), danach nur noch ein Hinweis mit Gerätename; (2) bleiben die Pegel-Ereignisse (30 pro Sekunde) länger als 5 s aus, hängt der Sidecar; (3) wurde ein Satz geschickt und kam 12 s lang kein `say_start`, obwohl nichts gesprochen wird, hängt die Sprachausgabe.
+
+## Live-Antwort zustellen und Diagnose pro Turn (`core/src/live-turn.ts`)
+- Eine fertige Live-Antwort wird nur verworfen, wenn eine **neue Frage** (neuer Lauf), ein **Stopp** oder das **Ende von Live**
+  sie ablöst. Ein `speech_start` ohne neue Frage (Husten, „ähm“, Tastatur, Echo) hält die Antwort nur an; sobald das `final`
+  da ist und keine Frage daraus wurde, spricht Jarvis sie nach („antwort-nachgeholt“). Früher ging sie dabei verloren:
+  im Chat stand sie, gesprochen und in der Live-Ansicht gezeigt wurde sie nie.
+- Echo-Filter: ein `final`, das (fast) wörtlich einer eigenen Ansage der letzten 15 s entspricht, wird ignoriert.
+- Kann eine Antwort trotzdem nicht gesprochen werden (Sidecar beginnt nicht innerhalb 15 s, Nutzer spricht > 20 s weiter),
+  schickt jarvisd `{type:"live_unspoken", text, reason}` an die Oberfläche (zeigt den Text im Live-Untertitel) und schreibt
+  einen Eintrag `speech / jarvisd/live-answer` mit der Ereignisfolge des Turns (`context.trace`) ins Fehler-Log.
+- OpenCode-Wächter: kommt für eine Sitzung 30 s kein Ereignis und meldet OpenCode sie im Leerlauf, gilt der Lauf als beendet
+  (`model / opencode/missing-idle`). Sonst bliebe Jarvis nach einem verlorenen `session.idle` für immer „beschäftigt“.
+- `~/.jarvis3/voice.log` enthält je Lauf Zeilen `[T<lauf>] …`: `lauf-start`, `erster-text`, `werkzeug-running`,
+  `nutzer-spricht`, `geräusch-ignoriert`, `echo-verworfen`, `lauf-ende`, `antwort-gesendet/-gehalten/-nachgeholt/-spricht/-fertig/
+  -verworfen/-ungesprochen`. Damit lässt sich der nächste Aussetzer Schritt für Schritt nachvollziehen.
