@@ -72,16 +72,26 @@ export class OpenCode {
   /** Eine Frage ohne Nutzer-Sichtbarkeit beantworten (z. B. Projektzuordnung). Liefert nur den Text. */
   async ask(text: string, model: string, system: string, timeoutMs = 25_000): Promise<string> {
     const sid = await this.createSession("Test"); // "Test" bleibt im Verlauf verborgen
+    if (!sid) return "";
     let out = "";
-    return new Promise<string>(resolve => {
-      let finished = false;
-      const finish = () => { if (finished) return; finished = true; clearTimeout(timer); resolve(out); };
-      const timer = setTimeout(() => { void this.abort(sid, false); finish(); }, timeoutMs);
-      void this.prompt(sid, text, model, system, e => {
-        if (e.kind === "text") out += e.delta;
-        else if (e.kind === "done" || e.kind === "error") finish();
-      }).catch(finish);
-    });
+    try {
+      return await new Promise<string>(resolve => {
+        let finished = false;
+        const finish = (text: string) => { if (finished) return; finished = true; clearTimeout(timer); resolve(text); };
+        const timer = setTimeout(() => { finish(""); void this.abort(sid, false); }, timeoutMs);
+        void this.prompt(sid, text, model, system, e => {
+          if (e.kind === "text") out += e.delta;
+          else if (e.kind === "done") finish(e.aborted ? "" : out);
+          else if (e.kind === "error") finish("");
+        }).catch(() => finish(""));
+      });
+    } finally {
+      this.listeners.delete(sid);
+      this.finishRun(sid);
+      this.started.delete(sid);
+      this.lastEvent.delete(sid);
+      void fetch(`${this.url}/session/${encodeURIComponent(sid)}`, { method: "DELETE", signal: AbortSignal.timeout(2000) }).catch(() => {});
+    }
   }
 
   /** Startet einen Prompt; Ereignisse kommen über onEvent, bis "done". */
