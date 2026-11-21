@@ -6,6 +6,8 @@ export class Speech {
   private queue: string[] = [];
   connected = false;
   private sayId = 0;
+  /** gesprochene Sätze nach ID, damit die Oberfläche beim say_start genau diesen Satz einblenden kann */
+  readonly said = new Map<number, string>();
 
   constructor(private onEvent: (e: SpeechEvent) => void, private url = process.env.JARVIS_SPEECH_URL ?? "ws://127.0.0.1:7778") {
     this.connect();
@@ -33,7 +35,13 @@ export class Speech {
     // Diktat und Stummschalten sind aus Sidecar-Sicht live bzw. aus; jarvisd unterscheidet selbst.
     this.send({ type: "mode", value: value === "dictate" ? "live" : value === "muted" ? "off" : value });
   }
-  say(text: string) { if (text.trim()) this.send({ type: "say", id: ++this.sayId, text }); }
+  say(text: string) {
+    if (!text.trim()) return;
+    const id = ++this.sayId;
+    this.said.set(id, text);
+    if (this.said.size > 60) this.said.delete(this.said.keys().next().value as number);
+    this.send({ type: "say", id, text });
+  }
   stopSpeaking() { this.send({ type: "stop_speaking" }); }
 }
 
