@@ -36,7 +36,7 @@ Verbindung: Erweiterung öffnet `ws://127.0.0.1:7777/browser` und meldet sich mi
 | cmd | Felder | Antwort |
 |---|---|---|
 | `tab_open` | `url`, `group?` (Standard `"Jarvis"`) | `{ok, tab}` – öffnet im Hintergrund (`active:false`) in der Tab-Gruppe |
-| `tab_list` | – | `{ok, tabs:[{tab,url,title,group,active}]}` |
+| `tab_list` | – | `{ok, tabs:[{tab,url,title,group,active,favicon}]}` (`favicon` = http(s)/data-URL oder leer) |
 | `tab_adopt` | `tab`, `group?` | `{ok, tab, url, active}` – holt einen **vorhandenen** Tab (nur http/https/file) in die Jarvis-Gruppe **seines eigenen Fensters**; danach steuerbar. Nur auf ausdrückliche Bitte des Nutzers. Aktive Tabs bleiben für click/type/scroll/focus gesperrt, scan/read gehen |
 | `tab_release` | `tab` | `{ok}` – nimmt einen übernommenen Tab wieder aus der Gruppe, nicht mehr steuerbar |
 | `tab_close` | `tab` | `{ok}` |
@@ -51,3 +51,9 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 - `tab_open` und `navigate` antworten nach dem Laden und sobald das Content-Script der Zielseite erreichbar ist. Bei Links und Formularen wartet die Erweiterung auch auf eine unmittelbar ausgelöste Navigation. Nach einem Seitenwechsel sind die alten IDs ungültig. Die Fehlermeldung lautet „Seite hat gewechselt, bitte neu scannen“.
 - `read` ohne `id` und ohne `rect` liest den gerenderten Seitentext einschließlich der Bereiche außerhalb des Viewports (maximal 8000 Zeichen insgesamt). Passwortfelder werden ausgelassen.
 - `type` ersetzt den Inhalt eines Textfelds mit nativer Chrome-Eingabe (`via:"cdp"`). Mit `submit:true` folgt ein Enter-Tastendruck.
+
+## Tab-Vorschau (Bildstrom)
+- `stream_start {tab}` / `stream_stop {tab}`: Bildstrom eines Tabs der Gruppe „Jarvis“ (nur ansehen, kein Steuern; Tabs außerhalb der Gruppe werden abgelehnt).
+- Die Erweiterung schickt unaufgefordert `{type:"frame", tab, data(JPEG base64), w, h, url, title}`; bei Ende `{type:"stream_ended", tab, reason}`.
+- Bildrate und Qualität: `Page.startScreencast` liefert für Hintergrund-Tabs keine Bilder, deshalb laufen `STREAM_WORKERS` (6) überlappende `Page.captureScreenshot`-Aufnahmen, JPEG-Qualität 82, Deckel ca. 33 Bilder/s, Breite bis 1600 px (nur breitere Tabs werden verkleinert). Gemessen im Hintergrund-Tab: 25–30 Bilder/s (`bun extension/test/stream-fps.mjs`, verlangt mindestens 24).
+- UI ↔ jarvisd (WebSocket): `{type:"tabs"}` → `{type:"tabs", tabs:[{tab,title,url,favicon,active}], pinned, streaming}` (nur Tabs der Gruppe „Jarvis“); `{type:"viewer_tab", tab}` wählt einen Tab (bleibt gewählt), `tab:null` = „Automatisch“ (folgt Jarvis); `{type:"liveview", on}` öffnet/schließt die Vorschau.

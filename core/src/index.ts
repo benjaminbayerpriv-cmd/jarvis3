@@ -471,20 +471,30 @@ async function rewindMessage(id: string, messageID: string) {
 
 // ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
 let streamTab: number | undefined;
+let pinnedTab: number | undefined; // vom Nutzer in der Vorschau gewählter Tab: bleibt, bis er "Automatisch" wählt oder die Vorschau schließt
 let streamTimer: ReturnType<typeof setTimeout> | undefined;
 async function stopStream() {
   clearTimeout(streamTimer);
   const t = streamTab; streamTab = undefined;
   if (t !== undefined) await browser.call({ cmd: "stream_stop", tab: t }, 5000).catch(() => {});
 }
-async function ensureStream(tab: number) {
-  if (!settings.liveView || uis.size === 0 || !browser.connected) return;
+async function ensureStream(tab: number, manual = false) {
+  if (!manual && (!settings.liveView || pinnedTab !== undefined && pinnedTab !== tab)) return;
+  if (uis.size === 0 || !browser.connected) return;
   clearTimeout(streamTimer);
-  streamTimer = setTimeout(stopStream, 12_000); // 12 s nach der letzten Aktion endet die Übertragung
+  if (pinnedTab === undefined) streamTimer = setTimeout(stopStream, 12_000); // 12 s nach der letzten Aktion endet die Übertragung
   if (streamTab === tab) return;
   if (streamTab !== undefined) await browser.call({ cmd: "stream_stop", tab: streamTab }, 5000).catch(() => {});
   const r = await browser.call({ cmd: "stream_start", tab }, 8000);
   streamTab = r.ok ? tab : undefined;
+  if (!r.ok && manual) broadcast({ type: "notice", text: `Tab-Vorschau nicht möglich: ${r.error ?? "unbekannter Fehler"}` });
+}
+/** Tabs der Gruppe "Jarvis" (auch "Jarvis …"-Gruppen) für die Auswahl oben in der Vorschau. */
+async function jarvisTabs() {
+  if (!browser.connected) return [];
+  const r = await browser.call({ cmd: "tab_list" }, 5000).catch(() => undefined);
+  const tabs = ((r?.tabs ?? []) as any[]).filter(t => typeof t.group === "string" && /^jarvis/i.test(t.group));
+  return tabs.map(t => ({ tab: t.tab, title: t.title, url: t.url, favicon: t.favicon ?? "", active: !!t.active }));
 }
 // Erweiterung veraltet? Neue Versionen lädt sie auf Anweisung selbst; sehr alte (vor 1.2.0) muss der Nutzer einmal neu laden.
 const wantedExtension = () => { try { return JSON.parse(readFileSync(join(ROOT, "extension/manifest.json"), "utf8")).version as string; } catch { return ""; } };
@@ -503,6 +513,7 @@ browser.onHello = version => {
 };
 browser.onEvent = m => {
   if (m.type === "stream_ended" && m.tab === streamTab) streamTab = undefined;
+  if (m.type === "stream_ended" && m.tab === pinnedTab && /geschlossen/i.test(String(m.reason ?? ""))) pinnedTab = undefined;
   broadcast(m);
 };
 
@@ -603,7 +614,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       else {
         vlog(`ui #${uiId(ws)} close`);
         uis.delete(ws);
-        if (uis.size === 0) void stopStream();
+        if (uis.size === 0) { pinnedTab = undefined; void stopStream(); }
         // Wer Live gestartet hat und die Verbindung verliert, beendet es. Das gilt auch, wenn andere UIs noch offen sind.
         if (voiceOwner === ws) { vlog(`voice-owner ui #${uiId(ws)} weg -> off`); setVoice("off"); }
         // Keine Oberfläche mehr offen: Mikrofon zu, nichts mehr sprechen.
@@ -686,7 +697,14 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice });
         broadcast(state());
       }
-      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
+      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; await stopStream(); } broadcast(state()); }
+      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+      else if (msg.type === "viewer_tab") {
+        // Nutzer wählt einen Tab (Zahl) oder "Automatisch" (null: Jarvis' aktuellem Tab folgen)
+        if (Number.isInteger(msg.tab)) { pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
+        else { pinnedTab = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); }
+        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+      }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
