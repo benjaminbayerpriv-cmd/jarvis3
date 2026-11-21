@@ -55,3 +55,17 @@ test("Importsuche liefert nur Bekanntes ohne Absturz", () => {
   setup();
   for (const from of ["claude", "codex", "opencode"] as const) expect(Array.isArray(scanImport(from))).toBe(true);
 });
+
+test("Jarvis und extern konfigurierte MCP-Server lassen sich getrennt umschalten", () => {
+  const ws = setup();
+  const store = loadStore();
+  const base = { mcp: { jarvis: { type: "local", command: ["jarvis-mcp"], enabled: true } } };
+  for (const enabled of [false, true]) {
+    store.mcpOverrides = { jarvis: enabled, external: enabled };
+    writeWorkspace(ws, base, store);
+    const { mcp } = JSON.parse(readFileSync(join(ws, "opencode.json"), "utf8"));
+    expect(mcp.jarvis).toEqual({ type: "local", command: ["jarvis-mcp"], enabled });
+    expect(mcp.external).toEqual({ enabled });
+    expect(base.mcp.jarvis.enabled).toBe(true);
+  }
+});

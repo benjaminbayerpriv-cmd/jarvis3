@@ -1381,7 +1381,7 @@ function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = re
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
-  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; renderSettingsState(); }
   switch (m.event) {
     case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
@@ -1569,7 +1569,7 @@ function extRow(title, sub, { chip, chipClass, toggle, onToggle, onRemove } = {}
   if (sub) { const p = document.createElement("p"); p.textContent = sub; text.append(p); }
   li.append(text);
   if (chip) { const c = document.createElement("span"); c.className = "ext-chip " + (chipClass || ""); c.textContent = chip; li.append(c); }
-  if (onToggle) { const b = document.createElement("button"); b.type = "button"; b.className = "toggle-lg small"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(!!toggle)); b.onclick = () => onToggle(!toggle); li.append(b); }
+  if (onToggle) { const b = document.createElement("button"); b.type = "button"; b.className = "toggle-lg small"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(!!toggle)); b.setAttribute("aria-label", title); b.onclick = () => { if (ws?.readyState !== WebSocket.OPEN) return showNotice("Jarvis ist gerade nicht verbunden."); b.disabled = true; onToggle(!toggle); }; li.append(b); }
   if (onRemove) { const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn ext-remove"; b.title = "Entfernen"; b.setAttribute("aria-label", "Entfernen"); b.innerHTML = icon("trash"); b.onclick = onRemove; li.append(b); }
   return li;
 }
@@ -1577,9 +1577,9 @@ const emptyRow = text => { const li = document.createElement("li"); li.className
 function renderExtensions(m) {
   extState = m;
   $("#extMcp").replaceChildren(...m.mcp.map(s => extRow(s.name, `${s.type === "remote" ? "Remote" : "Lokal"} · ${s.detail}${s.error ? " · " + s.error : ""}`, {
-    chip: s.builtin ? "eingebaut" : (STATUS_LABEL[s.status] || s.status), chipClass: s.status === "connected" ? "ok" : s.status === "failed" ? "bad" : "",
-    toggle: s.enabled, onToggle: s.builtin ? undefined : on => send({ type: "ext_mcp", op: "toggle", name: s.name, enabled: on }),
-    onRemove: s.builtin ? undefined : () => send({ type: "ext_mcp", op: "remove", name: s.name }) })));
+    chip: STATUS_LABEL[s.status] || s.status, chipClass: s.status === "connected" ? "ok" : s.status === "failed" ? "bad" : "",
+    toggle: s.enabled, onToggle: on => send({ type: "ext_mcp", op: "toggle", name: s.name, enabled: on }),
+    onRemove: s.managed ? () => send({ type: "ext_mcp", op: "remove", name: s.name }) : undefined })));
   renderSkills();
   $("#extCommands").replaceChildren(...(m.commands.length ? m.commands.map(c => extRow("/" + c.name, c.description || "", { chip: c.source === "manual" ? "eigener" : c.source,
     onRemove: () => send({ type: "ext_command", op: "remove", name: c.name }) })) : [emptyRow("Noch keine eigenen Befehle. Unten anlegen oder im Import übernehmen.")]));
