@@ -719,10 +719,11 @@ async function route(req: Request, srv: any) {
     if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
     if (u.pathname === "/browser" || u.pathname === "/ui")
       return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
-    if (u.pathname === "/" || u.pathname.startsWith("/app")) { // Oberfläche zum Testen im Browser
+    // "/app" ohne Schrägstrich würde die relativen Pfade (styles.css, app.js) auf "/styles.css" auflösen: ungestylte Seite. Darum umleiten.
+    if (u.pathname === "/" || u.pathname === "/app") return Response.redirect(new URL("/app/", u), 302);
+    if (u.pathname.startsWith("/app/")) { // Oberfläche zum Testen im Browser
       const rel = u.pathname.replace(/^\/app\/?/, "").replace(/^\/$/, "") || "index.html";
       const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
-      if (u.pathname === "/") return Response.redirect("/app/", 302);
       return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
     }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
