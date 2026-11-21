@@ -8,6 +8,8 @@ export class Speech {
   private sayId = 0;
   /** gesprochene Sätze nach ID, damit die Oberfläche beim say_start genau diesen Satz einblenden kann */
   readonly said = new Map<number, string>();
+  /** wann ein Satz abgeschickt wurde und noch kein say_start kam (Wächter: hängt die Sprachausgabe?) */
+  readonly sayTimes = new Map<number, number>();
 
   constructor(private onEvent: (e: SpeechEvent) => void, private url = process.env.JARVIS_SPEECH_URL ?? "ws://127.0.0.1:7778") {
     this.connect();
@@ -39,6 +41,7 @@ export class Speech {
     if (!text.trim()) return;
     const id = ++this.sayId;
     this.said.set(id, text);
+    this.sayTimes.set(id, Date.now());
     if (this.said.size > 60) this.said.delete(this.said.keys().next().value as number);
     this.send({ type: "say", id, text });
   }

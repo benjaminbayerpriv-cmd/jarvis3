@@ -450,6 +450,7 @@ function dictShow(t) {
 }
 $("#dictate").onclick = () => {
   dictating = !dictating;
+  if (dictating && state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Diktieren geht, sobald es bereit ist.");
   if (dictating) { dictBase = input.value; taMirror.set(input.value, { animate: false }); }
   $("#dictate").classList.toggle("rec", dictating);
   $("#dictate").innerHTML = icon(dictating ? "player-stop-filled" : "microphone");
@@ -1006,6 +1007,7 @@ function liveSpoken(sentence) {
 function flushSpoken() { if (revealQ) { spokenText += revealQ; revealQ = ""; showSpoken(); } }  // Satz ist zu Ende gesprochen: Rest sofort zeigen
 function openLive() {
   if (live.on) return;
+  if (state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Live beginnt, sobald es bereit ist.");
   if (dictating) $("#dictate").click();
   live.on = true; live.muted = false;
   liveEl.hidden = false; liveEl.classList.remove("closing"); liveEl.dataset.state = "listening";

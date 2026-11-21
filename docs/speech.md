@@ -35,3 +35,7 @@ Mikrofon und Lautsprecher gehören dem Sidecar (native Aufnahme, keine Browser-A
 - Barge-in: Spricht der Nutzer während der Wiedergabe, sendet der Sidecar `speech_start` und stoppt selbst die Wiedergabe.
   Echo der eigenen Stimme darf kein Barge-in auslösen (Echo-Unterdrückung, z. B. macOS Voice Processing I/O oder Pegel-/Korrelations-Gate gegen das Ausgangssignal).
 - Text aus dem Modell kann Markdown enthalten: vor TTS Markdown, URLs und Emojis entfernen.
+
+## Überwachung des Sidecars (jarvisd)
+- `core/src/sidecar.ts` startet den Sidecar (`uv run --project speech python -m jarvis_speech`, abgekoppelt, Log `~/.jarvis3/sidecar.log`), wenn Port 7778 nicht erreichbar ist, und startet ihn bei Bedarf neu. Mit `JARVIS_NO_SIDECAR=1` oder `JARVIS_SPEECH_URL` ist das aus.
+- Wächter in `core/src/index.ts` (höchstens ein Neustart pro 30 s, mit Hinweis in der Oberfläche): (1) kommt nach dem Start des Zuhörens 7 s lang kein Mikro-Pegel, wird einmal pro Gespräch neu gestartet (liest die Audiogeräte frisch ein), danach nur noch ein Hinweis mit Gerätename; (2) bleiben die Pegel-Ereignisse (30 pro Sekunde) länger als 5 s aus, hängt der Sidecar; (3) wurde ein Satz geschickt und kam 12 s lang kein `say_start`, obwohl nichts gesprochen wird, hängt die Sprachausgabe.

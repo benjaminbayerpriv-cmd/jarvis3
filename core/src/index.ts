@@ -12,6 +12,7 @@ import { prepare, validate, hasImages, type Attachment } from "./attachments";
 import { correct } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
+import { SidecarSupervisor } from "./sidecar";
 import { classificationPrompt, parseClassification } from "./classify";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -102,10 +103,34 @@ const holds = new Set<ReturnType<typeof setTimeout>>(); // zurückgehaltene Sät
 const clearHolds = () => { for (const t of holds) clearTimeout(t); holds.clear(); };
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
-let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined;
+let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0, micRestarted = false;
+const speaking = new Set<number>();
+// Mikrofon-Wächter: kommt nach dem Start des Zuhörens 7 s lang kein Pegel, ist das Gerät stumm oder der Sidecar hat die Audiogeräte
+// veraltet. Einmal pro Gespräch wird der Sidecar dann automatisch neu gestartet (liest die Geräte frisch ein), danach folgt ein Hinweis.
+function armMicWatch() {
+  clearTimeout(micWatch); micPeak = 0;
+  if (voice !== "live" && voice !== "dictate") { micRestarted = false; return; }
+  micWatch = setTimeout(() => {
+    if ((voice !== "live" && voice !== "dictate") || micPeak >= 0.004) return;
+    if (!micRestarted && speech.connected) {
+      micRestarted = true;
+      restartSidecar(`Mikrofon „${micLabel()}“ lieferte kein Signal`);
+    } else broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
+  }, 7000);
+}
+function restartSidecar(reason: string) {
+  if (!sidecar || Date.now() - lastRestart < 30_000) return;
+  lastRestart = Date.now();
+  vlog(`Sprach-Sidecar wird neu gestartet: ${reason}`);
+  broadcast({ type: "notice", text: `${reason} – das Sprachmodul startet neu (ca. 30 s).` });
+  void sidecar.restart();
+}
 const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
-  if (e.type === "level") micPeak = Math.max(micPeak, Number(e.mic) || 0);
+  if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
+  if (e.type === "say_start") { speaking.add(Number(e.id)); speech.sayTimes.delete(Number(e.id)); }
+  if (e.type === "say_end") speaking.delete(Number(e.id));
+  if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
@@ -182,14 +207,19 @@ function worthAnswering(text: string) {
   if (!content.length || content.join("").length < 3) return false;
   return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(text);
 }
+const sidecar = process.env.JARVIS_SPEECH_URL || process.env.JARVIS_NO_SIDECAR ? undefined : new SidecarSupervisor(() => speech.connected, vlog, ROOT, HOME);
+sidecar?.start();
+setInterval(() => {   // Wächter: hängt der Sidecar (keine Pegel mehr) oder die Sprachausgabe (Satz gesendet, nie gestartet)?
+  if (!speech.connected) return;
+  const now = Date.now();
+  if (voice !== "off" && lastLevelAt && now - lastLevelAt > 5000) { lastLevelAt = now; restartSidecar("Das Sprachmodul reagierte nicht mehr"); return; }
+  const oldest = Math.min(Infinity, ...speech.sayTimes.values());
+  if (speaking.size === 0 && Number.isFinite(oldest) && now - oldest > 12_000) { speech.sayTimes.clear(); restartSidecar("Die Sprachausgabe hing"); }
+}, 2000);
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
   voice = mode;
-  clearTimeout(micWatch); micPeak = 0;
-  if (mode === "live" || mode === "dictate") micWatch = setTimeout(() => {
-    if (voice === "live" || voice === "dictate") if (micPeak < 0.004)
-      broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
-  }, 7000);
+  armMicWatch();
   if (mode === "off") voiceOwner = undefined;
   speech.mode(mode);
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
