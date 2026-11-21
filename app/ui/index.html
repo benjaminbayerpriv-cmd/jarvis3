@@ -123,7 +123,6 @@
       <section class="pg" id="pgView">
         <header class="pg-head">
           <h2>Projekte</h2>
-          <button type="button" class="chip-btn pg-new" id="pgNew"><span data-icon="plus"></span>Neues Projekt</button>
           <button type="button" class="icon-btn" id="closeProjectsGrid" data-icon="x" aria-label="Schließen"></button>
         </header>
         <div class="pg-bar">
@@ -131,11 +130,12 @@
             <button type="button" role="tab" id="pgTabActive" aria-selected="true">Deine Projekte</button>
             <button type="button" role="tab" id="pgTabArchived" aria-selected="false">Archiviert</button>
           </div>
-          <label class="search pg-search"><span data-icon="search"></span><input id="pgSearch" type="search" placeholder="Projekte suchen" autocomplete="off"></label>
+          <label class="pg-search" id="pgSearchBox"><button type="button" class="icon-btn" id="pgSearchBtn" data-icon="search" aria-label="Projekte suchen"></button><input id="pgSearch" type="search" placeholder="Projekte suchen" autocomplete="off"></label>
           <div class="pg-sort">
-            <button type="button" class="chip-btn" id="pgSortBtn" aria-haspopup="menu" aria-expanded="false"><span class="pg-sort-label" id="pgSortLabel"></span><span data-icon="chevron-down"></span></button>
+            <button type="button" class="icon-btn" id="pgSortBtn" data-icon="arrows-sort" aria-haspopup="menu" aria-expanded="false" aria-label="Sortieren"><span class="pg-sort-label" id="pgSortLabel" hidden></span></button>
             <div class="ex-menu pg-sort-menu" id="pgSortMenu" role="menu" hidden></div>
           </div>
+          <button type="button" class="chip-btn pg-new" id="pgNew">Neues Projekt</button>
         </div>
         <div class="pg-grid" id="pgGrid"></div>
       </section>

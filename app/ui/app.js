@@ -779,6 +779,10 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 let pgTab = "active", pgQuery = "", pgSort = SORTS[lsGet("jarvis.projectSort", "recent")] ? lsGet("jarvis.projectSort", "recent") : "recent";
 // letzte Aktivität = jüngster Chat im Projekt samt Unterprojekten, sonst Erstellzeit
 const activityOf = id => { let t = pById(id)?.created ?? 0; for (const c of chatsOf(id)) t = Math.max(t, c.updated || 0); for (const k of childrenOf(id)) t = Math.max(t, activityOf(k.id)); return t; };
+const fmtShort = t => { const d = new Date(t), now = new Date(); const h = (now - d) / 3600e3;
+  if (h < 1) { const m = Math.max(1, Math.floor(h * 60)); return m === 1 ? "vor 1 Minute" : `vor ${m} Minuten`; }
+  if (h < 24) { const n = Math.floor(h); return n === 1 ? "vor 1 Stunde" : `vor ${n} Stunden`; }
+  return d.toLocaleDateString("de-DE", { day: "numeric", month: "short", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) }); };
 const ago = t => {
   const m = Math.floor((Date.now() - t) / 60000);
   if (m < 1) return "gerade eben"; if (m < 60) return `vor ${m} Min.`;
@@ -810,7 +814,7 @@ function pgRename(card, p) {
 function renderProjectGrid() {
   $("#pgTabActive").setAttribute("aria-selected", String(pgTab === "active"));
   $("#pgTabArchived").setAttribute("aria-selected", String(pgTab === "archived"));
-  $("#pgSortLabel").textContent = SORTS[pgSort][0];
+  $("#pgSortLabel").textContent = SORTS[pgSort][0]; $("#pgSortBtn").title = "Sortieren: " + SORTS[pgSort][0];
   const q = pgQuery.trim().toLocaleLowerCase("de-DE");
   const rows = projectData.projects
     .filter(p => !!p.archived === (pgTab === "archived") && (!q || p.name.toLocaleLowerCase("de-DE").includes(q) || (p.description || "").toLocaleLowerCase("de-DE").includes(q)))
@@ -819,13 +823,12 @@ function renderProjectGrid() {
   const grid = $("#pgGrid"); grid.replaceChildren();
   for (const { p, act, n } of rows) {
     const card = document.createElement("div"); card.className = "pg-card" + (p.pinned ? " pinned" : ""); card.tabIndex = 0; card.setAttribute("role", "button");
-    const where = p.parentId ? projectLabel(p.parentId) : "";
-    card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-name"></div><div class="pg-desc"></div><div class="pg-meta"></div>`
+    card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-txt"><div class="pg-name"></div><div class="pg-meta"></div></div>`
       + (p.pinned ? `<span class="pg-pin" title="Angeheftet">${icon("pin")}</span>` : "")
       + `<button type="button" class="pg-more" aria-label="Projektaktionen">${icon("dots-vertical")}</button>`;
     card.querySelector(".pg-name").textContent = p.name;
-    card.querySelector(".pg-desc").textContent = p.description || where;
-    card.querySelector(".pg-meta").textContent = `Aktualisiert ${ago(act)} · ${n} ${n === 1 ? "Chat" : "Chats"}`;
+    card.querySelector(".pg-meta").textContent = fmtShort(act);
+    card.title = (p.parentId ? projectLabel(p.parentId) + " / " : "") + p.name + " · " + n + (n === 1 ? " Chat" : " Chats");
     card.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
     card.onkeydown = e => { if (e.target === card && e.key === "Enter") card.click(); };
     card.querySelector(".pg-more").onclick = e => { e.stopPropagation(); pgMenu(card, p); };
@@ -842,7 +845,7 @@ function pgNew() {
   if (pgTab !== "active") { pgTab = "active"; renderProjectGrid(); }
   const grid = $("#pgGrid"); grid.querySelector(".pg-empty")?.remove();
   const card = document.createElement("div"); card.className = "pg-card";
-  card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-name"><input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></div><div class="pg-desc"></div><div class="pg-meta">Neues Projekt</div>`;
+  card.innerHTML = `<div class="pg-ico">${icon("folder")}</div><div class="pg-txt"><div class="pg-name"><input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></div><div class="pg-meta">Neues Projekt</div></div>`;
   grid.prepend(card);
   const input = card.querySelector("input"); input.focus(); let done = false;
   const finish = ok => { if (done) return; done = true; const name = input.value.trim(); if (ok && name) projectAction({ op: "create", name, description: "", parent: null }); else renderProjectGrid(); };
@@ -870,6 +873,7 @@ $("#exBack").onclick = () => { exSel = null; renderProjects(); };
 $("#pgNew").onclick = pgNew;
 $("#pgTabActive").onclick = () => { pgTab = "active"; renderProjectGrid(); };
 $("#pgTabArchived").onclick = () => { pgTab = "archived"; renderProjectGrid(); };
+$("#pgSearchBtn").onclick = () => { const b = $("#pgSearchBox"); b.classList.toggle("open"); if (b.classList.contains("open")) $("#pgSearch").focus(); else { $("#pgSearch").value = ""; pgQuery = ""; renderProjectGrid(); } };
 $("#pgSearch").oninput = e => { pgQuery = e.target.value; renderProjectGrid(); };
 $("#pgSortBtn").onclick = pgSortMenu;
 
