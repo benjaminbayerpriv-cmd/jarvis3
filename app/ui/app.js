@@ -809,6 +809,19 @@ function hideViewer() {
   clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
   syncViewerButtons();
 }
+// Virtuelle Maus: wo Jarvis zuletzt geklickt/getippt hat (Bildschirmpunkt -> Bildpunkt über die Fensterlage)
+function drawVirtualCursor(m) {
+  if (!Array.isArray(m.cursor) || !Array.isArray(m.bounds) || !m.bounds[2]) return;
+  const sx = vcanvas.width / m.bounds[2], sy = vcanvas.height / m.bounds[3];
+  const x = (m.cursor[0] - m.bounds[0]) * sx, y = (m.cursor[1] - m.bounds[1]) * sy;
+  if (x < 0 || y < 0 || x > vcanvas.width || y > vcanvas.height) return;
+  const k = Math.max(1, vcanvas.width / 1100);
+  vctx.save(); vctx.translate(x, y); vctx.scale(k, k);
+  vctx.shadowColor = "rgba(0,0,0,.55)"; vctx.shadowBlur = 8;
+  vctx.fillStyle = "#a78bfa"; vctx.strokeStyle = "#fff"; vctx.lineWidth = 1.6;
+  vctx.beginPath(); vctx.moveTo(0, 0); vctx.lineTo(0, 23); vctx.lineTo(6, 17); vctx.lineTo(11, 27); vctx.lineTo(15, 25); vctx.lineTo(10, 15); vctx.lineTo(19, 15); vctx.closePath();
+  vctx.fill(); vctx.stroke(); vctx.restore();
+}
 function drawFrame(m) {
   // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
   if (viewerBusy) { viewerNext = m; return; }
@@ -818,6 +831,7 @@ function drawFrame(m) {
   createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
     if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
     vctx.drawImage(bmp, 0, 0); bmp.close();
+    drawVirtualCursor(m);
   }).catch(() => {}).finally(() => { viewerBusy = false; if (viewerNext) { const n = viewerNext; viewerNext = null; drawFrame(n); } });
 }
 function showFrame(m) {

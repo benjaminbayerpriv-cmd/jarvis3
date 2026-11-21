@@ -13,6 +13,7 @@ import { correct } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
+import { Capture } from "./capture";
 import { classificationPrompt, parseClassification } from "./classify";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -715,14 +716,49 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
     return r;
   }
-  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays"].includes(cmd.cmd))
+  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays", "windows"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
     const code = await p.exited;
     return code === 0 ? { ok: true } : { ok: false, error: `Programm „${cmd.name}“ nicht geöffnet (Exit-Code ${code})` };
   }
-  return desktop.call(cmd);
+  if (Number.isInteger(cmd.window)) void ensureWindowStream(cmd.window);
+  // Fensterbild über den Aufnahme-Dienst (auch verdeckt); geht das nicht, macht uimap ein Bild des sichtbaren Bereichs
+  if (cmd.cmd === "shot" && Number.isInteger(cmd.window) && !cmd.marks && capture.available()) {
+    const r = await capture.call({ cmd: "windowshot", window: cmd.window });
+    if (r.ok) return r;
+  }
+  const r = await desktop.call(cmd);
+  if (Array.isArray(r.point)) { lastDesktopPoint = r.point as [number, number]; if (streamWin !== undefined) void capture.call({ cmd: "cursor", point: r.point }); }
+  return r;
+}
+
+// ---------- Live-Bild eines Fensters, das Jarvis bedient (Aufnahme-Dienst, virtuelle Maus) ----------
+const capture = new Capture();
+let streamWin: number | undefined;
+let streamWinTimer: ReturnType<typeof setTimeout> | undefined;
+let lastDesktopPoint: [number, number] | undefined;
+capture.onEvent = m => {
+  if (m.event === "frame") broadcast({ type: "frame", tab: `win:${m.window}`, data: m.data, w: m.w, h: m.h, bounds: m.bounds,
+    title: m.title ? `${m.app} – ${m.title}` : m.app, url: "", cursor: lastDesktopPoint });
+  else if (m.event === "stream_ended") { if (m.window === streamWin) streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${m.window}` }); }
+};
+async function stopWindowStream() {
+  clearTimeout(streamWinTimer);
+  if (streamWin === undefined) return;
+  streamWin = undefined;
+  await capture.call({ cmd: "stream_stop" }, 4000).catch(() => {});
+}
+async function ensureWindowStream(win: number) {
+  if (!settings.liveView || uis.size === 0 || !capture.available()) return;
+  clearTimeout(streamWinTimer);
+  streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000);  // 20 s nach der letzten Aktion endet das Live-Bild
+  if (streamWin === win) return;
+  await stopStream();   // ein Live-Bild zur Zeit: Browser-Tab-Übertragung beenden
+  const r = await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000);
+  if (r.ok) { streamWin = win; lastDesktopPoint = undefined; }
+  else vlog(`Fenster-Live-Bild nicht möglich: ${r.error}`);
 }
 
 Bun.serve<{ kind: string; fresh?: boolean }, {}>({

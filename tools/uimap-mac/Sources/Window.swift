@@ -251,7 +251,8 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
                                                options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.72]) else { return }
         let w = CVPixelBufferGetWidth(pixels), h = CVPixelBufferGetHeight(pixels)
         var frame: [String: Any] = ["event": "frame", "window": Int(windowID), "data": jpeg.base64EncodedString(),
-                                    "w": w, "h": h, "title": title, "app": app]
+                                    "w": w, "h": h, "title": title, "app": app,
+                                    "bounds": [Int(bounds.minX), Int(bounds.minY), Int(bounds.width), Int(bounds.height)]]
         if let cursor, bounds.width > 0 {
             frame["cursor"] = [Int((cursor.x - bounds.minX) * CGFloat(w) / bounds.width),
                                Int((cursor.y - bounds.minY) * CGFloat(h) / bounds.height)]

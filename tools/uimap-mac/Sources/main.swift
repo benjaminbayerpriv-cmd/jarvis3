@@ -135,12 +135,12 @@ final class Session {
                 return reply
             case "click":
                 let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
-                return ["ok": true, "via": click(t)]
+                return ["ok": true, "via": click(t), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
             case "focus":
                 return ["ok": focus(try target(request["id"] as? Int))]
             case "type":
                 let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
-                return ["ok": true, "via": try type(t, request["text"] as? String ?? "")]
+                return ["ok": true, "via": try type(t, request["text"] as? String ?? ""), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
             case "scroll":
                 scroll(try target(request["id"] as? Int), request["dy"] as? Int ?? 3)
                 return ["ok": true]
@@ -233,10 +233,21 @@ func textList(_ list: [[String: Any]]) -> String {
 }
 
 private let emitLock = NSLock()
+/// Ziel der Ausgabe: stdout (serve) oder der verbundene Client (capture-serve)
+var outputFD: Int32 = STDOUT_FILENO
 func emit(_ object: [String: Any]) {
     var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
     data.append(Data("\n".utf8))
-    emitLock.lock(); FileHandle.standardOutput.write(data); emitLock.unlock()
+    emitLock.lock()
+    data.withUnsafeBytes { raw in
+        var offset = 0
+        while offset < raw.count {
+            let n = write(outputFD, raw.baseAddress! + offset, raw.count - offset)
+            if n <= 0 { break }
+            offset += n
+        }
+    }
+    emitLock.unlock()
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -266,7 +277,63 @@ case "serve":
         if let id = request["rid"] { reply["rid"] = id }
         emit(reply)
     }
+case "capture-serve":
+    // Läuft als App-Bundle "Jarvis Bildschirm.app" mit eigener Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert
+    // einem Kommandozeilenprogramm keine Bilder). Nur Aufnahme: stream_start/stream_stop/windowshot/cursor.
+    let port = args.firstIndex(of: "--port").flatMap { args.indices.contains($0 + 1) ? UInt16(args[$0 + 1]) : nil } ?? 7779
+    let server = socket(AF_INET, SOCK_STREAM, 0)
+    var yes: Int32 = 1
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(server, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+    guard bound == 0, listen(server, 4) == 0 else { FileHandle.standardError.write(Data("Port \(port) belegt\n".utf8)); exit(1) }
+    signal(SIGPIPE, SIG_IGN)
+    // Fehlt die Bildschirmaufnahme-Freigabe, zeigt macOS hiermit den Dialog bzw. trägt die App in die Liste ein.
+    if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+    while true {
+        let client = accept(server, nil, nil)
+        if client < 0 { continue }
+        outputFD = client
+        let input = fdopen(client, "r")
+        var line: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        while getline(&line, &capacity, input) > 0 {
+            guard let text = line.map({ String(cString: $0) }), let data = text.data(using: .utf8),
+                  let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            var reply: [String: Any]
+            switch request["cmd"] as? String {
+            case "windowshot":
+                do {
+                    guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                    let image = try windowImage(CGWindowID(id))
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("uimap-win-\(UUID().uuidString.prefix(8)).png")
+                    if let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, image, nil); CGImageDestinationFinalize(dest)
+                    }
+                    reply = ["ok": true, "path": url.path, "w": image.width, "h": image.height]
+                } catch let f as Failure { reply = ["ok": false, "error": f.message] } catch { reply = ["ok": false, "error": "\(error)"] }
+            case "cursor":
+                if let p = request["point"] as? [Int], p.count == 2 { session.streamer.cursor = CGPoint(x: p[0], y: p[1]) }
+                reply = ["ok": true]
+            case "stream_start", "stream_stop":
+                reply = session.handle(request)
+            case "ping":
+                reply = ["ok": true, "screen": CGPreflightScreenCaptureAccess()]
+            default:
+                reply = ["ok": false, "error": "Aufnahme-Dienst kennt nur windowshot, stream_start, stream_stop, cursor"]
+            }
+            if let id = request["rid"] { reply["rid"] = id }
+            emit(reply)
+        }
+        session.streamer.stop()
+        free(line)
+        fclose(input)
+        outputFD = STDOUT_FILENO
+    }
 default:
-    FileHandle.standardError.write(Data("uimap scan|serve|displays [--display N]\n".utf8))
+    FileHandle.standardError.write(Data("uimap scan|serve|capture-serve|displays [--display N]\n".utf8))
     exit(2)
 }
