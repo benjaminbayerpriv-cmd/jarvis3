@@ -17,6 +17,8 @@ import numpy as np
 from .audio import resample
 from .normalize import expand_numbers
 
+from .langdetect import detect_lang
+
 LOG = logging.getLogger(__name__)
 MARKDOWN = MarkdownIt("commonmark")
 URL = re.compile(r"\b(?:https?://|ftp://)[^\s<>]+", re.IGNORECASE)
@@ -25,7 +27,7 @@ TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 DOMAIN = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+(?:com|de|org|net|io|dev|ai|app|eu|tv|co|uk|at|ch|info|me)\b", re.IGNORECASE)
 
 
-def speakable(text):
+def speakable(text, lang="de"):
     paragraphs = []
     for block in MARKDOWN.parse(text):
         if block.type != "inline":
@@ -39,7 +41,8 @@ def speakable(text):
     text = URL.sub(" ", TAG.sub(" ", " ".join(paragraphs)))
     text = re.sub(r"\bwww\.", "", text, flags=re.IGNORECASE)
     text = DOMAIN.sub(lambda m: m.group(0).replace(".", " Punkt "), text)
-    return expand_numbers(" ".join(emoji.replace_emoji(text, replace=" ").split()))
+    text = " ".join(emoji.replace_emoji(text, replace=" ").split())
+    return expand_numbers(text) if lang == "de" else text  # deutsche Zahlwörter nur für deutsche Sätze
 
 
 @dataclass(frozen=True)
@@ -114,7 +117,7 @@ class Synthesizer:
             self.warmup = native_voice("Hallo, ich bin Jarvis und bin bereit.", Voice())
         self.name = "supertonic" if self.model is not None else fallback_name()
 
-    def neural(self, text, settings):
+    def neural(self, text, settings, lang="de"):
         if settings.voice not in self.styles:
             self.styles[settings.voice] = self.model.get_voice_style(voice_name=settings.voice)
         _, unsupported = self.model.model.text_processor.validate_text(text)
@@ -123,18 +126,19 @@ class Synthesizer:
         if not text.strip():
             return np.empty(0, dtype=np.float32), self.model.sample_rate
         samples, _ = self.model.synthesize(
-            text=text, lang="de", voice_style=self.styles[settings.voice],
+            text=text, lang=lang, voice_style=self.styles[settings.voice],
             speed=settings.speed, total_steps=settings.steps,
         )
         return np.asarray(samples, dtype=np.float32).reshape(-1), self.model.sample_rate
 
     def render(self, raw, settings, rate):
-        text = speakable(raw)
+        lang = detect_lang(raw)
+        text = speakable(raw, lang)
         if not any(character.isalnum() for character in text):
             return np.empty(0, dtype=np.float32)
         if self.model is not None:
             try:
-                samples, source = self.neural(text, settings)
+                samples, source = self.neural(text, settings, lang)
             except Exception:
                 if not fallback_name():
                     raise

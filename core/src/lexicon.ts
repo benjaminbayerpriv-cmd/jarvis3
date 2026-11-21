@@ -22,6 +22,7 @@ export const BUILTIN_RULES: Rule[] = [
   // Anrede
   { von: "\\b(?:jervis|jarwis|jarvas|jarvice|gervis|dscharvis|tscharvis|charvis|harvis|yarvis)\\b", nach: "Jarvis" },
   // Programme und Dienste
+  { von: "^gein discord(?=[.!?]*$)", nach: "In Discord" },
   { von: "\\bgmini\\b|\\bgemeni\\b|\\bjemini\\b|\\bdschemini\\b|\\bgeminy\\b", nach: "Gemini" },
   { von: "\\byou[ -]?tube\\b|\\bjutub\\b|\\bu[ -]tube\\b", nach: "YouTube" },
   { von: "\\bgit[ -]?hub\\b", nach: "GitHub" },
@@ -42,8 +43,14 @@ export const BUILTIN_RULES: Rule[] = [
 /** Eingebaute Begriffe: knappe Verhörer (1 Buchstabe, bei langen Wörtern 2) werden automatisch auf sie korrigiert. */
 export const BUILTIN_TERMS = [
   "Jarvis", "Gemini", "YouTube", "GitHub", "Systemeinstellungen", "Hintergrundbild", "Chrome", "Claude", "Codex", "OpenCode",
-  "Browser", "Download", "Desktop", "Screenshot", "Tabgruppe", "Pull Request", "MacBook", "Obsidian", "Spotify", "WhatsApp",
+  "Browser", "Download", "Desktop", "Screenshot", "Tabgruppe", "Pull Request", "MacBook", "Obsidian", "Spotify", "WhatsApp", "Discord", "Profilbild", "Benutzereinstellungen",
 ];
+
+/** Wortliste für die Spracherkennung (Whisper-Startprompt): eingebaute und eigene Begriffe, kurz gehalten. */
+export function recognitionPrompt(): string {
+  const terms = [...new Set([...BUILTIN_TERMS, ...loadUser().begriffe])];
+  return terms.join(", ").slice(0, 500);
+}
 
 const USER_FILE = () => process.env.JARVIS_LEXICON ?? join(homedir(), ".jarvis3", "lexicon.json");
 let cache: { mtime: number; lex: Lexicon } | undefined;

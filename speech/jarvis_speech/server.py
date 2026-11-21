@@ -16,7 +16,7 @@ from websockets.exceptions import ConnectionClosed
 from .audio import EchoGate, NativeAudio, Playback, resample, rms
 from .endpoint import Endpoint
 from .errorlog import record
-from .recognition import FRAME, RATE, load_recognizer
+from .recognition import FRAME, RATE, Whisper, load_accurate, load_recognizer
 from .synthesis import Synthesizer, Voice
 
 LOG = logging.getLogger(__name__)
@@ -112,11 +112,29 @@ class Sidecar:
         self.events = None
         self.endpoint = self.speech = self.level_task = self.audio = None
 
+    stt_mode = "auto"      # auto | de | en | fast
+    stt_prompt = ""        # Wortliste (Jarvis, Claude, GitHub …): Whisper erkennt diese Begriffe dann zuverlässiger
+    accurate = None        # mlx-whisper (Mac) für auto/de/en; None: faster-whisper bzw. Parakeet
+
+    def decode(self, samples):
+        """Erkennung nach Einstellung: "fast" = Parakeet (schnell, ratet die Sprache selbst); "auto" = Whisper mit eigener
+        Spracherkennung; "de"/"en" = Whisper mit fester Sprache."""
+        mode = self.stt_mode
+        if mode == "fast":
+            return self.stt.decode(samples)
+        language = None if mode == "auto" else mode
+        if self.accurate is not None:
+            return self.accurate.decode(samples, language, self.stt_prompt)
+        if isinstance(self.stt, Whisper):  # Windows/Linux: faster-whisper ist die Hauptengine
+            return self.stt.decode(samples, language, self.stt_prompt)
+        return self.stt.decode(samples)
+
     async def start(self):
         self.stt, self.tts = await asyncio.gather(
             self.loop.run_in_executor(self.recognition_thread, load_recognizer),
             self.loop.run_in_executor(self.synthesis_thread, Synthesizer),
         )
+        self.accurate = await self.loop.run_in_executor(self.recognition_thread, load_accurate)
         pcm, rate = self.tts.warmup
         warm = resample(pcm, rate, RATE)
         for frames in (9, 18, 36, 72):
@@ -124,7 +142,7 @@ class Sidecar:
         del self.tts.warmup
         self.audio = self.audio_factory(self.loop, self.capture, self.playback)
         self.audio.set_output(self.output_device)
-        self.endpoint = Endpoint(self.loop, self.stt.decode, self.recognition_thread, self.emit, self.speech_start)
+        self.endpoint = Endpoint(self.loop, self.decode, self.recognition_thread, self.emit, self.speech_start)
         self.speech = SpeechOutput(self.loop, self.synthesis_thread, self.tts, self.audio, self.playback, self.emit)
         self.level_task = self.loop.create_task(self.levels())
 
@@ -235,6 +253,15 @@ class Sidecar:
             if type(steps) is not int or not 1 <= steps <= 16:
                 raise ValueError("config.steps erwartet eine ganze Zahl zwischen 1 und 16")
             settings["steps"] = steps
+        if "stt_prompt" in request:
+            prompt = request["stt_prompt"]
+            if not isinstance(prompt, str) or len(prompt) > 600:
+                raise ValueError("config.stt_prompt erwartet Text mit höchstens 600 Zeichen")
+            self.stt_prompt = prompt.strip()
+        if "stt" in request:
+            if request["stt"] not in ("auto", "de", "en", "fast"):
+                raise ValueError("config.stt erwartet auto, de, en oder fast")
+            self.stt_mode = request["stt"]
         if "lofi" in request:
             if type(request["lofi"]) is not bool:
                 raise ValueError("config.lofi erwartet true oder false")

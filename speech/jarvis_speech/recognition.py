@@ -75,6 +75,24 @@ class Parakeet:
         return self.model.generate(mel)[0].text.strip()
 
 
+class MlxWhisper:
+    """Whisper large-v3-turbo auf der Apple-GPU (mlx-whisper). Mit fester Sprache oder eigener Spracherkennung
+    (language=None): ~0,7 s für 5 s Audio mit fester Sprache, ~1,3 s mit Erkennung. Parakeet ist deutlich schneller (~0,1 s),
+    rät die Sprache aber pro Äußerung selbst und verwechselt Deutsch und Englisch oft."""
+    name = "mlx-whisper-large-v3-turbo"
+    repo = "mlx-community/whisper-large-v3-turbo"
+
+    def __init__(self):
+        import mlx_whisper
+
+        self.mw = mlx_whisper
+
+    def decode(self, samples, language=None, prompt=None):
+        result = self.mw.transcribe(samples, path_or_hf_repo=self.repo, language=language, temperature=0.0,
+                                    condition_on_previous_text=False, initial_prompt=prompt or None)
+        return result["text"].strip()
+
+
 class Whisper:
     name = "faster-whisper-large-v3-turbo"
 
@@ -106,9 +124,9 @@ class Whisper:
             LOG.exception("CUDA konnte nicht abgefragt werden. Verwende die CPU.")
         return "cpu", "int8"
 
-    def decode(self, samples):
+    def decode(self, samples, language="de", prompt=None):
         segments, _ = self.model.transcribe(
-            samples, language="de", beam_size=1, condition_on_previous_text=False, without_timestamps=True,
+            samples, language=language, initial_prompt=prompt or None, beam_size=1, condition_on_previous_text=False, without_timestamps=True,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
@@ -117,6 +135,16 @@ def warm(model):
     """Erste Inferenz erzwingen: Sie lädt Kernel und prüft das Rechenwerk."""
     model.decode(np.zeros(RATE // 2, dtype=np.float32))
     return model
+
+
+def load_accurate():
+    """Genauere Erkennung mit Spracheinstellung: mlx-whisper auf dem Mac, sonst None (dann dient faster-whisper selbst)."""
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            return warm(MlxWhisper())
+        except Exception:
+            LOG.exception("mlx-whisper konnte nicht starten. Es bleibt bei Parakeet.")
+    return None
 
 
 def load_recognizer():

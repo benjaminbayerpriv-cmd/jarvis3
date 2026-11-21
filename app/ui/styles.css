@@ -536,7 +536,7 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .viewer-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--on-surface-low); font-size: 14px; pointer-events: none; }
 .viewer-empty:empty { display: none; }
 .app:has(.viewer:not([hidden])) { grid-template-columns: auto minmax(0, 1fr) auto; }
-@media (max-width: 900px) { .viewer { position: fixed; z-index: 12; right: 0; top: 0; width: min(100vw, 520px); } }
+@media (max-width: 640px) { .app:has(.viewer:not([hidden])) { grid-template-columns: minmax(0, 1fr) auto; } }
 
 /* ---------- Politur ---------- */
 /* sanftes Leuchten hinter der Startseite (Gemini: lm-glow, Farbe #1f3b9b); wächst einmal ein und verschwindet mit der ersten Nachricht */
@@ -736,10 +736,21 @@ body.dropping::after {
 .history li.history-chat:not(.folder-chat):focus-within .history-menu-toggle,
 .history li.history-chat:not(.folder-chat) .history-menu-toggle[aria-expanded="true"] { opacity: 1; }
 
-/* Tab-Vorschau: Breite auf :root, damit auch der Live-Modus (Vollbild) daneben Platz lässt */
-:root { --viewer-w: clamp(440px, 46vw, 980px); }
-body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); left: 0; }
-@media (max-width: 900px) { body:has(.viewer:not([hidden])) .live { right: 0; } }
+/* Das Bild bestimmt die bevorzugte Breite. Chat und Live-Steuerung behalten Platz. */
+:root {
+  --viewer-rail: var(--rail-w);
+  --viewer-main-min: clamp(168px, 35vw, 380px);
+  --viewer-max: min(60vw, calc(100vw - var(--viewer-main-min) - var(--viewer-rail)));
+  --viewer-w: clamp(min(240px, var(--viewer-max)), var(--viewer-user-width, var(--viewer-frame-width, 42vw)), var(--viewer-max));
+}
+:root:has(.app[data-rail="open"]) { --viewer-rail: 280px; }
+:root:has(.live:not([hidden])) { --viewer-rail: 0px; }
+body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); }
+body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px, 2vw, 20px); }
+@media (max-width: 640px) {
+  :root, :root:has(.app[data-rail="open"]) { --viewer-rail: 0px; }
+  body:has(.viewer:not([hidden])) .round-btn { width: 42px; height: 42px; }
+}
 
 /* Live-Modus: Vorschau-Knopf zeigt an, ob die Tab-Vorschau offen ist */
 .round-btn[aria-pressed="true"] { background: var(--primary-container); color: var(--on-primary-container); }

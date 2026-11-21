@@ -10,7 +10,7 @@ struct Target {
     var element: AXUIElement? = nil
 
     enum Kind {
-        case field, link, control
+        case field, link, control, text
     }
 }
 
@@ -45,7 +45,7 @@ private struct OnscreenWindow {
     }
 }
 
-private func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else {
         return nil
@@ -53,7 +53,7 @@ private func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     return value
 }
 
-private func attributes(_ element: AXUIElement, _ keys: [String]) -> [Any] {
+func attributes(_ element: AXUIElement, _ keys: [String]) -> [Any] {
     var values: CFArray?
     guard AXUIElementCopyMultipleAttributeValues(element, keys as CFArray, [], &values) == .success,
           let result = values as? [Any], result.count == keys.count else {
@@ -62,12 +62,12 @@ private func attributes(_ element: AXUIElement, _ keys: [String]) -> [Any] {
     return result
 }
 
-private func elementAttribute(_ element: AXUIElement, _ key: String) -> AXUIElement? {
+func elementAttribute(_ element: AXUIElement, _ key: String) -> AXUIElement? {
     guard let value = attribute(element, key), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     return (value as! AXUIElement)
 }
 
-private func frame(_ position: Any, _ size: Any) -> CGRect? {
+func frame(_ position: Any, _ size: Any) -> CGRect? {
     let pointValue = position as CFTypeRef
     let sizeValue = size as CFTypeRef
     guard CFGetTypeID(pointValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID()
@@ -81,7 +81,7 @@ private func frame(_ position: Any, _ size: Any) -> CGRect? {
     return CGRect(origin: point, size: dimensions)
 }
 
-private func windowFrame(_ element: AXUIElement) -> CGRect? {
+func windowFrame(_ element: AXUIElement) -> CGRect? {
     let values = attributes(element, ["AXPosition", "AXSize"])
     return frame(values[0], values[1])
 }
@@ -133,12 +133,13 @@ private func label(_ element: AXUIElement, role: String) -> String {
         ?? "Bedienelement"
 }
 
-private func collect(
+func collect(
     _ root: AXUIElement, inside region: CGRect, coveredBy covers: [CGRect], deadline: TimeInterval
 ) -> [Target] {
     var pending = [(element: root, clip: region)]
     var visited = Set<AXUIElement>()
     var targets: [Target] = []
+    var textCount = 0
 
     while let node = pending.popLast(),
           visited.count < 3200, targets.count < 600,
@@ -169,6 +170,16 @@ private func collect(
                         interactive = names.contains(where: actionable.contains)
                     }
                 }
+                // Sichtbarer Text (Überschriften, Beschriftungen, Nachrichten …) kommt mit in die Liste, damit die KI lesen kann,
+                // ohne einen Screenshot anzusehen. Nur nicht-leere Texte, höchstens 300 pro Scan.
+                if !interactive, ["AXStaticText", "AXHeading"].contains(role), textCount < 300,
+                   let value = cleanLabel(attribute(node.element, "AXValue") ?? attribute(node.element, "AXTitle") ?? "" as CFTypeRef) {
+                    let visible = covers.reduce([clipped]) { fragments, cover in fragments.flatMap { subtract($0, cover) } }
+                    if let rect = visible.first(where: { $0.width >= 3 && $0.height >= 3 }) {
+                        textCount += 1
+                        targets.append(Target(rect: rect, label: value, enabled: true, kind: .text, role: role, element: node.element))
+                    }
+                }
                 if interactive {
                     let visible = covers.reduce([clipped]) { fragments, cover in
                         fragments.flatMap { subtract($0, cover) }
@@ -195,6 +206,18 @@ private func collect(
     return targets
 }
 
+// Electron-/Chromium-Programme (Claude, VS Code, Slack, Discord, Chrome …) bauen ihren Bedienbaum erst, wenn man es verlangt.
+// AXManualAccessibility schaltet ihn ein, ohne dass VoiceOver o. Ä. laufen muss. Pro Programm nur einmal.
+var accessibilityRequested = Set<pid_t>()
+func requestAccessibility(_ app: AXUIElement, pid: pid_t) -> Bool {
+    guard accessibilityRequested.insert(pid).inserted else { return false }
+    // Nur AXManualAccessibility (der offizielle Schalter für Electron/Chromium). AXEnhancedUserInterface NICHT setzen:
+    // Chromium-Programme (Chrome, Discord, Claude …) melden danach statt ihrer Fenster nur noch das Programm-Element,
+    // bis sie neu gestartet werden (beobachtet unter macOS 27).
+    if (attribute(app, "AXManualAccessibility") as? Bool) == true { return false }
+    return AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
+}
+
 func scan(display: CGRect, frontPID: pid_t?, dockPID: pid_t?, menuExtrasPID: pid_t?) -> [Target] {
     AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.08)
     let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -216,6 +239,7 @@ func scan(display: CGRect, frontPID: pid_t?, dockPID: pid_t?, menuExtrasPID: pid
         if !visible.isEmpty {
             if appWindows[window.pid] == nil {
                 let app = AXUIElementCreateApplication(window.pid)
+                if requestAccessibility(app, pid: window.pid) { usleep(150_000) }  // dem Programm kurz Zeit geben, den Baum aufzubauen
                 let elements = attribute(app, "AXWindows") as? [AXUIElement] ?? []
                 appWindows[window.pid] = elements.prefix(50).compactMap { element in
                     windowFrame(element).map { (element, $0) }
