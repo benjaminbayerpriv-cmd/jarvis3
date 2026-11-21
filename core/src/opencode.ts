@@ -75,10 +75,17 @@ export class OpenCode {
     if (!r.ok) { this.listeners.delete(session); onEvent({ kind: "error", message: `${r.status} ${await r.text()}` }); }
   }
 
+  /** Wartet nach dem Abbruch auf das "idle" des abgebrochenen Laufs, damit es nicht den nächsten Lauf beendet. */
+  private idleWaiters = new Map<string, () => void>();
   async abort(session: string) {
+    const active = this.listeners.has(session);
+    let idle: Promise<void> = Promise.resolve();
+    if (active) idle = new Promise<void>(res => { const t = setTimeout(res, 2000); this.idleWaiters.set(session, () => { clearTimeout(t); res(); }); });
     await fetch(`${this.url}/session/${session}/abort`, { method: "POST" }).catch(() => {});
     this.listeners.get(session)?.({ kind: "done" });
     this.listeners.delete(session);
+    await idle;
+    this.idleWaiters.delete(session);
   }
 
   private async listen() {
@@ -110,6 +117,7 @@ export class OpenCode {
   private dispatch(e: any) {
     const p = e.properties ?? {};
     const sid = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID;
+    if (e.type === "session.idle" && this.idleWaiters.has(sid)) { this.idleWaiters.get(sid)!(); return; } // Ende des abgebrochenen Laufs
     const cb = this.listeners.get(sid);
     if (!cb) return;
     if (e.type === "message.part.delta" || (e.type === "message.part.updated" && p.part?.type !== "text") || (e.type === "session.status" && p.status?.type === "busy")) this.started.add(sid); // die Nutzer-Nachricht (Textteil) zählt nicht
