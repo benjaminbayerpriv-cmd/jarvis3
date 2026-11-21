@@ -15,21 +15,25 @@ const portOpen = (port: number) => new Promise<boolean>(resolve => {
 
 export class SidecarSupervisor {
   private busy = false;
-  private lastStart = 0;
+  private retryAfter = 0;
 
   constructor(private connected: () => boolean, private log: (line: string) => void, private root: string, private home: string) {}
 
-  start() { setInterval(() => void this.tick(), 3000); void this.tick(); }
+  start(initialGraceMs = 0) {
+    this.retryAfter = Date.now() + initialGraceMs;
+    setInterval(() => void this.tick(), 3000);
+    void this.tick();
+  }
 
   private async tick() {
     if (this.busy || this.connected()) return;
     if (await portOpen(PORT)) return;                       // läuft schon (verbindet sich gleich)
-    if (Date.now() - this.lastStart < 20_000) return;       // nicht dauernd neu starten, falls der Start scheitert
+    if (Date.now() < this.retryAfter) return;       // nicht dauernd neu starten, falls der Start scheitert
     await this.spawn();
   }
 
   private async spawn() {
-    this.busy = true; this.lastStart = Date.now();
+    this.busy = true; this.retryAfter = Date.now() + 20_000;
     try {
       mkdirSync(this.home, { recursive: true });
       const fd = openSync(join(this.home, "sidecar.log"), "a");
@@ -51,6 +55,6 @@ export class SidecarSupervisor {
       const out = Bun.spawnSync(["lsof", "-ti", `tcp:${PORT}`, "-sTCP:LISTEN"]).stdout.toString().trim();
       for (const pid of out.split(/\s+/).filter(Boolean)) { try { process.kill(Number(pid), "SIGTERM"); } catch {} }
     } catch {}
-    this.lastStart = 0;
+    this.retryAfter = 0;
   }
 }

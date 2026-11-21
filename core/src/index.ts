@@ -237,7 +237,8 @@ function worthAnswering(text: string) {
   return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(text);
 }
 const sidecar = process.env.JARVIS_SPEECH_URL || process.env.JARVIS_NO_SIDECAR ? undefined : new SidecarSupervisor(() => speech.connected, vlog, ROOT, HOME);
-sidecar?.start();
+// Die Desktop-Hülle startet den Sidecar parallel. Erst nach ihrem Health-Timeout selbst einspringen.
+sidecar?.start(process.env.JARVIS_SHELL_STARTS_SPEECH === "1" ? 45_000 : 0);
 setInterval(() => {   // Wächter: hängt der Sidecar (keine Pegel mehr) oder die Sprachausgabe (Satz gesendet, nie gestartet)?
   if (!speech.connected) return;
   const now = Date.now();
@@ -711,12 +712,17 @@ async function jarvisTabs() {
 const wantedExtension = () => { try { return JSON.parse(readFileSync(join(ROOT, "extension/manifest.json"), "utf8")).version as string; } catch { return ""; } };
 const versionNum = (v: string) => v.split(".").reduce((n, x) => n * 1000 + Number(x || 0), 0);
 let extensionStale = false;
+let attemptedExtensionUpdate = "";
 browser.onHello = version => {
   const want = wantedExtension();
-  extensionStale = !!want && version !== want;
+  extensionStale = !!want && versionNum(version) < versionNum(want);
   if (extensionStale && versionNum(version) >= versionNum("1.2.0")) {
-    vlog(`Erweiterung ${version} -> ${want}: lade neu`);
-    setTimeout(() => void browser.call({ cmd: "reload" }, 3000).catch(() => {}), 300);
+    const update = `${version}->${want}`;
+    if (attemptedExtensionUpdate !== update) {
+      attemptedExtensionUpdate = update;
+      vlog(`Erweiterung ${version} -> ${want}: lade neu`);
+      setTimeout(() => void browser.call({ cmd: "reload" }, 3000).catch(() => {}), 300);
+    }
   } else if (extensionStale) {
     broadcast({ type: "notice", text: `Die Chrome-Erweiterung ist veraltet (${version}, aktuell ${want}). Bitte einmal unter chrome://extensions bei „Jarvis“ neu laden – danach aktualisiert sie sich selbst.` });
   }
