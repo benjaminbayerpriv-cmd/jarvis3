@@ -6,6 +6,21 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 
 const PORT = 7778;
+
+/** PIDs, die auf dem Port lauschen: lsof (macOS/Linux) bzw. netstat (Windows, dort gibt es kein lsof). */
+export function listeningPids(port: number): number[] {
+  if (process.platform === "win32") {
+    const out = Bun.spawnSync(["netstat", "-ano", "-p", "TCP"]).stdout.toString();
+    const pids = new Set<number>();
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.trim().match(/^TCP\s+\S+:(\d+)\s+\S+:0\s+\S+\s+(\d+)$/i);   // lauschend = Gegenstelle :0 (Statuswort ist je nach Windows-Sprache anders)
+      if (m && Number(m[1]) === port) pids.add(Number(m[2]));
+    }
+    return [...pids];
+  }
+  const out = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim();
+  return out.split(/\s+/).filter(Boolean).map(Number);
+}
 const portOpen = (port: number) => new Promise<boolean>(resolve => {
   const socket = connect({ host: "127.0.0.1", port });
   socket.once("connect", () => { socket.destroy(); resolve(true); });
@@ -52,8 +67,7 @@ export class SidecarSupervisor {
   /** Beendet den laufenden Sidecar; tick() startet ihn danach neu (liest dabei auch die Audiogeräte frisch ein). */
   async restart() {
     try {
-      const out = Bun.spawnSync(["lsof", "-ti", `tcp:${PORT}`, "-sTCP:LISTEN"]).stdout.toString().trim();
-      for (const pid of out.split(/\s+/).filter(Boolean)) { try { process.kill(Number(pid), "SIGTERM"); } catch {} }
+      for (const pid of listeningPids(PORT)) { try { process.kill(pid, "SIGTERM"); } catch {} }
     } catch {}
     this.retryAfter = 0;
   }
