@@ -488,6 +488,8 @@ const taMirror = new BlurText($("#taMirror"));   // zeigt den diktierten Text mi
 const syncMirrorScroll = () => { $("#taMirror").style.transform = `translateY(${-input.scrollTop}px)`; };
 input.addEventListener("scroll", syncMirrorScroll);
 function dictShow(t) {
+  // Whisper liefert bei abgeschnittenen Wörtern oder Rauschen manchmal nur "…" / "...": das darf den Text nicht ersetzen
+  if (!/[\p{L}\p{N}]/u.test(String(t ?? ""))) return;
   if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
   input.value = dictJoin(t); autosize(); updateSend();
   taMirror.set(input.value); syncMirrorScroll();
@@ -1381,7 +1383,7 @@ function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = re
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
-  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; renderSettingsState(); }
   switch (m.event) {
     case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);

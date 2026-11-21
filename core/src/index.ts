@@ -207,6 +207,10 @@ const speech = new Speech(e => {
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { configureSpeech(); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); liveAnswer.release(); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
+  if (e.type === "replaced") {
+    broadcast({ type: "notice", text: "Ein anderer Jarvis-Dienst nutzt gerade den Sprachdienst. Er wird beim nächsten Diktat oder Live-Start zurückgeholt." });
+    return;
+  }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
   if (e.type === "ready") {
