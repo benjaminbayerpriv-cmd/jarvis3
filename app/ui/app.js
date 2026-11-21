@@ -1381,7 +1381,7 @@ function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = re
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
-  if (m.event === "ready" && m.devices) { state.devices = m.devices; renderSettingsState(); }
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
   switch (m.event) {
     case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
