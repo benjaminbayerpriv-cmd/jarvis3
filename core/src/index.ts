@@ -15,6 +15,7 @@ import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES,
 import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
 import { Capture } from "./capture";
+import { applyImport, expandTemplate, loadStore, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
 import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
 import { parseRange, readUsage, summarize } from "./usage";
@@ -41,12 +42,13 @@ const saveChatMeta = () => writeFileSync(CHAT_META, JSON.stringify(chatMeta, nul
 // OpenCode-Arbeitsordner mit Jarvis-MCP und voller Autonomie (Nutzerentscheidung).
 const workspace = join(ROOT, "workspace");
 mkdirSync(workspace, { recursive: true });
-writeFileSync(join(workspace, "opencode.json"), JSON.stringify({
+const BASE_OPENCODE_CONFIG = {
   $schema: "https://opencode.ai/config.json",
   mcp: { jarvis: { type: "local", command: [process.execPath, join(ROOT, "core/src/mcp.ts")], enabled: true,
                    environment: { JARVISD_URL: `http://127.0.0.1:${PORT}` } } },
   permission: { edit: "allow", bash: "allow", webfetch: "allow", external_directory: "allow" },
-}, null, 2));
+};
+writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
 const brain = new OpenCode(4096, workspace);
 const desktop = new Desktop();
@@ -932,6 +934,95 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
   return r;
 }
 
+// ---------- Erweiterungen: Schrägstrich-Befehle, Skills, MCP, Plugins, Import ----------
+const ocGet = async (path: string): Promise<any> => { try { return await (await fetch(`${brain.url}${path}`)).json(); } catch { return undefined; } };
+const skillSource = (loc: string) => /built-in/i.test(loc) ? "OpenCode" : loc.includes("/workspace/.opencode/") ? "Jarvis" : loc.includes("/.claude/") ? "Claude" : loc.includes("/.codex/") ? "Codex"
+  : loc.includes("/.config/opencode/") ? "OpenCode" : loc.includes("/.agents/") ? "Agents" : "Sonstige";
+const BUILTIN_COMMANDS = [
+  { name: "neu", description: "Neuen Chat beginnen" }, { name: "stop", description: "Laufende Antwort abbrechen" },
+  { name: "modell", description: "Modell wählen, z. B. /modell nemotron", hint: "Name" }, { name: "live", description: "Sprachmodus starten" },
+  { name: "diktat", description: "Diktieren starten" }, { name: "vorschau", description: "Tab- und Fenster-Vorschau öffnen" },
+  { name: "projekte", description: "Projekte öffnen" }, { name: "einstellungen", description: "Einstellungen öffnen" },
+  { name: "erweiterungen", description: "MCP, Skills, Befehle und Plugins verwalten" }, { name: "import", description: "Aus Claude, Codex oder OpenCode importieren" },
+  { name: "hilfe", description: "Alle Befehle anzeigen" },
+];
+async function commandList() {
+  const oc: any[] = (await ocGet("/command")) ?? [];
+  const items = oc.filter(c => !["init", "review"].includes(c.name) || true).map(c => ({ name: c.name, description: String(c.description ?? "").slice(0, 160), source: c.source === "skill" ? "skill" : "command", hint: c.hints?.length ? "Argumente" : undefined }));
+  return [...BUILTIN_COMMANDS.map(c => ({ ...c, source: "builtin" })), ...items];
+}
+async function extensionState() {
+  const store = loadStore();
+  const status: Record<string, any> = (await ocGet("/mcp")) ?? {};
+  const mcp = [{ name: "jarvis", builtin: true, type: "local", detail: "Browser- und Desktop-Werkzeuge (eingebaut)", enabled: true, source: "Jarvis", status: status.jarvis?.status ?? "?" },
+    ...Object.entries(store.mcp).map(([name, e]) => ({ name, builtin: false, type: e.type, detail: mcpSummary(e), enabled: e.enabled, source: e.source, status: status[name]?.status ?? (e.enabled ? "unbekannt" : "disabled"), error: status[name]?.error }))];
+  const skillList: any[] = (await ocGet("/skill")) ?? [];
+  const skills = skillList.map(sk => ({ name: sk.name, description: String(sk.description ?? "").slice(0, 200), source: skillSource(String(sk.location ?? "")), disabled: store.disabledSkills.includes(sk.name) }));
+  for (const n of store.disabledSkills) if (!skills.some(x => x.name === n)) skills.push({ name: n, description: "(gesperrt)", source: "Jarvis", disabled: true });
+  const commands = Object.entries(store.commands).map(([name, c]) => ({ name, description: c.description, source: c.source, custom: true }));
+  return { type: "extensions", mcp, skills, commands, plugins: store.plugins };
+}
+/** Konfiguration neu schreiben und OpenCode neu laden (Befehle, Skills, MCP, Plugins). */
+async function reloadExtensions() {
+  writeWorkspace(workspace, BASE_OPENCODE_CONFIG);
+  await fetch(`${brain.url}/instance/dispose`, { method: "POST" }).catch(() => {});
+  await Bun.sleep(600);
+  for (let i = 0; i < 20 && !(await brain.healthy()); i++) await Bun.sleep(250);
+}
+async function extensionMessage(msg: any): Promise<any> {
+  const store = loadStore();
+  if (msg.type === "ext_scan") return { type: "ext_scan", from: msg.from, items: scanImport(msg.from as Source, store).map(c => ({ ...c })) };
+  if (msg.type === "ext_import") {
+    const all = scanImport(msg.from as Source, store);
+    const wanted = new Set<string>(Array.isArray(msg.ids) ? msg.ids : []);
+    const picked = all.filter(c => wanted.has(c.id));
+    const counts = applyImport(picked as Candidate[], store);
+    await reloadExtensions();
+    broadcast({ type: "notice", text: `Importiert aus ${msg.from}: ${counts.mcp} MCP, ${counts.skill} Skills, ${counts.command} Befehle, ${counts.plugin} Plugins.` });
+    return await extensionState();
+  }
+  if (msg.type === "ext_mcp") {
+    const name = String(msg.name ?? "").trim();
+    if (msg.op === "remove") delete store.mcp[name];
+    else if (msg.op === "toggle" && store.mcp[name]) store.mcp[name].enabled = !!msg.enabled;
+    else if (msg.op === "add") {
+      const raw = msg.entry ?? {};
+      const entry: McpEntry | undefined = raw.url
+        ? { type: "remote", url: String(raw.url), headers: raw.headers, enabled: true, source: "manual" }
+        : String(raw.command ?? "").trim() ? { type: "local", command: String(raw.command).trim().split(/\s+/), environment: raw.environment, enabled: true, source: "manual" } : undefined;
+      if (!name || !entry) return { type: "error", message: "MCP-Server braucht einen Namen und einen Befehl oder eine URL." };
+      store.mcp[name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")] = entry;
+    }
+    saveStore(store); await reloadExtensions();
+    return await extensionState();
+  }
+  if (msg.type === "ext_skill") {
+    const name = String(msg.name ?? "");
+    if (msg.remove) delete store.skillDirs[name];   // importierten Skill wieder entfernen (Verknüpfung)
+    store.disabledSkills = store.disabledSkills.filter(n => n !== name);
+    if (msg.enabled === false) store.disabledSkills.push(name);
+    saveStore(store); await reloadExtensions();
+    return await extensionState();
+  }
+  if (msg.type === "ext_command") {
+    const name = String(msg.name ?? "").toLowerCase().replace(/[^a-z0-9äöüß_-]+/g, "-");
+    if (msg.op === "remove") delete store.commands[name];
+    else if (msg.op === "add" && name && String(msg.template ?? "").trim())
+      store.commands[name] = { description: String(msg.description ?? "").slice(0, 200), template: String(msg.template), source: "manual" };
+    else return { type: "error", message: "Befehl braucht einen Namen und einen Text." };
+    saveStore(store); await reloadExtensions();
+    return await extensionState();
+  }
+  if (msg.type === "ext_plugin") {
+    const name = String(msg.name ?? "").trim();
+    if (msg.op === "remove") store.plugins = store.plugins.filter(p => p !== name);
+    else if (msg.op === "add" && name && !store.plugins.includes(name)) store.plugins.push(name);
+    saveStore(store); await reloadExtensions();
+    return await extensionState();
+  }
+  return { type: "error", message: "Unbekannte Erweiterungsaktion" };
+}
+
 // ---------- Live-Bild eines Fensters, das Jarvis bedient (Aufnahme-Dienst, virtuelle Maus) ----------
 const capture = new Capture();
 let desktopScanWindow: number | undefined;
@@ -1165,6 +1256,21 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         const id = String(msg.id ?? "");
         const users = id ? chatHistory(await sessionMessages(id)).filter(m => m.role === "user") : [];
         ws.send(JSON.stringify({ type: "message_ids", session: id, users }));
+      }
+      else if (msg.type === "commands") ws.send(JSON.stringify({ type: "commands", items: await commandList() }));
+      else if (msg.type === "ext_list") ws.send(JSON.stringify(await extensionState()));
+      else if (typeof msg.type === "string" && msg.type.startsWith("ext_")) ws.send(JSON.stringify(await extensionMessage(msg)));
+      else if (msg.type === "run_command") {
+        // Schrägstrich-Befehl oder Skill: Vorlage mit Argumenten füllen und wie eine Nachricht senden
+        const name = String(msg.name ?? ""), args = String(msg.args ?? "");
+        const found = ((await ocGet("/command")) as any[] | undefined)?.find(c => c.name === name);
+        if (!found) ws.send(JSON.stringify({ type: "error", message: `Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.` }));
+        else {
+          const prompt = found.source === "skill"
+            ? `Nutze den Skill „${name}“ für diese Aufgabe.${args.trim() ? `\n\nAufgabe: ${args.trim()}` : ""}\n\n${expandTemplate(String(found.template ?? ""), args)}`
+            : expandTemplate(String(found.template ?? ""), args);
+          await chat(prompt, msg.model, false, [], ws.data.fresh);
+        }
       }
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));

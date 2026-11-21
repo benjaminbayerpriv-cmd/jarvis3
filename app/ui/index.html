@@ -54,6 +54,7 @@
           <button class="stop-btn" id="emergencyStop"><span data-icon="hand-stop"></span>Stopp <kbd>⌘⇧⎋</kbd></button>
         </div>
         <p class="attach-note" id="attachNote" role="status" hidden></p>
+        <div class="slash-menu" id="slashMenu" role="listbox" aria-label="Befehle" hidden></div>
         <form class="composer" id="composer" autocomplete="off" data-voice="off">
           <!-- Sprach-Bereich: klappt beim Sprechen nach oben auf (erkannter Text + Wellen) -->
           <div class="voice" id="voice" aria-hidden="true">
@@ -160,18 +161,33 @@
   </dialog>
 
   <!-- Einstellungen -->
-  <dialog class="sheet" id="settingsDialog">
-    <form method="dialog" class="sheet-inner">
-      <header class="sheet-head"><h2>Einstellungen</h2><button class="icon-btn" value="close" data-icon="x" aria-label="Schließen"></button></header>
-      <div class="tabs" role="tablist"><button type="button" role="tab" class="tab active" id="tabGeneral" aria-selected="true">Allgemein</button><button type="button" role="tab" class="tab" id="tabUsage" aria-selected="false">Nutzung</button></div>
-      <div id="paneGeneral">
+  <dialog class="sheet settings-sheet" id="settingsDialog">
+    <div class="set-wrap">
+      <nav class="set-nav" aria-label="Einstellungen">
+        <h2>Einstellungen</h2>
+        <button type="button" class="set-nav-item active" data-pane="general"><span data-icon="settings"></span>Allgemein</button>
+        <button type="button" class="set-nav-item" data-pane="voice"><span data-icon="microphone"></span>Sprache und Audio</button>
+        <button type="button" class="set-nav-item" data-pane="usage"><span data-icon="history"></span>Nutzung</button>
+        <div class="set-nav-group">Erweiterungen</div>
+        <button type="button" class="set-nav-item" data-pane="mcp"><span data-icon="world"></span>MCP-Server</button>
+        <button type="button" class="set-nav-item" data-pane="skills"><span data-icon="sparkles"></span>Skills</button>
+        <button type="button" class="set-nav-item" data-pane="commands"><span data-icon="edit"></span>Befehle</button>
+        <button type="button" class="set-nav-item" data-pane="plugins"><span data-icon="plus"></span>Plugins</button>
+        <button type="button" class="set-nav-item" data-pane="import"><span data-icon="refresh"></span>Import</button>
+      </nav>
+      <div class="set-main">
+        <header class="set-head"><h3 id="setTitle">Allgemein</h3><button type="button" class="icon-btn" id="closeSettings" data-icon="x" aria-label="Schließen"></button></header>
+        <div class="set-pane" data-pane="general">
       <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: Strg+Alt+Shift+Esc</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
+          <div class="setting"><div><b>Schrägstrich-Befehle</b><p>Tippe im Chat <code>/</code> für Befehle und Skills, zum Beispiel <code>/neu</code>, <code>/modell</code> oder <code>/hilfe</code>.</p></div></div>
+        </div>
+        <div class="set-pane" data-pane="voice" hidden>
       <div class="setting"><div><b>Mikrofon</b><p>Eingabegerät für die Spracherkennung. Pegel siehst du im Live-Modus.</p></div><select id="setMic"></select></div>
       <div class="setting"><div><b>Spracherkennung</b><p>Nur Deutsch (empfohlen): ca. 0,7 s, kennt Begriffe wie Jarvis, Claude oder GitHub aus der Wortliste. Automatisch erkennt auch Englisch (ca. 1,3 s). Schnell (0,1 s) verwechselt Sprachen öfter.</p></div>
         <select id="setStt"><option value="de">Nur Deutsch (empfohlen)</option><option value="auto">Automatisch (Deutsch + Englisch)</option><option value="en">Nur Englisch</option><option value="fast">Schnell (Parakeet)</option></select></div>
       <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
-      </div>
-      <div id="paneUsage" hidden>
+        </div>
+        <div class="set-pane" data-pane="usage" hidden>
         <div class="usage-range" role="group" aria-label="Zeitraum">
           <button type="button" class="chip" data-range="1d">1T</button><button type="button" class="chip active" data-range="7d">7T</button><button type="button" class="chip" data-range="30d">30T</button><button type="button" class="chip" data-range="all">Gesamt</button>
         </div>
@@ -180,8 +196,52 @@
         <div class="usage-chart" id="usageChart" role="img" aria-label="Tokens pro Zeitraum"></div>
         <div class="usage-models" id="usageModels"></div>
         <p class="usage-note" id="usageNote"></p>
+        </div>
+        <div class="set-pane" data-pane="mcp" hidden>
+          <p class="set-intro">MCP-Server geben Jarvis zusätzliche Werkzeuge (Dateien, Datenbanken, Webdienste). Aktive Server stehen dem Modell sofort zur Verfügung.</p>
+          <ul class="ext-list" id="extMcp"></ul>
+          <form class="ext-form" id="mcpForm">
+            <input id="mcpName" placeholder="Name, z. B. dateien" aria-label="Name" autocomplete="off">
+            <input id="mcpTarget" placeholder="Befehl (npx -y paket) oder https://…/mcp" aria-label="Befehl oder URL" autocomplete="off">
+            <button type="submit" class="chip-btn">Hinzufügen</button>
+          </form>
+        </div>
+        <div class="set-pane" data-pane="skills" hidden>
+          <p class="set-intro">Skills sind Anleitungen, die Jarvis bei passenden Aufgaben lädt. Du kannst sie im Chat auch direkt mit <code>/name</code> aufrufen.</p>
+          <label class="search ext-search"><span data-icon="search"></span><input id="skillSearch" placeholder="Skills suchen" autocomplete="off"></label>
+          <ul class="ext-list" id="extSkills"></ul>
+        </div>
+        <div class="set-pane" data-pane="commands" hidden>
+          <p class="set-intro">Eigene Befehle sind gespeicherte Anweisungen. <code>$ARGUMENTS</code> wird durch das ersetzt, was du nach dem Befehl tippst.</p>
+          <ul class="ext-list" id="extCommands"></ul>
+          <form class="ext-form ext-form-col" id="commandForm">
+            <div class="ext-row"><input id="cmdName" placeholder="Name, z. B. zusammenfassen" aria-label="Name" autocomplete="off"><input id="cmdDesc" placeholder="Beschreibung" aria-label="Beschreibung" autocomplete="off"></div>
+            <textarea id="cmdTemplate" rows="3" placeholder="Anweisung, z. B. Fasse $ARGUMENTS in drei Sätzen zusammen." aria-label="Anweisung"></textarea>
+            <button type="submit" class="chip-btn">Befehl speichern</button>
+          </form>
+        </div>
+        <div class="set-pane" data-pane="plugins" hidden>
+          <p class="set-intro">Plugins erweitern OpenCode (das Gehirn von Jarvis) um eigene Funktionen. Eingetragen werden npm-Pakete oder Dateipfade.</p>
+          <ul class="ext-list" id="extPlugins"></ul>
+          <form class="ext-form" id="pluginForm">
+            <input id="pluginName" placeholder="npm-Paket oder Dateipfad" aria-label="Plugin" autocomplete="off">
+            <button type="submit" class="chip-btn">Hinzufügen</button>
+          </form>
+        </div>
+        <div class="set-pane" data-pane="import" hidden>
+          <p class="set-intro">Übernimm MCP-Server, Skills, Befehle und Plugins aus deinen Einstellungen von Claude, Codex oder OpenCode. Es wird nichts verschoben oder gelöscht, Jarvis liest die Dateien nur.</p>
+          <div class="import-sources">
+            <button type="button" class="chip-btn" data-import="claude">Aus Claude lesen</button>
+            <button type="button" class="chip-btn" data-import="codex">Aus Codex lesen</button>
+            <button type="button" class="chip-btn" data-import="opencode">Aus OpenCode lesen</button>
+          </div>
+          <div id="importResult" hidden>
+            <div class="import-bar"><span id="importCount"></span><button type="button" class="text-btn" id="importAll">Alle neuen wählen</button><button type="button" class="text-btn primary-action" id="importGo">Importieren</button></div>
+            <ul class="ext-list" id="importList"></ul>
+          </div>
+        </div>
       </div>
-    </form>
+    </div>
   </dialog>
 
   <dialog class="sheet" id="chatActionDialog">

@@ -69,6 +69,9 @@ function handle(m) {
     case "spoken": if (live.on) liveSpoken(m.text); break;
     case "live_unspoken": if (live.on) liveUnspoken(m.text); break; // Antwort konnte nicht gesprochen werden: wenigstens zeigen
     case "tabs": viewerTabsMessage(m); break;
+    case "commands": slashItems = m.items || []; renderSlash(); break;
+    case "extensions": renderExtensions(m); break;
+    case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
@@ -320,6 +323,7 @@ function showError(msg) {
 
 async function ask(text) {
   text = text.trim();
+  if (text.startsWith("/") && !editingMessage && !pending.length) return runSlash(text);
   const edit = editingMessage;
   const session = currentSession;
   const files = [...pending];
@@ -1136,16 +1140,9 @@ $("#chatActionValue").addEventListener("keydown", e => {
 });
 $("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
-$("#openSettings").onclick = () => { $("#settingsDialog").showModal(); if (!$("#paneUsage").hidden) requestUsage(); };
+
 let usageRange = "7d";
 const requestUsage = () => send({ type: "usage", range: usageRange });
-function showSettingsTab(usage) {
-  $("#paneGeneral").hidden = usage; $("#paneUsage").hidden = !usage;
-  for (const [id, on] of [["#tabGeneral", !usage], ["#tabUsage", usage]]) { $(id).classList.toggle("active", on); $(id).setAttribute("aria-selected", String(on)); }
-  if (usage) requestUsage();
-}
-$("#tabGeneral").onclick = () => showSettingsTab(false);
-$("#tabUsage").onclick = () => showSettingsTab(true);
 for (const b of document.querySelectorAll(".usage-range .chip")) b.onclick = () => {
   usageRange = b.dataset.range;
   for (const c of document.querySelectorAll(".usage-range .chip")) c.classList.toggle("active", c === b);
@@ -1383,3 +1380,173 @@ input.focus();
 
 // Test-Zugang (nur Entwicklung): window.__jarvisDebug.handle({...}) spielt Daemon-Nachrichten ein
 window.__jarvisDebug = { handle };
+
+
+// ---------- Schrägstrich-Befehle im Chat ----------
+let slashItems = [], slashIndex = 0, slashOpen = false, slashAsked = false;
+const SOURCE_LABEL = { builtin: "Jarvis", command: "Befehl", skill: "Skill" };
+function slashQuery() { const v = input.value; return v.startsWith("/") && !/\s/.test(v) ? v.slice(1).toLowerCase() : null; }
+function slashMatches() {
+  const q = slashQuery(); if (q === null) return [];
+  const rank = it => (it.name.toLowerCase().startsWith(q) ? 0 : it.name.toLowerCase().includes(q) ? 1 : (it.description || "").toLowerCase().includes(q) ? 2 : 9);
+  return slashItems.filter(it => rank(it) < 9).sort((x, y) => rank(x) - rank(y) || (x.source === "builtin" ? -1 : 0) - (y.source === "builtin" ? -1 : 0) || x.name.localeCompare(y.name)).slice(0, 40);
+}
+function renderSlash() {
+  const menu = $("#slashMenu"), items = slashMatches();
+  slashOpen = items.length > 0 && slashQuery() !== null && !editingMessage;
+  menu.hidden = !slashOpen;
+  if (!slashOpen) return;
+  slashIndex = Math.min(slashIndex, items.length - 1);
+  menu.replaceChildren(...items.map((it, i) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "slash-item"; b.setAttribute("role", "option"); b.setAttribute("aria-selected", String(i === slashIndex));
+    b.innerHTML = `<span class="slash-name"></span><span class="slash-desc"></span><span class="slash-src"></span>`;
+    b.querySelector(".slash-name").textContent = "/" + it.name;
+    b.querySelector(".slash-desc").textContent = it.description || "";
+    b.querySelector(".slash-src").textContent = SOURCE_LABEL[it.source] || it.source;
+    b.onmousedown = e => { e.preventDefault(); pickSlash(it); };
+    return b;
+  }));
+  menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+function pickSlash(it) {
+  input.value = "/" + it.name + " "; autosize(); updateSend(); renderSlash(); input.focus();
+  if (it.source === "builtin" && !it.hint) $("#composer").requestSubmit();   // Befehle ohne Argument sofort ausführen
+}
+input.addEventListener("input", () => {
+  if (slashQuery() !== null && !slashAsked) { slashAsked = true; send({ type: "commands" }); }
+  slashIndex = 0; renderSlash();
+});
+input.addEventListener("keydown", e => {
+  if (!slashOpen) return;
+  const items = slashMatches();
+  if (e.key === "ArrowDown") { e.preventDefault(); e.stopImmediatePropagation(); slashIndex = (slashIndex + 1) % items.length; renderSlash(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); e.stopImmediatePropagation(); slashIndex = (slashIndex - 1 + items.length) % items.length; renderSlash(); }
+  else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.isComposing)) { e.preventDefault(); e.stopImmediatePropagation(); pickSlash(items[slashIndex]); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); input.value = ""; autosize(); updateSend(); renderSlash(); }
+}, true);
+input.addEventListener("blur", () => setTimeout(() => { $("#slashMenu").hidden = true; slashOpen = false; }, 120));
+
+async function runSlash(text) {
+  const m = /^\/(\S+)\s*([\s\S]*)$/.exec(text);
+  if (!m) return false;
+  const name = m[1].toLowerCase(), args = m[2].trim();
+  const done = () => { input.value = ""; autosize(); updateSend(); renderSlash(); return true; };
+  const open = pane => { $("#settingsDialog").showModal(); showSettingsPane(pane); };
+  switch (name) {
+    case "neu": $("#newChat").click(); return done();
+    case "stop": send({ type: "stop" }); return done();
+    case "live": openLive(); return done();
+    case "diktat": $("#dictate").click(); return done();
+    case "vorschau": toggleViewer(); return done();
+    case "projekte": $("#openProjects").click(); return done();
+    case "einstellungen": open("general"); return done();
+    case "erweiterungen": open("mcp"); return done();
+    case "import": open("import"); return done();
+    case "modell": {
+      const q = args.toLowerCase();
+      const hit = q && (state.models || []).find(x => (x.id || "").toLowerCase().includes(q) || (x.model || "").toLowerCase().includes(q));
+      if (hit) { send({ type: "settings", settings: { model: hit.id } }); showNotice(`Modell: ${hit.model || hit.id}`); }
+      else { renderModels(); $("#modelSearch").value = args; $("#modelDialog").showModal(); }
+      return done();
+    }
+    case "hilfe": {
+      if (!slashItems.length) send({ type: "commands" });
+      const lines = slashItems.filter(i => i.source === "builtin").map(i => `/${i.name} – ${i.description}`);
+      showNotice("Befehle: " + (lines.join(" · ") || "gleich verfügbar") + ". Eigene Befehle und Skills erscheinen, sobald du / tippst.");
+      return done();
+    }
+  }
+  const known = slashItems.find(i => i.name.toLowerCase() === name);
+  if (!known && !slashItems.length) { send({ type: "commands" }); showNotice("Befehle werden geladen … bitte gleich noch einmal."); return false; }
+  if (!known) { showNotice(`Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.`); return false; }
+  addUser("/" + name + (args ? " " + args : ""));
+  startJarvis();
+  send({ type: "run_command", name: known.name, args });
+  return done();
+}
+
+// ---------- Große Einstellungen ----------
+const PANES = { general: "Allgemein", voice: "Sprache und Audio", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
+let extState = null;
+function showSettingsPane(name) {
+  document.querySelectorAll(".set-nav-item").forEach(b => b.classList.toggle("active", b.dataset.pane === name));
+  document.querySelectorAll(".set-pane").forEach(p => { p.hidden = p.dataset.pane !== name; });
+  $("#setTitle").textContent = PANES[name] || "";
+  if (name === "usage") requestUsage();
+  if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
+}
+document.querySelectorAll(".set-nav-item").forEach(b => { b.onclick = () => showSettingsPane(b.dataset.pane); });
+$("#closeSettings").onclick = () => $("#settingsDialog").close();
+const STATUS_LABEL = { connected: "verbunden", disabled: "aus", failed: "Fehler", needs_auth: "Anmeldung nötig", "?": "…", unbekannt: "startet …" };
+function extRow(title, sub, { chip, chipClass, toggle, onToggle, onRemove } = {}) {
+  const li = document.createElement("li"); li.className = "ext-row-item";
+  const text = document.createElement("div"); text.className = "ext-text";
+  const t = document.createElement("b"); t.textContent = title; text.append(t);
+  if (sub) { const p = document.createElement("p"); p.textContent = sub; text.append(p); }
+  li.append(text);
+  if (chip) { const c = document.createElement("span"); c.className = "ext-chip " + (chipClass || ""); c.textContent = chip; li.append(c); }
+  if (onToggle) { const b = document.createElement("button"); b.type = "button"; b.className = "toggle-lg small"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(!!toggle)); b.onclick = () => onToggle(!toggle); li.append(b); }
+  if (onRemove) { const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn ext-remove"; b.title = "Entfernen"; b.setAttribute("aria-label", "Entfernen"); b.innerHTML = icon("trash"); b.onclick = onRemove; li.append(b); }
+  return li;
+}
+const emptyRow = text => { const li = document.createElement("li"); li.className = "ext-empty"; li.textContent = text; return li; };
+function renderExtensions(m) {
+  extState = m;
+  $("#extMcp").replaceChildren(...m.mcp.map(s => extRow(s.name, `${s.type === "remote" ? "Remote" : "Lokal"} · ${s.detail}${s.error ? " · " + s.error : ""}`, {
+    chip: s.builtin ? "eingebaut" : (STATUS_LABEL[s.status] || s.status), chipClass: s.status === "connected" ? "ok" : s.status === "failed" ? "bad" : "",
+    toggle: s.enabled, onToggle: s.builtin ? undefined : on => send({ type: "ext_mcp", op: "toggle", name: s.name, enabled: on }),
+    onRemove: s.builtin ? undefined : () => send({ type: "ext_mcp", op: "remove", name: s.name }) })));
+  renderSkills();
+  $("#extCommands").replaceChildren(...(m.commands.length ? m.commands.map(c => extRow("/" + c.name, c.description || "", { chip: c.source === "manual" ? "eigener" : c.source,
+    onRemove: () => send({ type: "ext_command", op: "remove", name: c.name }) })) : [emptyRow("Noch keine eigenen Befehle. Unten anlegen oder im Import übernehmen.")]));
+  $("#extPlugins").replaceChildren(...(m.plugins.length ? m.plugins.map(p => extRow(p, "", { onRemove: () => send({ type: "ext_plugin", op: "remove", name: p }) })) : [emptyRow("Keine Plugins eingetragen.")]));
+}
+function renderSkills() {
+  if (!extState) return;
+  const q = $("#skillSearch").value.trim().toLowerCase();
+  const list = extState.skills.filter(s => !q || s.name.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q)).sort((x, y) => x.source.localeCompare(y.source) || x.name.localeCompare(y.name));
+  $("#extSkills").replaceChildren(...(list.length ? list.map(s => extRow(s.name, s.description, { chip: s.source, toggle: !s.disabled,
+    onToggle: on => send({ type: "ext_skill", name: s.name, enabled: on }) })) : [emptyRow("Keine Skills gefunden.")]));
+}
+$("#skillSearch").oninput = renderSkills;
+$("#mcpForm").onsubmit = e => {
+  e.preventDefault();
+  const name = $("#mcpName").value.trim(), target = $("#mcpTarget").value.trim();
+  if (!name || !target) return showNotice("Name und Befehl oder URL angeben.");
+  send({ type: "ext_mcp", op: "add", name, entry: /^https?:\/\//.test(target) ? { url: target } : { command: target } });
+  $("#mcpName").value = ""; $("#mcpTarget").value = "";
+};
+$("#commandForm").onsubmit = e => {
+  e.preventDefault();
+  const name = $("#cmdName").value.trim().replace(/^\//, ""), template = $("#cmdTemplate").value.trim();
+  if (!name || !template) return showNotice("Name und Anweisung angeben.");
+  send({ type: "ext_command", op: "add", name, description: $("#cmdDesc").value.trim(), template });
+  $("#cmdName").value = ""; $("#cmdDesc").value = ""; $("#cmdTemplate").value = "";
+};
+$("#pluginForm").onsubmit = e => {
+  e.preventDefault();
+  const name = $("#pluginName").value.trim(); if (!name) return;
+  send({ type: "ext_plugin", op: "add", name }); $("#pluginName").value = "";
+};
+// Import
+let importFrom = null, importItems = [];
+document.querySelectorAll("[data-import]").forEach(b => { b.onclick = () => { importFrom = b.dataset.import; $("#importCount").textContent = "Suche …"; $("#importResult").hidden = false; $("#importList").replaceChildren(); send({ type: "ext_scan", from: importFrom }); }; });
+const KIND_LABEL = { mcp: "MCP", skill: "Skill", command: "Befehl", plugin: "Plugin" };
+function renderImport(m) {
+  importItems = m.items || [];
+  const fresh = importItems.filter(i => i.status === "neu").length;
+  $("#importCount").textContent = importItems.length ? `${importItems.length} gefunden, ${fresh} neu` : "Nichts gefunden.";
+  $("#importList").replaceChildren(...importItems.map(it => {
+    const li = extRow(it.name, it.detail, { chip: KIND_LABEL[it.kind] + (it.status === "vorhanden" ? " · schon da" : "") });
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.className = "import-check"; cb.dataset.id = it.id; cb.checked = it.status === "neu" && (it.kind === "command" || it.kind === "plugin");   // MCP-Server starten fremde Programme: bewusst selbst wählen
+    li.prepend(cb); return li;
+  }));
+}
+$("#importAll").onclick = () => document.querySelectorAll(".import-check").forEach(cb => { cb.checked = importItems.find(i => i.id === cb.dataset.id)?.status === "neu"; });
+$("#importGo").onclick = () => {
+  const ids = [...document.querySelectorAll(".import-check:checked")].map(cb => cb.dataset.id);
+  if (!ids.length) return showNotice("Nichts ausgewählt.");
+  send({ type: "ext_import", from: importFrom, ids }); showNotice("Importiere … Jarvis lädt die Erweiterungen neu.");
+  $("#importResult").hidden = true;
+};
+$("#openSettings").addEventListener("click", () => showSettingsPane("general"));
