@@ -71,18 +71,18 @@
         <p class="disclaimer">Jarvis kann Fehler machen. Läuft mit <span id="footModel"></span>.</p>
       </footer>
     </main>
+    <!-- Tab-Vorschau: Seitenleiste rechts (wie der Browser in Claude), Breite per Griff am linken Rand ziehbar -->
+    <aside class="viewer" id="viewer" hidden aria-label="Tab-Vorschau">
+      <div class="viewer-grip" id="viewerGrip" role="separator" aria-orientation="vertical" aria-label="Breite ändern"></div>
+      <header class="viewer-head" id="viewerHead">
+        <span class="viewer-dot"></span>
+        <span class="viewer-title" id="viewerTitle">Tab</span>
+        <span class="viewer-host" id="viewerHost"></span>
+        <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
+      </header>
+      <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
+    </aside>
   </div>
-
-  <!-- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet -->
-  <aside class="viewer" id="viewer" hidden aria-label="Live-Ansicht">
-    <header class="viewer-head" id="viewerHead">
-      <span class="viewer-dot"></span>
-      <span class="viewer-title" id="viewerTitle">Tab</span>
-      <span class="viewer-host" id="viewerHost"></span>
-      <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Live-Ansicht schließen"></button>
-    </header>
-    <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
-  </aside>
 
   <!-- Sprachmodus (Gemini-Live-Stil) -->
   <div class="live" id="live" hidden>

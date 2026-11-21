@@ -62,7 +62,7 @@ server.tool("browser_tab_adopt", "Übernimmt einen bereits offenen Tab des Nutze
   { tab }, async a => result(await call("browser", { cmd: "tab_adopt", ...a })));
 server.tool("browser_tab_release", "Gibt einen übernommenen Tab wieder frei (aus der Gruppe Jarvis nehmen).", { tab },
   async a => result(await call("browser", { cmd: "tab_release", ...a })));
-server.tool("browser_tab_close", "Schließt einen Jarvis-Tab.", { tab }, async a => result(await call("browser", { cmd: "tab_close", ...a })));
+server.tool("browser_tab_close", "Schließt einen Tab der Gruppe Jarvis (Tab-ID aus browser_tab_list). Mach das, wenn du mit einem Tab fertig bist oder der Nutzer darum bittet.", { tab }, async a => result(await call("browser", { cmd: "tab_close", ...a })));
 server.tool("browser_navigate", "Lädt eine URL im Tab.", { tab, url: z.string() },
   async a => result(await call("browser", { cmd: "navigate", ...a })));
 server.tool("browser_back", "Zurück im Tab.", { tab }, async a => result(await call("browser", { cmd: "back", ...a })));

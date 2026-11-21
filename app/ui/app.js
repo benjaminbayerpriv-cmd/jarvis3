@@ -63,7 +63,7 @@ function handle(m) {
     case "notice": showNotice(m.text); break;
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
-    case "stream_ended": hideViewer(); break;
+    case "stream_ended": viewer.dataset.idle = "1"; break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -668,33 +668,27 @@ $("#exNew").onclick = () => {
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
 let viewerTimer;
-let viewTab, viewRatio = 0;
 function showFrame(m) {
   if (state.liveView === false) return;
-  // Seitenverhältnis des Tabs übernehmen; kleine Schwankungen (z. B. Chromes Hinweisleiste) ignorieren
-  if (m.w > 0 && m.h > 0) {
-    const ratio = m.w / m.h;
-    if (m.tab !== viewTab || Math.abs(ratio - viewRatio) / viewRatio > 0.10) {
-      viewTab = m.tab; viewRatio = ratio;
-      viewer.style.setProperty("--ar", `${m.w} / ${m.h}`);
-    }
-  }
   $("#viewerImg").src = "data:image/jpeg;base64," + m.data;
   $("#viewerTitle").textContent = m.title || "Tab";
   try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
-  if (viewer.hidden) { viewer.classList.remove("leaving"); viewer.hidden = false; }
+  viewer.hidden = false; delete viewer.dataset.idle;
   clearTimeout(viewerTimer);
-  viewerTimer = setTimeout(hideViewer, 6000); // keine Bilder mehr -> Ansicht ausblenden
+  viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
 }
-function hideViewer() {
-  clearTimeout(viewerTimer);
-  if (viewer.hidden) return;
-  viewer.classList.add("leaving");
-  setTimeout(() => { if (viewer.classList.contains("leaving")) { viewer.hidden = true; viewer.classList.remove("leaving"); } }, 200);
-}
-$("#viewerHead").onclick = e => { if (!e.target.closest("#viewerClose")) viewer.classList.toggle("big"); };
+function hideViewer() { clearTimeout(viewerTimer); viewer.hidden = true; }
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
 $("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView === false });
+// Breite per Griff ziehen (wird gemerkt)
+try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) viewer.style.setProperty("--viewer-w", w + "px"); } catch {}
+$("#viewerGrip").addEventListener("pointerdown", e => {
+  const grip = e.currentTarget; grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); viewer.style.animation = "none";
+  const move = ev => { const w = Math.round(Math.min(innerWidth - 420, Math.max(360, innerWidth - ev.clientX))); viewer.style.setProperty("--viewer-w", w + "px"); viewer.dataset.w = w; };
+  const up = () => { grip.classList.remove("drag"); grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
+    try { if (viewer.dataset.w) localStorage.setItem("jarvis.viewerW", viewer.dataset.w); } catch {} };
+  grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+});
 
 // ---------- Modus „Computer übernehmen“ ----------
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
