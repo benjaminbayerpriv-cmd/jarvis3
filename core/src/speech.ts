@@ -44,6 +44,7 @@ export class Speech {
     this.sayTimes.set(id, Date.now());
     if (this.said.size > 60) this.said.delete(this.said.keys().next().value as number);
     this.send({ type: "say", id, text });
+    return id;
   }
   stopSpeaking() { this.send({ type: "stop_speaking" }); }
 }

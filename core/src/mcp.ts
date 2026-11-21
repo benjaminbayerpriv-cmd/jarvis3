@@ -43,7 +43,7 @@ type Mon = { index: number; name: string; rect: [number, number, number, number]
 const monitors = async (): Promise<Mon[]> => { const r: any = await call("desktop", { cmd: "displays" }).catch(() => ({})); return Array.isArray(r?.displays) ? r.displays : []; };
 server.tool("desktop_displays", "Listet alle angeschlossenen Monitore (Nummer, Name, Größe, Lage). Nötig, wenn etwas auf einem anderen Monitor als dem Hauptbildschirm liegt.",
   {}, async () => result(await call("desktop", { cmd: "displays" })));
-const windowId = z.number().int().describe("Fenster-ID aus desktop_windows");
+const windowId = z.number().int().min(1).max(0xffffffff).describe("Fenster-ID aus desktop_windows");
 server.tool("desktop_windows", "Listet die offenen Programmfenster (ID, Programm, Titel, Monitor, sichtbar oder verdeckt). Für Arbeit in einem Programm IMMER zuerst hier das Fenster holen und dann mit window=ID scannen und bedienen: das Fenster muss dafür nicht vorne sein, die Maus des Nutzers bleibt, wo sie ist.",
   {}, async () => {
     const r: any = await call("desktop", { cmd: "windows" });
@@ -53,14 +53,14 @@ server.tool("desktop_windows", "Listet die offenen Programmfenster (ID, Programm
   });
 server.tool("desktop_scan", "Listet Bedienelemente UND sichtbaren Text als nummerierte Textliste (Text-Einträge: Rolle StaticText/Heading/OCRText). Mit window=ID nur dieses Fenster (auch verdeckt, bevorzugt). Ohne Angabe: ganzer Monitor (display=N, Standard Hauptbildschirm). Text steht schon in der Liste – kein Screenshot nötig, um ihn zu lesen.",
   { window: windowId.optional(), display: display.optional() }, async a => {
-    const r: any = await call("desktop", { cmd: "scan", text: true, ...(a.window !== undefined ? { window: a.window } : a.display !== undefined ? { display: a.display } : {}) });
+    const r: any = await call("desktop", { cmd: "scan", text: true, ...(a.window !== undefined ? { window: a.window } : { display: a.display ?? 0 }) });
     if (a.window !== undefined) return result({ ...r, targets: undefined });
     const others = (await monitors()).filter(m => m.index !== (a.display ?? 0));
     if (others.length && typeof r?.text === "string")
       r.text += `\n\nWeitere Monitore: ${others.map(m => `${m.index} „${m.name}“ ${m.rect[2]}×${m.rect[3]}`).join("; ")} – mit display=N scannen.`;
     return result({ ...r, targets: undefined });
   });
-server.tool("desktop_click", "Klickt ein Element per ID.", { id }, async a => result(await call("desktop", { cmd: "click", ...a })));
+server.tool("desktop_click", "Klickt ein Element aus dem letzten Scan. Bei Ortsangaben wie unten links die Position im Fenster prüfen. Bei mehreren Kandidaten zuerst desktop_look mit marks=true. Ein erfolgreicher Aufruf bestätigt nur die Übergabe, beobachte die Reaktion danach.", { id }, async a => result(await call("desktop", { cmd: "click", ...a })));
 server.tool("desktop_type", "Schreibt Text in ein Feld per ID.", { id, text: z.string() },
   async a => result(await call("desktop", { cmd: "type", ...a })));
 server.tool("desktop_scroll", "Scrollt an einem Element (dy Zeilen, positiv = runter).", { id, dy: z.number().int() },
