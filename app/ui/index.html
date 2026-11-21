@@ -146,6 +146,8 @@
       <header class="sheet-head"><h2>Einstellungen</h2><button class="icon-btn" value="close" data-icon="x" aria-label="Schließen"></button></header>
       <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: Strg+Alt+Shift+Esc</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
       <div class="setting"><div><b>Mikrofon</b><p>Eingabegerät für die Spracherkennung. Pegel siehst du im Live-Modus.</p></div><select id="setMic"></select></div>
+      <div class="setting"><div><b>Spracherkennung</b><p>Automatisch erkennt Deutsch und Englisch pro Satz (ca. 1 s). Deutsch/Englisch erzwingt eine Sprache (ca. 0,7 s). Schnell ist am flottesten (0,1 s), verwechselt die Sprachen aber öfter.</p></div>
+        <select id="setStt"><option value="auto">Automatisch (Deutsch + Englisch)</option><option value="de">Nur Deutsch</option><option value="en">Nur Englisch</option><option value="fast">Schnell (Parakeet)</option></select></div>
       <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
     </form>
   </dialog>

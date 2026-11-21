@@ -91,6 +91,7 @@ function renderState() {
   pill.classList.toggle("stale", !!state.extStale);
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
+  if (state.sttMode) $("#setStt").value = state.sttMode;
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
   if (state.liveView === false) hideViewer();
   $("#stop").hidden = !state.busy;
@@ -934,6 +935,7 @@ function fillVoiceModels() {
   }
   sel.value = want;
 }
+$("#setStt").onchange = e => send({ type: "settings", settings: { sttMode: e.target.value } });
 $("#setVoiceModel").onchange = e => send({ type: "settings", settings: { voiceModel: e.target.value } });
 
 // Audiogeräte: Der Sidecar meldet sie im "ready"-Event, der Daemon cached sie im State.
