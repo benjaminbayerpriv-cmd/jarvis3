@@ -442,3 +442,9 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .app[data-rail="open"] #railToggle { transform: translateX(208px); }
 #railToggle svg { transition: opacity var(--d-s3) linear; }
 
+
+/* ---------- Modell-Chip: bei offener Leiste in deren freien Platz links vom Umschalter ---------- */
+.app[data-rail="open"] .model-chip { position: fixed; z-index: 3; left: 12px; top: calc(var(--inset-top) + 12px); width: 196px; padding: 0 8px; gap: 6px; }
+.app[data-rail="open"] .model-chip .brand { font-size: 18px; flex: none; }
+.app[data-rail="open"] .model-chip .model-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; }
+.app[data-rail="open"] .model-chip .chev { display: none; }
