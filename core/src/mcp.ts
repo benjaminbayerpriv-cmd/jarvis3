@@ -38,8 +38,19 @@ const rect = z.array(z.number()).length(4).describe("[x, y, breite, höhe]");
 const tab = z.number().int().describe("Tab-ID aus tab_open/tab_list");
 
 // ---------- Desktop ----------
-server.tool("desktop_scan", "Listet sichtbare Bedienelemente des Bildschirms als nummerierte Textliste. Immer zuerst benutzen.",
-  {}, async () => result({ ...(await call("desktop", { cmd: "scan", text: true })), targets: undefined }));
+const display = z.number().int().min(0).describe("Monitor-Nummer aus desktop_displays (0 = Hauptbildschirm)");
+type Mon = { index: number; name: string; rect: [number, number, number, number] };
+const monitors = async (): Promise<Mon[]> => { const r: any = await call("desktop", { cmd: "displays" }).catch(() => ({})); return Array.isArray(r?.displays) ? r.displays : []; };
+server.tool("desktop_displays", "Listet alle angeschlossenen Monitore (Nummer, Name, Größe, Lage). Nötig, wenn etwas auf einem anderen Monitor als dem Hauptbildschirm liegt.",
+  {}, async () => result(await call("desktop", { cmd: "displays" })));
+server.tool("desktop_scan", "Listet sichtbare Bedienelemente eines Monitors als nummerierte Textliste. Immer zuerst benutzen. Ohne display wird der Hauptbildschirm gescannt; weitere Monitore stehen am Ende der Antwort, dann mit display=N erneut scannen.",
+  { display: display.optional() }, async a => {
+    const r: any = await call("desktop", { cmd: "scan", text: true, ...(a.display !== undefined ? { display: a.display } : {}) });
+    const others = (await monitors()).filter(m => m.index !== (a.display ?? 0));
+    if (others.length && typeof r?.text === "string")
+      r.text += `\n\nWeitere Monitore: ${others.map(m => `${m.index} „${m.name}“ ${m.rect[2]}×${m.rect[3]}`).join("; ")} – mit display=N scannen.`;
+    return result({ ...r, targets: undefined });
+  });
 server.tool("desktop_click", "Klickt ein Element per ID.", { id }, async a => result(await call("desktop", { cmd: "click", ...a })));
 server.tool("desktop_type", "Schreibt Text in ein Feld per ID.", { id, text: z.string() },
   async a => result(await call("desktop", { cmd: "type", ...a })));
@@ -47,8 +58,15 @@ server.tool("desktop_scroll", "Scrollt an einem Element (dy Zeilen, positiv = ru
   async a => result(await call("desktop", { cmd: "scroll", ...a })));
 server.tool("desktop_read", "Liest Text eines Elements (id) oder eines Bildschirmbereichs (rect, per OCR).",
   { id: id.optional(), rect: rect.optional() }, async a => result(await call("desktop", { cmd: "read", ...a })));
-server.tool("desktop_look", "Screenshot NUR wenn scan/read nicht reichen (Spiele, Grafiken, unklare Lage). marks=true zeichnet die IDs ein.",
-  { rect: rect.optional(), marks: z.boolean().optional() }, async a => image(await call("desktop", { cmd: "shot", ...a })));
+server.tool("desktop_look", "Screenshot NUR wenn scan/read nicht reichen (Spiele, Grafiken, unklare Lage). marks=true zeichnet die IDs ein. display wählt den Monitor (ohne Angabe: Hauptbildschirm bzw. der zuletzt gescannte).",
+  { rect: rect.optional(), marks: z.boolean().optional(), display: display.optional() }, async ({ display: d, ...a }) => {
+    if (d !== undefined && !a.rect) { // Monitor-Fläche als Bereich aufnehmen (gilt über alle Monitore)
+      const m = (await monitors()).find(x => x.index === d);
+      if (!m) return result({ ok: false, error: `Monitor ${d} gibt es nicht (desktop_displays zeigt die vorhandenen)` });
+      a.rect = m.rect;
+    }
+    return image(await call("desktop", { cmd: "shot", ...a }));
+  });
 server.tool("desktop_key", "Drückt eine Tastenkombination, z. B. 'cmd+t', 'return', 'escape'.", { combo: z.string() },
   async a => result(await call("desktop", { cmd: "key", ...a })));
 server.tool("desktop_open_app", "Öffnet ein Programm per Name.", { name: z.string() },

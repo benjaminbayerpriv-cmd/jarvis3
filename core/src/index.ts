@@ -22,7 +22,7 @@ const CHAT_FOLDERS = join(HOME, "chat-folders.json");
 const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
-interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean; micDevice: number | null }
+interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean; micDevice: number | null; micName?: string | null }
 const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true, micDevice: null };
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
 if (settings.micDevice !== null && !Number.isInteger(settings.micDevice)) settings.micDevice = null; // alte/ungültige Werte
@@ -102,7 +102,10 @@ const holds = new Set<ReturnType<typeof setTimeout>>(); // zurückgehaltene Sät
 const clearHolds = () => { for (const t of holds) clearTimeout(t); holds.clear(); };
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
+let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined;
+const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
+  if (e.type === "level") micPeak = Math.max(micPeak, Number(e.mic) || 0);
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
@@ -111,6 +114,21 @@ const speech = new Speech(e => {
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
   if (e.type === "ready") {
     audioDevices = e.devices as AudioDevices;
+    // Geräte-IDs verschieben sich, wenn Geräte (AirPods, virtuelle Mikrofone …) kommen und gehen. Darum wird zusätzlich der Name
+    // gemerkt und die ID beim Start danach neu bestimmt; fehlt das Gerät, gilt der Systemstandard.
+    if (settings.micName && settings.micDevice !== null) {
+      const byName = audioDevices.input.find(d => d.name === settings.micName);
+      if (byName && byName.id !== settings.micDevice) {
+        vlog(`Mikrofon "${settings.micName}": ID ${settings.micDevice} -> ${byName.id}`);
+        settings.micDevice = byName.id; save(); speech.send({ type: "config", input: byName.id });
+      } else if (!byName) {
+        vlog(`Mikrofon "${settings.micName}" nicht gefunden -> Systemstandard`);
+        settings.micDevice = null; settings.micName = null; save(); speech.send({ type: "config", input: null });
+        broadcast({ type: "notice", text: "Das gewählte Mikrofon ist nicht mehr da – Systemstandard aktiv." });
+      }
+    } else if (settings.micDevice !== null && !settings.micName) {
+      settings.micName = audioDevices.input.find(d => d.id === settings.micDevice)?.name ?? null; save(); // alte Einstellung nachrüsten
+    }
     if (settings.micDevice !== null && !audioDevices.input.some(d => d.id === settings.micDevice)) {
       vlog(`Mikrofon-ID ${settings.micDevice} nicht mehr vorhanden -> Systemstandard`);
       settings.micDevice = null; save(); speech.send({ type: "config", input: null });
@@ -167,6 +185,11 @@ function worthAnswering(text: string) {
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
   voice = mode;
+  clearTimeout(micWatch); micPeak = 0;
+  if (mode === "live" || mode === "dictate") micWatch = setTimeout(() => {
+    if (voice === "live" || voice === "dictate") if (micPeak < 0.004)
+      broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
+  }, 7000);
   if (mode === "off") voiceOwner = undefined;
   speech.mode(mode);
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
@@ -640,7 +663,7 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
     return r;
   }
-  if (settings.mode !== "computer" && !["scan", "read", "shot"].includes(cmd.cmd))
+  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
@@ -720,10 +743,11 @@ async function route(req: Request, srv: any) {
     if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
     if (u.pathname === "/browser" || u.pathname === "/ui")
       return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
-    if (u.pathname === "/" || u.pathname.startsWith("/app")) { // Oberfläche zum Testen im Browser
+    // "/app" ohne Schrägstrich würde die relativen Pfade (styles.css, app.js) auf "/styles.css" auflösen: ungestylte Seite. Darum umleiten.
+    if (u.pathname === "/" || u.pathname === "/app") return Response.redirect(new URL("/app/", u), 302);
+    if (u.pathname.startsWith("/app/")) { // Oberfläche zum Testen im Browser
       const rel = u.pathname.replace(/^\/app\/?/, "").replace(/^\/$/, "") || "index.html";
       const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
-      if (u.pathname === "/") return Response.redirect("/app/", 302);
       return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
     }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
@@ -775,7 +799,10 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "stop") await stop();
       else if (msg.type === "settings") {
         settings = { ...settings, ...msg.settings };
-        if ("micDevice" in msg.settings) settings.micDevice = Number.isInteger(settings.micDevice) ? settings.micDevice : null;
+        if ("micDevice" in msg.settings) {
+          settings.micDevice = Number.isInteger(settings.micDevice) ? settings.micDevice : null;
+          settings.micName = settings.micDevice === null ? null : audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? null;
+        }
         save();
         if ("lofi" in msg.settings || "micDevice" in msg.settings)
           speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice });
