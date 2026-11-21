@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jarvis</title>
-  <link rel="icon" href="icons/jarvis.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <script>if (window.__TAURI__) document.documentElement.classList.add("tauri");</script>
   <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="styles.css">
@@ -14,10 +16,12 @@
     <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
     <nav class="rail" aria-label="Navigation">
       <div class="rail-top" data-tauri-drag-region>
-        <button class="rail-item" id="railToggle" aria-label="Menü"><span data-icon="menu-2"></span></button>
+        <button class="rail-item" id="railToggle" aria-label="Seitenleiste öffnen" aria-expanded="false"><span data-icon="layout-sidebar-left-expand"></span></button>
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
-      <div class="rail-section rail-label">Zuletzt</div>
+      <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
+      <button class="rail-item folder-add" id="newFolder"><span data-icon="folder-plus"></span><span class="rail-label">Neues Projekt</span></button>
+      <button class="rail-item" id="openProjects"><span data-icon="folder-open"></span><span class="rail-label">Projekte</span></button>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
       <button class="rail-item" id="openSettings"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
@@ -51,7 +55,13 @@
           <button class="stop-btn" id="emergencyStop"><span data-icon="hand-stop"></span>Stopp <kbd>⌘⇧⎋</kbd></button>
         </div>
         <p class="attach-note" id="attachNote" role="status" hidden></p>
-        <form class="composer" id="composer" autocomplete="off">
+        <form class="composer" id="composer" autocomplete="off" data-voice="off">
+          <!-- Sprach-Bereich: klappt beim Sprechen nach oben auf (erkannter Text + Wellen) -->
+          <div class="voice" id="voice" aria-hidden="true">
+            <div class="voice-inner">
+              <canvas class="voice-waves" id="voiceWaves" aria-hidden="true"></canvas>
+            </div>
+          </div>
           <div class="chips" id="chips" hidden></div>
           <input type="file" id="fileInput" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.html,.css,.js,.ts,.py,.log,.sql,.sh,text/*">
           <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Fotos und Dateien hinzufügen" title="Fotos und Dateien hinzufügen"></button>
@@ -66,18 +76,22 @@
         <p class="disclaimer">Jarvis kann Fehler machen. Läuft mit <span id="footModel"></span>.</p>
       </footer>
     </main>
+    <!-- Tab-Vorschau: Seitenleiste rechts (wie der Browser in Claude), Breite per Griff am linken Rand ziehbar -->
+    <aside class="viewer" id="viewer" hidden aria-label="Tab-Vorschau">
+      <div class="viewer-grip" id="viewerGrip" role="separator" aria-orientation="vertical" aria-label="Breite ändern"></div>
+      <header class="viewer-head" id="viewerHead">
+        <span class="viewer-dot"></span>
+        <span class="viewer-title" id="viewerTitle">Tab</span>
+        <span class="viewer-host" id="viewerHost"></span>
+        <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
+      </header>
+        <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Tabs der Jarvis-Gruppe"></div>
+      <div class="viewer-frame">
+        <canvas id="viewerCanvas" aria-label="Live-Bild des Tabs"></canvas>
+        <div class="viewer-empty" id="viewerEmpty"></div>
+      </div>
+    </aside>
   </div>
-
-  <!-- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet -->
-  <aside class="viewer" id="viewer" hidden aria-label="Live-Ansicht">
-    <header class="viewer-head" id="viewerHead">
-      <span class="viewer-dot"></span>
-      <span class="viewer-title" id="viewerTitle">Tab</span>
-      <span class="viewer-host" id="viewerHost"></span>
-      <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Live-Ansicht schließen"></button>
-    </header>
-    <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
-  </aside>
 
   <!-- Sprachmodus (Gemini-Live-Stil) -->
   <div class="live" id="live" hidden>
@@ -88,6 +102,7 @@
     <div class="live-glow" id="liveGlow"><div class="nl" aria-hidden="true"><div class="nl-layer nl-bg"><div class="nl-blob"><div class="nl-strip"></div></div></div><div class="nl-layer nl-fg"><div class="nl-blob"><div class="nl-strip"></div></div></div></div></div>
     <div class="live-controls">
       <button class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
+      <button class="round-btn" id="liveView" aria-label="Tab-Vorschau" aria-pressed="false" title="Tab-Vorschau"><span data-icon="eye"></span></button>
       <button class="round-btn" id="liveInterrupt" aria-label="Unterbrechen"><span data-icon="player-pause-filled"></span></button>
       <button class="round-btn end" id="liveEnd" aria-label="Beenden"><span data-icon="x"></span></button>
     </div>
@@ -102,6 +117,29 @@
     </form>
   </dialog>
 
+  <!-- Projekte: Datei-Explorer (Projekte = Ordner, Chats = Dateien) -->
+  <dialog class="sheet explorer" id="projectsDialog">
+    <div class="ex">
+      <header class="ex-head">
+        <h2>Projekte</h2>
+        <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
+        <div class="ex-tools">
+          <button type="button" class="chip-btn" id="exNew"><span data-icon="folder-plus"></span>Neues Projekt</button>
+          <button type="button" class="chip-btn" id="analyzeProjects"><span data-icon="refresh"></span>Automatisch zuordnen</button>
+          <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+        </div>
+      </header>
+      <div class="ex-body">
+        <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
+        <section class="ex-main">
+          <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
+          <ul class="ex-list" id="exList"></ul>
+        </section>
+      </div>
+      <footer class="ex-foot" id="exStatus"></footer>
+    </div>
+  </dialog>
+
   <!-- Einstellungen -->
   <dialog class="sheet" id="settingsDialog">
     <form method="dialog" class="sheet-inner">
@@ -109,7 +147,16 @@
       <div class="setting"><div><b>Computer übernehmen</b><p>Jarvis darf außerhalb von Chrome klicken und tippen. Not-Aus: Strg+Alt+Shift+Esc</p></div><button type="button" class="toggle-lg" id="setComputer" role="switch"></button></div>
       <div class="setting"><div><b>Mikrofon</b><p>Eingabegerät für die Spracherkennung. Pegel siehst du im Live-Modus.</p></div><select id="setMic"></select></div>
       <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
-      <div class="setting"><div><b>Lofi-Stimme</b><p>Bitcrush-Filter auf der Sprachausgabe</p></div><button type="button" class="toggle-lg" id="setLofi" role="switch"></button></div>
+    </form>
+  </dialog>
+
+  <dialog class="sheet" id="chatActionDialog">
+    <form method="dialog" class="sheet-inner" id="chatActionForm">
+      <header class="sheet-head"><h2 id="chatActionTitle">Projekt erstellen</h2><button class="icon-btn" value="cancel" data-icon="x" aria-label="Schließen"></button></header>
+      <p id="chatActionDesc" class="chat-action-desc"></p>
+      <label class="search" id="chatActionField"><span data-icon="edit"></span><input id="chatActionValue" autocomplete="off"></label>
+      <datalist id="chatFolderOptions"></datalist>
+      <div class="chat-action-buttons"><button class="text-btn" value="cancel">Abbrechen</button><button class="text-btn primary-action" value="apply">Übernehmen</button></div>
     </form>
   </dialog>
 

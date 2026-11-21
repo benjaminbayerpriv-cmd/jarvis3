@@ -4,6 +4,7 @@ import { recordError } from "./errorlog";
 
 export type ModelGroup = "free" | "lmstudio" | "nvidia" | "other";
 export interface ModelInfo { id: string; provider: string; model: string; group: ModelGroup; vision: boolean }
+export type PromptImage = { mime: string; url: string; filename?: string };
 
 export function parseModels(stdout: string): ModelInfo[] {
   return stdout.split("\n").map(l => l.trim()).filter(l => /^[\w.-]+\/\S+$/.test(l)).map(id => {
@@ -60,14 +61,30 @@ export class OpenCode {
     return (await r.json()).id;
   }
 
+  /** Eine Frage ohne Nutzer-Sichtbarkeit beantworten (z. B. Projektzuordnung). Liefert nur den Text. */
+  async ask(text: string, model: string, system: string, timeoutMs = 25_000): Promise<string> {
+    const sid = await this.createSession("Test"); // "Test" bleibt im Verlauf verborgen
+    let out = "";
+    return new Promise<string>(resolve => {
+      let finished = false;
+      const finish = () => { if (finished) return; finished = true; clearTimeout(timer); resolve(out); };
+      const timer = setTimeout(() => { void this.abort(sid, false); finish(); }, timeoutMs);
+      void this.prompt(sid, text, model, system, e => {
+        if (e.kind === "text") out += e.delta;
+        else if (e.kind === "done" || e.kind === "error") finish();
+      }).catch(finish);
+    });
+  }
+
   /** Startet einen Prompt; Ereignisse kommen über onEvent, bis "done". */
   async prompt(session: string, text: string, model: string, system: string, onEvent: (e: BrainEvent) => void,
-               images: { mime: string; url: string }[] = []) {
+               images: PromptImage[] = [], attachmentText = "") {
     const [providerID, ...rest] = model.split("/");
     this.listeners.set(session, onEvent);
     this.started.delete(session); // ein spätes "idle" des vorherigen (abgebrochenen) Laufs darf diesen nicht beenden
     const parts: unknown[] = [{ type: "text", text }];
-    for (const img of images) parts.push({ type: "file", mime: img.mime, url: img.url });
+    if (attachmentText) parts.push({ type: "text", text: attachmentText });
+    for (const img of images) parts.push({ type: "file", mime: img.mime, url: img.url, filename: img.filename });
     const r = await fetch(`${this.url}/session/${session}/prompt_async`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: { providerID, modelID: rest.join("/") }, system, parts }),

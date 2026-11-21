@@ -3,6 +3,8 @@
 // alles andere (und alles, was nicht lesbar war) liegt als Datei in workspace/uploads, das Modell bekommt den Pfad.
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import type { PromptImage } from "./opencode";
 
 export interface Attachment { name: string; mime: string; data: string } // data = Base64 (ohne data:-Präfix)
 
@@ -12,7 +14,7 @@ const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|xml|yaml|yml|toml|ini|lo
 
 export interface Prepared {
   text: string;                                   // Zusatz für die Nachricht ans Modell
-  images: { mime: string; url: string }[];        // Bildteile (data:-URLs)
+  images: PromptImage[];                          // Bildteile (data:-URLs)
   imageNames: string[];
   notes: string[];                                // Hinweise für den Nutzer
   problems: { name: string; message: string; context?: Record<string, unknown> }[]; // für das Fehler-Log
@@ -26,8 +28,12 @@ export function validate(atts: Attachment[]): string | undefined {
   if (atts.length > LIMITS.files) return `Höchstens ${LIMITS.files} Anhänge pro Nachricht.`;
   let total = 0;
   for (const a of atts) {
-    if (typeof a?.data !== "string" || typeof a?.name !== "string") return "Ungültiger Anhang.";
-    const size = Math.floor(a.data.length * 3 / 4);
+    if (typeof a?.data !== "string" || typeof a?.name !== "string" || typeof a?.mime !== "string"
+      || !a.data.length || a.data.length % 4 !== 0 || /[^A-Za-z0-9+/]/.test(a.data.replace(/={1,2}$/, "")))
+      return "Ungültiger Anhang.";
+    const padding = a.data.endsWith("==") ? 2 : a.data.endsWith("=") ? 1 : 0;
+    const size = a.data.length * 3 / 4 - padding;
+    if (size <= 0) return "Ungültiger Anhang.";
     if (size > LIMITS.fileBytes) return `„${a.name}“ ist größer als ${LIMITS.fileBytes / 1024 / 1024} MB.`;
     total += size;
   }
@@ -47,7 +53,7 @@ async function pdfText(path: string): Promise<string | undefined> {
 export async function prepare(atts: Attachment[], dir: string, canSeeImages: boolean): Promise<Prepared> {
   const out: Prepared = { text: "", images: [], imageNames: [], notes: [], problems: [] };
   mkdirSync(dir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const stamp = randomUUID();
   const blocks: string[] = [];
   for (const [i, a] of atts.entries()) {
     const name = safeName(a.name);
@@ -59,7 +65,7 @@ export async function prepare(atts: Attachment[], dir: string, canSeeImages: boo
       continue;
     }
     if (IMAGE_MIME.test(a.mime)) {
-      if (canSeeImages) { out.images.push({ mime: a.mime, url: `data:${a.mime};base64,${a.data}` }); out.imageNames.push(name); }
+      if (canSeeImages) { out.images.push({ mime: a.mime, url: `data:${a.mime};base64,${a.data}`, filename: name }); out.imageNames.push(name); }
       else blocks.push(`[Bild „${name}“ liegt unter ${path}. Du kannst es mit diesem Modell nicht sehen.]`);
       continue;
     }

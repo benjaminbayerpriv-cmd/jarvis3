@@ -39,7 +39,7 @@ test("Pfadzeichen im Dateinamen werden entschärft", async () => {
 });
 
 test("Grenzen", () => {
-  const big = { name: "gross.bin", mime: "", data: "A".repeat(Math.ceil((LIMITS.fileBytes + 10) * 4 / 3)) };
+  const big = { name: "gross.bin", mime: "", data: b64(new Uint8Array(LIMITS.fileBytes + 10)) };
   expect(validate([big])).toContain("größer");
   expect(validate(Array.from({ length: LIMITS.files + 1 }, () => ({ name: "a", mime: "", data: "" })))).toContain("Höchstens");
   expect(validate([{ name: "ok.txt", mime: "text/plain", data: b64("hi") }])).toBeUndefined();

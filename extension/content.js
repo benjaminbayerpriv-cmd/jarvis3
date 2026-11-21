@@ -341,7 +341,7 @@
       const py = agentCursor.fromY + (y - agentCursor.fromY) * eased;
       context.save();
       context.translate(px, py);
-      const k = Math.max(1, width / 900); // sichtbar bleiben, auch wenn das Live-Bild stark verkleinert ist
+      const k = 0.6 * Math.max(1, width / 1400); // klein, bleibt aber auf sehr breiten Fenstern und im verkleinerten Live-Bild sichtbar
       context.scale(k, k);
       context.shadowColor = "rgba(0, 0, 0, .55)";
       context.shadowBlur = 8;

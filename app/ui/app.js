@@ -22,9 +22,17 @@ const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").for
 paintIcons();
 
 // ---------- Zustand ----------
-const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", lofi: false, micDevice: null, devices: null };
+const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", micDevice: null, devices: null };
 let current = null;        // aktuelle Jarvis-Antwort {el, text, started}
+let currentSession = null;
+let historySessions = [];
+let chatFolderNames = [];
+let editingMessage = null;
+let sending = false;
+let pendingChatAction = null;
 let live = { on: false, muted: false };
+let dictating = false;   // Diktat läuft (Mikro-Knopf wird zum Stopp, Live-Knopf zum Senden)
+let projectData = { projects: [], chats: [], root: "" };
 
 // ---------- Verbindung ----------
 let ws, retry = 0;
@@ -57,12 +65,15 @@ function handle(m) {
     case "notice": showNotice(m.text); break;
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
-    case "stream_ended": hideViewer(); break;
+    case "tabs": viewerTabsMessage(m); break;
+    case "stream_ended": viewer.dataset.idle = "1"; viewerGotFrame = false; send({ type: "tabs" }); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
-    case "history": renderHistory(m.sessions); break;
+    case "history": chatFolderNames = m.folders || chatFolderNames; renderHistory(m.sessions); break;
     case "messages": renderMessages(m.messages); break;
+    case "session": currentSession = m.id; break;
+    case "projects": renderProjects(m); break;
   }
   if (m.type === "state" && !m.busy && current) finishTurn();
 }
@@ -78,7 +89,6 @@ function renderState() {
   pill.classList.toggle("stale", !!state.extStale);
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
-  $("#setLofi").setAttribute("aria-checked", String(!!state.lofi));
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
   if (state.liveView === false) hideViewer();
   $("#stop").hidden = !state.busy;
@@ -105,7 +115,14 @@ function addUser(text, files = []) {
     bubble.append(row);
   }
   if (text) { const t = document.createElement("div"); t.textContent = text; bubble.append(t); }
+  const tools = document.createElement("div"); tools.className = "user-tools";
+  const edit = document.createElement("button"); edit.type = "button"; edit.title = "Bearbeiten"; edit.setAttribute("aria-label", "Nachricht bearbeiten"); edit.innerHTML = icon("edit");
+  const resend = document.createElement("button"); resend.type = "button"; resend.title = "Erneut senden"; resend.setAttribute("aria-label", "Nachricht erneut senden"); resend.innerHTML = icon("refresh");
+  tools.append(edit, resend); n.append(tools);
+  edit.onclick = () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id, hasFiles: !!msg.files?.length }; input.value = text; autosize(); updateSend(); input.focus(); };
+  resend.onclick = () => { const msg = n.__message; if (msg?.id && currentSession) { turns.innerHTML = ""; send({ type: "resend", id: currentSession, messageID: msg.id, text }); } };
   turns.append(n);
+  return n;
 }
 function startJarvis() {
   const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
@@ -251,7 +268,7 @@ function finishTurn(note) {
   el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
     .filter(Boolean).join(" · ");
   current = null;
-  send({ type: "history" });
+  send({ type: "history" }); send({ type: "projects" });
 }
 function showNotice(text) {
   if (!current) startJarvis();
@@ -268,7 +285,7 @@ function heardUser(m) {
     if (current) { current.el.remove(); current = null; }
     [...turns.querySelectorAll(".turn.user")].at(-1)?.remove();
   }
-  addUser(m.text);
+  addUser(m.text, m.files);
   startJarvis();
 }
 function showError(msg) {
@@ -284,29 +301,38 @@ function showError(msg) {
 
 async function ask(text) {
   text = text.trim();
-  const files = pending.splice(0);
-  renderChips();
-  if (!text && !files.length) return;
-  let attachments = [];
-  try { attachments = await Promise.all(files.map(readFile)); } catch (error) {
-    reportError("attachments", error);
-    showError(`Anhang nicht lesbar: ${error?.message ?? error}`);
-    return;
+  const edit = editingMessage;
+  const session = currentSession;
+  const files = [...pending];
+  if (!text && !files.length && !edit?.hasFiles) return false;
+  const attachments = await Promise.all(files.map(readFile));
+  if (editingMessage !== edit || currentSession !== session) return false;
+  if (ws?.readyState !== WebSocket.OPEN) throw new Error("Jarvis ist gerade nicht verbunden.");
+  if (edit) {
+    send({ type: "replace", id: edit.id, messageID: edit.messageID, text, attachments });
+    editingMessage = null;
+    turns.innerHTML = "";
+  } else {
+    send({ type: "chat", text, attachments });
+    addUser(text, files);
+    startJarvis();
   }
-  addUser(text, files);
-  startJarvis();
-  send({ type: "chat", text, attachments });
+  pending.splice(0, files.length);
+  renderChips();
+  return true;
 }
 
 // ---------- Eingabe ----------
 const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
 function updateSend() {
-  const has = input.value.trim().length > 0 || pending.length > 0;
-  $("#send").hidden = state.busy || !has;
-  $("#liveBtn").hidden = has || state.busy;
+  const has = !!input.value.trim() || pending.length > 0 || !!editingMessage?.hasFiles;
+  $("#send").hidden = state.busy || !(has || dictating);
+  $("#send").disabled = !has || sending;
+  $("#liveBtn").hidden = has || dictating || state.busy;
 }
 input.addEventListener("input", () => {
+  if (dictating) dictBase = input.value;   // eigene Änderungen während des Diktierens bleiben erhalten
   const was = !$("#send").hidden;
   autosize(); updateSend();
   if (!was && !$("#send").hidden) { const c = $("#composer"); c.classList.remove("pulse"); void c.offsetWidth; c.classList.add("pulse"); }
@@ -316,10 +342,21 @@ input.addEventListener("keydown", e => {
 });
 $("#composer").addEventListener("submit", e => {
   e.preventDefault();
-  if (state.busy) return;
-  const text = input.value;
-  input.value = ""; autosize();
-  ask(text).finally(updateSend);
+  if (state.busy || sending) return;
+  if (dictating) $("#dictate").click();
+  const draft = input.value;
+  sending = true;
+  updateSend();
+  ask(draft).then(sent => {
+    if (sent && input.value === draft) input.value = "";
+    autosize();
+  }).catch(error => {
+    reportError("attachments", error);
+    toast(error.message);
+  }).finally(() => {
+    sending = false;
+    updateSend();
+  });
 });
 $("#stop").onclick = () => send({ type: "stop" });
 $("#emergencyStop").onclick = () => send({ type: "stop" });
@@ -333,17 +370,17 @@ const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)
 function fileChip(f, removable) {
   const c = document.createElement("div");
   c.className = "chip";
-  if (isImage(f)) {
+  if (f instanceof Blob && isImage(f)) {
     f._url ??= URL.createObjectURL(f);
     const im = document.createElement("img"); im.src = f._url; im.alt = ""; c.append(im);
   } else {
     const ic = document.createElement("span"); ic.className = "chip-ic"; ic.dataset.icon = "file"; c.append(ic);
   }
-  const t = document.createElement("span"); t.className = "chip-name"; t.textContent = f.name; t.title = `${f.name} · ${fmtSize(f.size)}`; c.append(t);
+  const t = document.createElement("span"); t.className = "chip-name"; t.textContent = f.name; t.title = Number.isFinite(f.size) ? `${f.name} · ${fmtSize(f.size)}` : f.name; c.append(t);
   if (removable) {
     const x = document.createElement("button");
     x.type = "button"; x.className = "chip-x"; x.setAttribute("aria-label", `${f.name} entfernen`); x.dataset.icon = "x";
-    x.onclick = () => { const i = pending.indexOf(f); if (i >= 0) pending.splice(i, 1); renderChips(); updateSend(); };
+    x.onclick = () => { if (sending) return; const i = pending.indexOf(f); if (i >= 0) pending.splice(i, 1); renderChips(); updateSend(); };
     c.append(x);
   }
   paintIcons(c);
@@ -400,34 +437,209 @@ input.addEventListener("paste", e => {
 });
 
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
-let dictating = false;
+let dictBase = "";   // bereits fertig diktierter Text; jeder neue Satz wird angehängt statt das Feld zu überschreiben
+const dictJoin = t => dictBase && t ? dictBase + (/\s$/.test(dictBase) ? "" : " ") + t : dictBase || t;
+function dictShow(t) {
+  if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
+  input.value = dictJoin(t); autosize(); updateSend();
+}
 $("#dictate").onclick = () => {
   dictating = !dictating;
+  if (dictating) dictBase = input.value;
   $("#dictate").classList.toggle("rec", dictating);
+  $("#dictate").innerHTML = icon(dictating ? "player-stop-filled" : "microphone");
+  $("#dictate").setAttribute("aria-label", dictating ? "Diktat beenden" : "Diktieren");
+  updateSend();
+  if (!live.on) setVoiceUi(dictating ? "dictate" : "off");
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
 };
 
 // ---------- Seitenleiste / Verlauf ----------
-$("#railToggle").onclick = () => { const a = $("#app"); a.dataset.rail = a.dataset.rail === "open" ? "collapsed" : "open"; };
-$("#newChat").onclick = () => {
-  send({ type: "new" }); turns.innerHTML = ""; current = null; setZero(true); input.focus();
+const railBtn = $("#railToggle");
+const setRail = open => {
+  $("#app").dataset.rail = open ? "open" : "collapsed";
+  railBtn.setAttribute("aria-expanded", String(open));
+  railBtn.setAttribute("aria-label", open ? "Seitenleiste schließen" : "Seitenleiste öffnen");
+  railBtn.title = open ? "Seitenleiste schließen" : "Seitenleiste öffnen";
+  railBtn.querySelector("span").innerHTML = icon(open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand");
+  try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
 };
-function renderHistory(list = []) {
-  const ul = $("#history");
-  ul.innerHTML = "";
-  for (const s of list.slice(0, 40)) {
-    const li = document.createElement("li");
-    li.textContent = s.title || "Unterhaltung";
-    li.classList.toggle("active", !!s.active);
-    li.onclick = () => send({ type: "open", id: s.id });
-    ul.append(li);
-  }
+railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
+try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
+$("#newChat").onclick = () => {
+  send({ type: "new" }); currentSession = null; editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
+};
+
+// Chatzeilen werden innerhalb der WebView verschoben. Das native Datei-Drag-and-drop
+// braucht dafür weder Daten im Drag-Transfer noch Zugriff auf die Geste.
+const chatHistory = $("#history");
+let chatDrag = null;
+let suppressChatClick = false;
+
+chatHistory.addEventListener("pointerdown", e => {
+  if (!e.isPrimary || e.button !== 0) return;
+  suppressChatClick = false;
+  const row = e.target.closest(".history-chat[data-id]");
+  if (!row || e.target.closest(".history-menu")) return;
+  chatDrag = { pointer: e.pointerId, row, id: row.dataset.id, x: e.clientX, y: e.clientY };
+});
+
+function chatDropTarget(x, y) {
+  const target = document.elementFromPoint(x, y)?.closest("[data-chat-drop-folder]");
+  return target && chatHistory.contains(target) ? target : null;
 }
+
+function updateChatDrag() {
+  const drag = chatDrag;
+  const bounds = chatHistory.getBoundingClientRect();
+  if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom) {
+    if (drag.y < bounds.top + 24) chatHistory.scrollTop -= 7;
+    else if (drag.y > bounds.bottom - 24) chatHistory.scrollTop += 7;
+  }
+  const target = chatDropTarget(drag.x, drag.y);
+  if (drag.target !== target) {
+    drag.target?.classList.remove("drop-target");
+    target?.classList.add("drop-target");
+    drag.target = target;
+  }
+  drag.frame = requestAnimationFrame(updateChatDrag);
+}
+
+window.addEventListener("pointermove", e => {
+  const drag = chatDrag;
+  if (!drag || e.pointerId !== drag.pointer) return;
+  if (!drag.preview) {
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
+    if (!drag.row.isConnected) { chatDrag = null; return; }
+    chatHistory.setPointerCapture(e.pointerId);
+    suppressChatClick = true;
+    drag.row.classList.add("chat-drag-source");
+    drag.preview = document.createElement("div");
+    drag.preview.className = "chat-drag-preview";
+    drag.preview.setAttribute("aria-hidden", "true");
+    drag.preview.textContent = drag.row.querySelector(".history-title").textContent;
+    document.body.append(drag.preview);
+    drag.frame = requestAnimationFrame(updateChatDrag);
+  }
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  drag.preview.style.transform = `translate(${drag.x + 12}px, ${drag.y + 12}px)`;
+});
+
+function clearChatDrag() {
+  const drag = chatDrag;
+  chatDrag = null;
+  if (!drag?.preview) return;
+  cancelAnimationFrame(drag.frame);
+  drag.target?.classList.remove("drop-target");
+  drag.row.classList.remove("chat-drag-source");
+  drag.preview.remove();
+  if (chatHistory.hasPointerCapture(drag.pointer)) chatHistory.releasePointerCapture(drag.pointer);
+}
+
+window.addEventListener("pointerup", e => {
+  const drag = chatDrag;
+  if (!drag || e.pointerId !== drag.pointer) return;
+  const folder = drag.preview ? chatDropTarget(e.clientX, e.clientY)?.dataset.chatDropFolder : undefined;
+  clearChatDrag();
+  const chat = historySessions.find(s => s.id === drag.id);
+  if (chat && folder !== undefined && folder !== (chat.folder || "")) {
+    send({ type: "chat_action", action: "move", id: chat.id, folder });
+  }
+});
+window.addEventListener("pointercancel", e => { if (e.pointerId === chatDrag?.pointer) clearChatDrag(); });
+chatHistory.addEventListener("lostpointercapture", e => { if (e.pointerId === chatDrag?.pointer) clearChatDrag(); });
+window.addEventListener("blur", clearChatDrag);
+window.addEventListener("keydown", e => { if (e.key === "Escape") clearChatDrag(); });
+chatHistory.addEventListener("click", e => {
+  if (!suppressChatClick || !e.detail) return;
+  suppressChatClick = false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+
+function renderHistory(list = []) {
+  historySessions = list;
+  const folders = [...new Set([...chatFolderNames, ...list.map(s => s.folder).filter(Boolean)])];
+  const ul = $("#history"), q = $("#chatSearch").value.trim().toLocaleLowerCase("de-DE"); ul.innerHTML = "";
+  const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
+  const collapsedSections = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedHistorySections") || "[]"));
+  const isSearching = !!q;
+  const addSection = (name, key) => {
+    const li = document.createElement("li"); li.className = "history-section";
+    const toggle = document.createElement("button"); toggle.className = "history-section-toggle";
+    if (key === "chats") toggle.dataset.chatDropFolder = "";
+    const label = document.createElement("span"); label.textContent = name;
+    toggle.append(label, document.createRange().createContextualFragment(icon("chevron-down")));
+    toggle.setAttribute("aria-expanded", String(isSearching || !collapsedSections.has(key)));
+    toggle.onclick = () => { collapsedSections.has(key) ? collapsedSections.delete(key) : collapsedSections.add(key); localStorage.setItem("jarvis.collapsedHistorySections", JSON.stringify([...collapsedSections])); renderHistory(historySessions); };
+    li.append(toggle); ul.append(li);
+    return isSearching || !collapsedSections.has(key);
+  };
+  const appendChat = (s, parent) => {
+    const li = document.createElement("li"); li.className = "history-chat"; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
+    if (!s.folder) li.dataset.chatDropFolder = "";
+    const title = document.createElement("button"); title.className = "history-title";
+    title.textContent = s.title || "Unterhaltung";
+    title.onclick = () => { currentSession = s.id; send({ type: "open", id: s.id }); };
+    const menu = document.createElement("div"); menu.className = "history-menu";
+    const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
+    menuToggle.title = "Chataktionen"; menuToggle.setAttribute("aria-label", `Aktionen für ${s.title || "Chat"}`);
+    menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
+    const button = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.title = label; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
+    button("Umbenennen", icon("edit"), () => showChatAction("rename", s.id, s.title));
+    button("Verschieben", icon("folder"), () => showChatAction("move", s.id, s.title, s.folder || ""));
+    button("Löschen", icon("trash"), () => showChatAction("delete", s.id, s.title));
+    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
+  };
+  const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
+  const addFolder = name => {
+    const row = document.createElement("li"); row.className = "history-chat folder-chat"; row.dataset.folder = name;
+    const isFolderCollapsed = !isSearching && collapsed.has(name);
+    const toggle = document.createElement("button"); toggle.className = "folder-toggle";
+    toggle.dataset.chatDropFolder = name;
+    toggle.innerHTML = icon(isFolderCollapsed ? "folder" : "folder-open");
+    const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel);
+    toggle.setAttribute("aria-expanded", String(!isFolderCollapsed));
+    toggle.setAttribute("aria-label", `${isFolderCollapsed ? "Projekt öffnen" : "Projekt schließen"}: ${name}`);
+    toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
+    const menu = document.createElement("div"); menu.className = "history-menu";
+    const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
+    menuToggle.title = "Projektaktionen"; menuToggle.setAttribute("aria-label", `Aktionen für Projekt ${name}`); menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
+    const action = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
+    action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name, name));
+    action("Verschieben", icon("folder"), () => showChatAction("move-folder", "", name));
+    action("Löschen", icon("trash"), () => showChatAction("delete-folder", "", name));
+    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menu.append(menuToggle, actions);
+    const head = document.createElement("div"); head.className = "folder-head"; head.append(toggle, menu); row.append(head);
+    if (!isFolderCollapsed) {
+      const children = document.createElement("ul"); children.className = "folder-children";
+      visible.filter(s => s.folder === name).forEach(s => appendChat(s, children));
+      row.append(children);
+    }
+    ul.append(row);
+  };
+  if (addSection("Projekte", "folders")) folders.forEach(addFolder);
+  if (addSection("Chats", "chats")) visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
+}
+document.addEventListener("click", () => {
+  document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+  document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+  document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+});
 function renderMessages(msgs = []) {
   turns.innerHTML = ""; current = null;
   setZero(msgs.length === 0);
   for (const m of msgs) {
-    if (m.role === "user") addUser(m.text);
+    if (m.role === "user") { const n = addUser(m.text, m.files); n.__message = m; }
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");
@@ -439,42 +651,202 @@ function renderMessages(msgs = []) {
   conv.scrollTop = conv.scrollHeight;
 }
 
+// ---------- Projekte ----------
+// ---------- Projekte: Explorer (Projekte = Ordner, Chats = Dateien) ----------
+const projectAction = action => send({ type: "project_action", ...action });
+let exSel = null;                 // gewähltes Projekt (null = oberste Ebene)
+const exOpen = new Set();         // aufgeklappte Projekte im Baum
+const pById = id => projectData.projects.find(x => x.id === id);
+const childrenOf = id => projectData.projects.filter(x => (x.parentId ?? null) === id);
+const chatsOf = id => projectData.chats.filter(c => (c.projectId ?? null) === id);
+function projectLabel(id) {
+  const names = [], seen = new Set();
+  let p = pById(id);
+  while (p && !seen.has(p.id)) { seen.add(p.id); names.unshift(p.name); p = pById(p.parentId); }
+  return names.join(" / ");
+}
+const countDeep = id => chatsOf(id).length + childrenOf(id).reduce((n, p) => n + countDeep(p.id), 0);
+const fmtDate = t => { if (!t) return ""; const d = new Date(t), now = new Date();
+  return d.toDateString() === now.toDateString() ? d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: now.getFullYear() === d.getFullYear() ? undefined : "2-digit" }); };
+
+function exBtn(name, label, fn) {
+  const b = document.createElement("button"); b.type = "button"; b.className = "ex-act"; b.title = label; b.setAttribute("aria-label", label);
+  b.innerHTML = icon(name); b.onclick = e => { e.stopPropagation(); fn(b); }; return b;
+}
+function exRename(row, current, save) {
+  const name = row.querySelector(".ex-name"); const input = document.createElement("input");
+  input.className = "ex-rename"; input.value = current; name.replaceChildren(input); input.focus(); input.select();
+  let done = false; const finish = ok => { if (done) return; done = true; const v = input.value.trim(); if (ok && v && v !== current) save(v); else renderProjects(); };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true); input.onclick = e => e.stopPropagation();
+}
+function exMoveMenu(anchor, onPick, exclude = new Set()) {
+  document.querySelectorAll(".ex-menu").forEach(m => m.remove());
+  const menu = document.createElement("div"); menu.className = "ex-menu";
+  const add = (label, id, depth) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.style.paddingLeft = `${12 + depth * 14}px`;
+    b.onclick = e => { e.stopPropagation(); menu.remove(); onPick(id); }; menu.append(b); };
+  add("Ohne Projekt (oberste Ebene)", null, 0);
+  const walk = (parent, depth) => { for (const p of childrenOf(parent)) { if (exclude.has(p.id)) continue; add(p.name, p.id, depth + 1); walk(p.id, depth + 1); } };
+  walk(null, 0);
+  anchor.closest(".ex-row").append(menu);
+  const off = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("pointerdown", off, true); } };
+  setTimeout(() => document.addEventListener("pointerdown", off, true));
+}
+const descendants = id => { const out = new Set([id]); const walk = p => childrenOf(p).forEach(c => { out.add(c.id); walk(c.id); }); walk(id); return out; };
+
+function exProjectRow(p) {
+  const li = document.createElement("li"); li.className = "ex-row is-folder"; li.tabIndex = 0;
+  const n = countDeep(p.id), sub = childrenOf(p.id).length;
+  li.innerHTML = `<span class="ex-name">${icon("folder")}<span class="ex-text"></span></span><span class="ex-type">Projekt</span><span class="ex-date">${n} ${n === 1 ? "Chat" : "Chats"}${sub ? ` · ${sub} ${sub === 1 ? "Unterprojekt" : "Unterprojekte"}` : ""}</span><span class="ex-acts"></span>`;
+  li.querySelector(".ex-text").textContent = p.name;
+  li.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
+  li.onkeydown = e => { if (e.key === "Enter") li.click(); };
+  li.querySelector(".ex-acts").append(
+    exBtn("edit", "Umbenennen", () => exRename(li, p.name, name => projectAction({ op: "update", id: p.id, patch: { name } }))),
+    exBtn("move", "Verschieben", b => exMoveMenu(b, to => projectAction({ op: "update", id: p.id, patch: { parentId: to } }), descendants(p.id))),
+    exBtn("trash", "Löschen", () => showChatAction("delete-folder", "", projectLabel(p.id))));
+  return li;
+}
+function exChatRow(c) {
+  const li = document.createElement("li"); li.className = "ex-row is-chat"; li.tabIndex = 0;
+  li.innerHTML = `<span class="ex-name">${icon("message")}<span class="ex-text"></span></span><span class="ex-type">Chat${c.assignedBy === "ki" ? " · KI" : ""}</span><span class="ex-date">${fmtDate(c.updated)}</span><span class="ex-acts"></span>`;
+  li.querySelector(".ex-text").textContent = c.title;
+  const open = () => { currentSession = c.id; send({ type: "open", id: c.id }); $("#projectsDialog").close(); };
+  li.onclick = open; li.onkeydown = e => { if (e.key === "Enter") open(); };
+  li.querySelector(".ex-acts").append(
+    exBtn("move", "In Projekt verschieben", b => exMoveMenu(b, to => projectAction({ op: "assign", id: c.id, projectId: to, by: "manual" }))));
+  return li;
+}
+function exTreeNode(parent, depth, host) {
+  for (const p of childrenOf(parent)) {
+    const kids = childrenOf(p.id).length, open = exOpen.has(p.id);
+    const row = document.createElement("button"); row.type = "button"; row.className = "ex-node" + (exSel === p.id ? " active" : ""); row.style.setProperty("--d", depth);
+    row.innerHTML = `<span class="ex-chev${kids ? "" : " none"}${open ? " open" : ""}">${icon("chevron-right")}</span>${icon(open && kids ? "folder-open" : "folder")}<span class="ex-text"></span>`;
+    row.querySelector(".ex-text").textContent = p.name;
+    row.querySelector(".ex-chev").onclick = e => { e.stopPropagation(); open ? exOpen.delete(p.id) : exOpen.add(p.id); renderProjects(); };
+    row.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
+    host.append(row);
+    if (open) exTreeNode(p.id, depth + 1, host);
+  }
+}
+function renderProjects(m = projectData) {
+  projectData = m;
+  if (exSel && !pById(exSel)) exSel = null;
+  // Baum
+  const tree = $("#exTree"); tree.innerHTML = "";
+  const root = document.createElement("button"); root.type = "button"; root.className = "ex-node" + (exSel === null ? " active" : ""); root.style.setProperty("--d", 0);
+  root.innerHTML = `<span class="ex-chev none">${icon("chevron-right")}</span>${icon("home")}<span class="ex-text">Alle Projekte</span>`;
+  root.onclick = () => { exSel = null; renderProjects(); };
+  tree.append(root); exTreeNode(null, 0, tree);
+  // Pfad
+  const crumbs = $("#exCrumbs"); crumbs.innerHTML = "";
+  const chain = []; for (let p = pById(exSel); p; p = pById(p.parentId)) chain.unshift(p);
+  const crumb = (label, id, last) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = last ? "last" : "";
+    b.onclick = () => { exSel = id; renderProjects(); }; crumbs.append(b); if (!last) crumbs.insertAdjacentHTML("beforeend", icon("chevron-right")); };
+  crumb("Projekte", null, chain.length === 0); chain.forEach((p, i) => crumb(p.name, p.id, i === chain.length - 1));
+  // Inhalt
+  const list = $("#exList"); list.innerHTML = "";
+  const subs = childrenOf(exSel), chats = chatsOf(exSel);
+  for (const p of subs) list.append(exProjectRow(p));
+  for (const c of chats) list.append(exChatRow(c));
+  if (!subs.length && !chats.length) {
+    const e = document.createElement("li"); e.className = "ex-empty";
+    e.textContent = exSel ? "Dieses Projekt ist leer. Ordne Chats zu oder lege Unterprojekte an." : "Noch keine Projekte. Lege oben „Neues Projekt“ an.";
+    list.append(e);
+  }
+  $("#exStatus").textContent = `${subs.length} ${subs.length === 1 ? "Projekt" : "Projekte"} · ${chats.length} ${chats.length === 1 ? "Chat" : "Chats"}${m.root ? ` · ~/${m.root}` : ""}`;
+}
+$("#openProjects").onclick = () => { send({ type: "projects" }); renderProjects(); $("#projectsDialog").showModal(); };
+$("#closeProjects").onclick = () => $("#projectsDialog").close();
+$("#analyzeProjects").onclick = () => projectAction({ op: "analyze" });
+$("#exNew").onclick = () => {
+  const list = $("#exList"); const li = document.createElement("li"); li.className = "ex-row is-folder";
+  li.innerHTML = `<span class="ex-name">${icon("folder")}<input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></span><span class="ex-type">Projekt</span><span class="ex-date"></span><span class="ex-acts"></span>`;
+  list.querySelector(".ex-empty")?.remove(); list.prepend(li);
+  const input = li.querySelector("input"); input.focus(); let done = false;
+  const finish = ok => { if (done) return; done = true; const name = input.value.trim(); if (ok && name) { projectAction({ op: "create", name, description: "", parent: exSel }); if (exSel) exOpen.add(exSel); } else renderProjects(); };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true);
+};
+
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
-let viewerTimer;
-let viewTab, viewRatio = 0;
-function showFrame(m) {
-  if (state.liveView === false) return;
-  // Seitenverhältnis des Tabs übernehmen; kleine Schwankungen (z. B. Chromes Hinweisleiste) ignorieren
-  if (m.w > 0 && m.h > 0) {
-    const ratio = m.w / m.h;
-    if (m.tab !== viewTab || Math.abs(ratio - viewRatio) / viewRatio > 0.10) {
-      viewTab = m.tab; viewRatio = ratio;
-      viewer.style.setProperty("--ar", `${m.w} / ${m.h}`);
-    }
+let viewerTimer, viewerPoll;
+let viewerTabs = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
+const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
+
+function renderViewerTabs() {
+  const box = $("#viewerTabs"); box.replaceChildren();
+  const mk = (label, sel, onclick, iconHtml = "", title = "") => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "vtab"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(sel));
+    if (iconHtml) b.insertAdjacentHTML("beforeend", iconHtml);
+    const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick; box.append(b);
+  };
+  mk("Automatisch", viewerPinned === null, () => send({ type: "viewer_tab", tab: null }), icon("sparkles"), "Dem Tab folgen, in dem Jarvis gerade arbeitet");
+  for (const t of viewerTabs) {
+    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
+    mk(t.title || t.url || "Tab", t.tab === viewerStreaming, () => { viewerStreaming = t.tab; viewerPinned = t.tab; renderViewerTabs(); send({ type: "viewer_tab", tab: t.tab }); }, fav, t.url || t.title);
   }
-  $("#viewerImg").src = "data:image/jpeg;base64," + m.data;
-  $("#viewerTitle").textContent = m.title || "Tab";
-  try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
-  if (viewer.hidden) { viewer.classList.remove("leaving"); viewer.hidden = false; }
-  clearTimeout(viewerTimer);
-  viewerTimer = setTimeout(hideViewer, 6000); // keine Bilder mehr -> Ansicht ausblenden
+  const empty = $("#viewerEmpty");
+  if (!viewerGotFrame) empty.textContent = viewerTabs.length ? "Wähle oben einen Tab, um ihn live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  else empty.textContent = "";
+}
+const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
+function openViewer() {
+  viewer.hidden = false; state.liveView = true; syncViewerButtons();
+  send({ type: "liveview", on: true }); send({ type: "tabs" });
+  clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 2000);
+  renderViewerTabs();
 }
 function hideViewer() {
-  clearTimeout(viewerTimer);
-  if (viewer.hidden) return;
-  viewer.classList.add("leaving");
-  setTimeout(() => { if (viewer.classList.contains("leaving")) { viewer.hidden = true; viewer.classList.remove("leaving"); } }, 200);
+  clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
+  syncViewerButtons();
 }
-$("#viewerHead").onclick = e => { if (!e.target.closest("#viewerClose")) viewer.classList.toggle("big"); };
+function drawFrame(m) {
+  // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
+  if (viewerBusy) { viewerNext = m; return; }
+  viewerBusy = true;
+  const bin = atob(m.data), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
+    if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
+    vctx.drawImage(bmp, 0, 0); bmp.close();
+  }).catch(() => {}).finally(() => { viewerBusy = false; if (viewerNext) { const n = viewerNext; viewerNext = null; drawFrame(n); } });
+}
+function showFrame(m) {
+  if (viewer.hidden) { if (state.liveView === false) return; openViewer(); }
+  drawFrame(m);
+  $("#viewerTitle").textContent = m.title || "Tab";
+  try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
+  delete viewer.dataset.idle;
+  if (!viewerGotFrame || viewerStreaming !== m.tab) { viewerGotFrame = true; viewerStreaming = m.tab; renderViewerTabs(); }
+  clearTimeout(viewerTimer);
+  viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
+}
+function viewerTabsMessage(m) {
+  viewerTabs = m.tabs || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
+  if (!viewer.hidden) renderViewerTabs();
+}
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
-$("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView === false });
+// Das Auge öffnet die Vorschau immer (mit der Tab-Auswahl oben) und schließt sie wieder
+const toggleViewer = () => { if (viewer.hidden) openViewer(); else { send({ type: "liveview", on: false }); hideViewer(); } };
+$("#viewToggle").onclick = toggleViewer;
+$("#liveView").onclick = toggleViewer;   // auch im Live-Modus erreichbar
+// Breite per Griff ziehen (wird gemerkt)
+try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) document.documentElement.style.setProperty("--viewer-w", w + "px"); } catch {}
+$("#viewerGrip").addEventListener("pointerdown", e => {
+  const grip = e.currentTarget; grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); viewer.style.animation = "none";
+  const move = ev => { const w = Math.round(Math.min(innerWidth - 420, Math.max(360, innerWidth - ev.clientX))); document.documentElement.style.setProperty("--viewer-w", w + "px"); viewer.dataset.w = w; };
+  const up = () => { grip.classList.remove("drag"); grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
+    try { if (viewer.dataset.w) localStorage.setItem("jarvis.viewerW", viewer.dataset.w); } catch {} };
+  grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+});
 
 // ---------- Modus „Computer übernehmen“ ----------
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
 $("#modeSwitch").onclick = toggleMode;
 $("#setComputer").onclick = toggleMode;
-$("#setLofi").onclick = () => send({ type: "settings", settings: { lofi: !state.lofi } });
 
 // ---------- Modellwahl ----------
 const GROUPS = { free: "Kostenlos (OpenCode)", lmstudio: "Lokal (LM Studio)", nvidia: "NVIDIA", other: "Weitere" };
@@ -496,6 +868,55 @@ function renderModels(filter = "") {
     }
   }
 }
+$("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
+$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
+$("#newFolder").onclick = () => { setRail(true); showChatAction("folder"); };
+function showChatAction(action, id = "", title = "", value = "") {
+  pendingChatAction = { action, id, title };
+  const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?",
+    "rename-folder": "Projekt umbenennen", "move-folder": "Projekt verschieben", "delete-folder": "Projekt löschen?" };
+  $("#chatActionTitle").textContent = labels[action];
+  const desc = { delete: `„${title}“ wird dauerhaft aus dem Verlauf entfernt.`,
+    move: "Projektnamen eingeben oder ein vorhandenes Projekt auswählen. Leer lassen, um den Chat aus dem Projekt zu lösen.",
+    "move-folder": "Überprojekt eingeben oder auswählen. Leer lassen für die oberste Ebene.",
+    "delete-folder": `Projekt „${title}“ samt Unterprojekten wird gelöscht. Die Chats bleiben erhalten.` };
+  $("#chatActionDesc").textContent = desc[action] ?? "";
+  $("#chatActionField").hidden = action === "delete" || action === "delete-folder";
+  $("#chatActionValue").value = value;
+  $("#chatActionValue").placeholder = action === "rename" ? "Chatname" : action === "rename-folder" ? "Neuer Projektname" : action === "move-folder" ? "Überprojekt (leer = oberste Ebene)" : "Projektname";
+  $("#chatActionValue").setAttribute("list", "chatFolderOptions");
+  $("#chatFolderOptions").replaceChildren(...chatFolderNames.map(name => { const option = document.createElement("option"); option.value = name; return option; }));
+  $("#chatActionDialog").showModal();
+  if (!action.startsWith("delete")) requestAnimationFrame(() => $("#chatActionValue").focus());
+}
+$("#chatActionDialog").addEventListener("close", () => {
+  const action = pendingChatAction, result = $("#chatActionDialog").returnValue;
+  pendingChatAction = null;
+  if (!action || result !== "apply") return;
+  const value = $("#chatActionValue").value.trim();
+  if (action.action === "folder" && value) {
+    if (!chatFolderNames.includes(value)) chatFolderNames.push(value);
+    renderHistory(historySessions);
+    send({ type:"chat_action", action:"folder", name:value });
+  }
+  else if (action.action === "rename" && value) send({ type:"chat_action", action:"rename", id:action.id, title:value });
+  else if (action.action === "move") send({ type:"chat_action", action:"move", id:action.id, folder:value });
+  else if (action.action === "delete") send({ type:"chat_action", action:"delete", id:action.id });
+  else if (action.action.endsWith("-folder")) {
+    const p = projectData.projects.find(x => projectLabel(x.id) === action.title);
+    if (!p) return showNotice("Projekt nicht gefunden");
+    if (action.action === "rename-folder" && value) projectAction({ op: "update", id: p.id, patch: { name: value } });
+    else if (action.action === "delete-folder") projectAction({ op: "delete", id: p.id });
+    else if (action.action === "move-folder") {
+      const parent = value ? projectData.projects.find(x => projectLabel(x.id) === value || x.name === value) : null;
+      if (value && !parent) return showNotice(`Überprojekt „${value}“ gibt es nicht`);
+      projectAction({ op: "update", id: p.id, patch: { parentId: parent?.id ?? null } });
+    }
+  }
+});
+$("#chatActionValue").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); $("#chatActionDialog").close("apply"); }
+});
 $("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
 $("#openSettings").onclick = () => $("#settingsDialog").showModal();
@@ -533,6 +954,16 @@ $("#setMic").onchange = e => send({ type: "settings", settings: { micDevice: e.t
 
 // ---------- Sprachmodus (Live) ----------
 const liveEl = $("#live");
+const glow = $("#liveGlow");
+let level = 0;
+// Diktieren: das Eingabefeld klappt nach oben auf und zeigt Wellen. Der Live-Modus ist eine Vollbild-Ansicht (#live).
+const composerEl = $("#composer");
+const voiceEl = $("#voice");
+function setVoiceUi(mode) { // "off" | "dictate"
+  composerEl.dataset.voice = mode;
+  voiceEl.setAttribute("aria-hidden", String(mode === "off"));
+  if (mode === "dictate") startWaves(); else stopWaves();
+}
 function liveCaption(text, user) {
   const c = $("#liveCaption");
   const words = text.trim().split(/\s+/);
@@ -540,15 +971,19 @@ function liveCaption(text, user) {
   c.classList.toggle("user", !!user);
 }
 function openLive() {
+  if (live.on) return;
+  if (dictating) $("#dictate").click();
   live.on = true; live.muted = false;
   liveEl.hidden = false; liveEl.classList.remove("closing"); liveEl.dataset.state = "listening";
   $("#liveMute").classList.remove("muted");
+  $("#liveMute").innerHTML = icon("microphone");
   liveCaption("", true);
   send({ type: "voice", mode: "live" });
 }
 function closeLive() {
+  if (!live.on) return;
   live.on = false;
-  send({ type: "voice", mode: "off" });
+  send({ type: "voice", mode: dictating ? "dictate" : "off" });
   liveEl.classList.add("closing");
   setTimeout(() => { liveEl.hidden = true; }, 250);
 }
@@ -563,12 +998,63 @@ $("#liveMute").onclick = () => {
 };
 document.addEventListener("keydown", e => { if (e.key === "Escape" && live.on) closeLive(); });
 
-const glow = $("#liveGlow");
-let level = 0;
+// Wellen: zwei Gruppen übereinander, Blau = Mikrofon (du), Rosa = Ausgabe (Jarvis). Amplitude folgt dem echten Pegel
+// der "level"-Ereignisse des Sprach-Sidecars; ohne Ereignisse bleibt nur eine ruhige Grundbewegung.
+const canvas = $("#voiceWaves");
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let micLvl = 0, outLvl = 0, micRaw = 0, outRaw = 0, rafId = 0, phase = 0, lastT = 0;
+const WAVES = [ // Frequenz, Tempo, Anteil an der Amplitude, Deckkraft, Breite
+  { f: 1.1, s: 1.0, a: 1.0, o: 1.0, w: 2.4 },
+  { f: 1.7, s: -1.3, a: .72, o: .6, w: 1.8 },
+  { f: 2.6, s: 1.8, a: .5, o: .42, w: 1.4 },
+  { f: 0.8, s: -.7, a: .85, o: .3, w: 3 },
+];
+function cssColor(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888"; }
+function drawGroup(ctx, w, h, amp, color, shift, t) {
+  const mid = h / 2;
+  for (const k of WAVES) {
+    ctx.beginPath();
+    ctx.lineWidth = k.w; ctx.strokeStyle = color; ctx.globalAlpha = k.o * (.35 + .65 * Math.min(1, amp * 3 + .15));
+    for (let x = 0; x <= w; x += 3) {
+      const u = x / w;
+      const env = Math.sin(Math.PI * u) ** 1.6;               // an den Rändern ruhig, in der Mitte hoch
+      const y = mid + Math.sin(u * Math.PI * 2 * k.f * 1.5 + t * k.s + shift) * env * k.a * amp * (mid - 4);
+      x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function frame(now) {
+  rafId = requestAnimationFrame(frame);
+  try {
+    const dt = Math.min(.05, (now - (lastT || now)) / 1000); lastT = now;
+    const slow = reduceMotion.matches ? .25 : 1;
+    phase += dt * 2.2 * slow;
+    const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+    // Pegel glätten: schneller Anstieg, langsames Abklingen
+    const mt = live.muted ? 0 : Math.min(1, Math.sqrt(micRaw) * 1.5), ot = Math.min(1, Math.sqrt(outRaw) * 1.5);
+    micLvl += (mt - micLvl) * (mt > micLvl ? .4 : .12);
+    outLvl += (ot - outLvl) * (ot > outLvl ? .4 : .12);
+    micRaw *= .9; outRaw *= .9; // fällt ab, falls keine Ereignisse mehr kommen
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const idle = .06 + .02 * Math.sin(phase * .7);
+    drawGroup(ctx, w, h, Math.max(idle, outLvl), cssColor("--brand-pink"), 1.3, phase);
+    drawGroup(ctx, w, h, live.muted ? idle * .5 : Math.max(idle, micLvl), cssColor("--primary"), 0, phase * 1.1);
+  } catch (e) { stopWaves(); reportError("voice-waves", e); }
+}
+function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = requestAnimationFrame(frame); } }
+function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
+
 function speechEvent(m) {
   if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
   switch (m.event) {
     case "level": {
+      micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
       const target = Math.min(1, Math.max(m.mic ?? 0, m.out ?? 0) * 1.6);
       level += (target - level) * 0.35;
       glow.style.setProperty("--lvl", level.toFixed(3));
@@ -576,11 +1062,11 @@ function speechEvent(m) {
     }
     case "speech_start": liveEl.dataset.state = "listening"; break;
     case "partial":
-      if (dictating) { input.value = m.text; autosize(); updateSend(); }
+      if (dictating) dictShow(m.text);
       else if (live.on) liveCaption(m.text, true);
       break;
     case "final":
-      if (dictating) { input.value = m.text; autosize(); updateSend(); input.focus(); }
+      if (dictating) { dictShow(m.text); dictBase = input.value; input.focus(); }
       else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
     case "say_start": liveEl.dataset.state = "speaking"; break;
