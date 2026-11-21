@@ -539,44 +539,39 @@ function fillAudioDevices() {
 $("#setMic").onchange = e => send({ type: "settings", settings: { micDevice: e.target.value === "" ? null : Number(e.target.value) } });
 
 // ---------- Sprachmodus (Live) ----------
-// Das Eingabefeld klappt nach oben auf: erkannter bzw. gesprochener Text über animierten Wellen.
+const liveEl = $("#live");
+const glow = $("#liveGlow");
+let level = 0;
+// Diktieren: das Eingabefeld klappt nach oben auf und zeigt Wellen. Der Live-Modus ist eine Vollbild-Ansicht (#live).
 const composerEl = $("#composer");
 const voiceEl = $("#voice");
-const captionEl = $("#liveCaption");
-const STATE_TEXT = { listening: "Ich höre zu …", speaking: "Jarvis spricht …", muted: "Stumm" };
-let voiceState = "listening";
-function setVoiceState(st) {
-  voiceState = live.muted ? "muted" : st;
-  $("#voiceState").textContent = STATE_TEXT[voiceState];
-}
-function setVoiceUi(mode) { // "off" | "live" | "dictate"
+function setVoiceUi(mode) { // "off" | "dictate"
   composerEl.dataset.voice = mode;
   voiceEl.setAttribute("aria-hidden", String(mode === "off"));
-  if (mode === "off") { stopWaves(); captionEl.textContent = ""; }
-  else startWaves();
+  if (mode === "dictate") startWaves(); else stopWaves();
 }
 function liveCaption(text, user) {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  captionEl.textContent = words.slice(-60).join(" ");
-  captionEl.classList.toggle("user", !!user);
-  captionEl.scrollTop = captionEl.scrollHeight;
+  const c = $("#liveCaption");
+  const words = text.trim().split(/\s+/);
+  c.textContent = words.slice(-40).join(" ") || "Ich höre zu …";
+  c.classList.toggle("user", !!user);
 }
 function openLive() {
   if (live.on) return;
   if (dictating) $("#dictate").click();
   live.on = true; live.muted = false;
+  liveEl.hidden = false; liveEl.classList.remove("closing"); liveEl.dataset.state = "listening";
   $("#liveMute").classList.remove("muted");
   $("#liveMute").innerHTML = icon("microphone");
-  setVoiceState("listening");
   liveCaption("", true);
-  setVoiceUi("live");
   send({ type: "voice", mode: "live" });
 }
 function closeLive() {
   if (!live.on) return;
   live.on = false;
-  send({ type: "voice", mode: "off" });
-  setVoiceUi(dictating ? "dictate" : "off");
+  send({ type: "voice", mode: dictating ? "dictate" : "off" });
+  liveEl.classList.add("closing");
+  setTimeout(() => { liveEl.hidden = true; }, 250);
 }
 $("#liveBtn").onclick = openLive;
 $("#liveEnd").onclick = closeLive;
@@ -585,7 +580,6 @@ $("#liveMute").onclick = () => {
   live.muted = !live.muted;
   $("#liveMute").classList.toggle("muted", live.muted);
   $("#liveMute").innerHTML = icon(live.muted ? "microphone-off" : "microphone");
-  setVoiceState("listening");
   send({ type: "voice", mode: live.muted ? "muted" : "live" });
 };
 document.addEventListener("keydown", e => { if (e.key === "Escape" && live.on) closeLive(); });
@@ -639,16 +633,20 @@ function frame(now) {
     drawGroup(ctx, w, h, live.muted ? idle * .5 : Math.max(idle, micLvl), cssColor("--primary"), 0, phase * 1.1);
   } catch (e) { stopWaves(); reportError("voice-waves", e); }
 }
-function startWaves() { if (!rafId) { lastT = 0; rafId = requestAnimationFrame(frame); } }
+function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = requestAnimationFrame(frame); } }
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
   if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
   switch (m.event) {
-    case "level":
+    case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
+      const target = Math.min(1, Math.max(m.mic ?? 0, m.out ?? 0) * 1.6);
+      level += (target - level) * 0.35;
+      glow.style.setProperty("--lvl", level.toFixed(3));
       break;
-    case "speech_start": setVoiceState("listening"); break;
+    }
+    case "speech_start": liveEl.dataset.state = "listening"; break;
     case "partial":
       if (dictating) dictShow(m.text);
       else if (live.on) liveCaption(m.text, true);
@@ -657,8 +655,8 @@ function speechEvent(m) {
       if (dictating) { dictShow(m.text); dictBase = input.value; input.focus(); }
       else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
-    case "say_start": setVoiceState("speaking"); break;
-    case "say_end": setVoiceState("listening"); break;
+    case "say_start": liveEl.dataset.state = "speaking"; break;
+    case "say_end": liveEl.dataset.state = "listening"; break;
   }
 }
 

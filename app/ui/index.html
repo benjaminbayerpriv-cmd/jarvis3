@@ -55,18 +55,11 @@
           <!-- Sprach-Bereich: klappt beim Sprechen nach oben auf (erkannter Text + Wellen) -->
           <div class="voice" id="voice" aria-hidden="true">
             <div class="voice-inner">
-              <div class="voice-caption" id="liveCaption" aria-live="polite"></div>
               <canvas class="voice-waves" id="voiceWaves" aria-hidden="true"></canvas>
             </div>
           </div>
           <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Hinzufügen"></button>
           <textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea>
-          <div class="voice-controls" id="voiceControls">
-            <button type="button" class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
-            <button type="button" class="round-btn" id="liveInterrupt" aria-label="Jarvis unterbrechen"><span data-icon="player-pause-filled"></span></button>
-            <span class="voice-state" id="voiceState" aria-live="polite">Ich höre zu …</span>
-            <button type="button" class="round-btn end" id="liveEnd" aria-label="Sprachmodus beenden"><span data-icon="x"></span></button>
-          </div>
           <div class="composer-actions">
             <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>
             <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span></button>
@@ -89,6 +82,20 @@
     </header>
     <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
   </aside>
+
+  <!-- Sprachmodus (Gemini-Live-Stil) -->
+  <div class="live" id="live" hidden>
+    <div class="live-top">
+      <span class="live-badge"><span class="live-dot"></span>Live</span>
+    </div>
+    <div class="live-caption" id="liveCaption">Ich höre zu …</div>
+    <div class="live-glow" id="liveGlow"><div class="nl" aria-hidden="true"><div class="nl-layer nl-bg"><div class="nl-blob"><div class="nl-strip"></div></div></div><div class="nl-layer nl-fg"><div class="nl-blob"><div class="nl-strip"></div></div></div></div></div>
+    <div class="live-controls">
+      <button class="round-btn" id="liveMute" aria-label="Mikrofon stummschalten"><span data-icon="microphone"></span></button>
+      <button class="round-btn" id="liveInterrupt" aria-label="Unterbrechen"><span data-icon="player-pause-filled"></span></button>
+      <button class="round-btn end" id="liveEnd" aria-label="Beenden"><span data-icon="x"></span></button>
+    </div>
+  </div>
 
   <!-- Modellwahl -->
   <dialog class="sheet" id="modelDialog">

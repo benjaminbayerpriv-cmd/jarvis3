@@ -403,27 +403,8 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
   transition: grid-template-rows var(--d-m2) var(--ease), opacity var(--d-m1) linear;
 }
 .voice-inner { overflow: hidden; min-height: 0; display: flex; flex-direction: column; }
-.composer[data-voice="live"] .voice, .composer[data-voice="dictate"] .voice { grid-template-rows: 1fr; opacity: 1; }
-.voice-caption {
-  max-height: min(34vh, 260px); overflow-y: auto; padding: 8px 8px 4px; text-align: left;
-  font: 400 20px/28px var(--font); font-variation-settings: "wdth" 96;
-  color: var(--on-surface); overflow-wrap: anywhere; transition: color var(--d-m1) linear;
-}
-.voice-caption.user { color: var(--on-surface-low); }
-.voice-caption:empty, .composer[data-voice="dictate"] .voice-caption { display: none; }
+.composer[data-voice="dictate"] .voice { grid-template-rows: 1fr; opacity: 1; }
 .voice-waves { display: block; width: 100%; height: 64px; }
-.voice-controls { display: none; flex: 1 1 100%; align-items: center; gap: 12px; min-width: 0; }
-.voice-state { flex: 1; text-align: center; font-size: 14px; color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.composer[data-voice="live"] .voice-controls { display: flex; }
-.composer[data-voice="live"] #attach, .composer[data-voice="live"] textarea, .composer[data-voice="live"] .composer-actions { display: none; }
-.round-btn {
-  width: 44px; height: 44px; flex: none; border-radius: var(--r-full); display: grid; place-items: center;
-  background: var(--surface-high); color: var(--on-surface); transition: background-color var(--d-s3) var(--ease), transform var(--d-s3) var(--ease);
-}
-.round-btn:hover { background: var(--surface-highest); }
-.round-btn:active { transform: scale(.94); }
-.round-btn.end { background: #b3261e; color: #fff; }
-.round-btn.muted { background: var(--on-surface); color: var(--bg); }
 /* Scrollleisten und Textauswahl */
 * { scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -551,3 +532,38 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 /* Leeres Eingabefeld: die eingeklappte Sprach-Zeile darf keinen Zeilenabstand erzeugen, sonst ist es 68 statt 64 px hoch
    und die Enden sind kein perfekter Halbkreis (Radius 32 = halbe Höhe). */
 .composer:not([data-voice="live"]):not([data-voice="dictate"]) { row-gap: 0; }
+
+/* ---------- Sprachmodus ---------- */
+.live {
+  position: fixed; inset: 0; z-index: 20; background: var(--surface-lowest);
+  display: grid; grid-template-rows: auto 1fr auto; overflow: hidden;
+  animation: live-in var(--d-m4) var(--ease-decel) both;
+}
+.live.closing { animation: live-out var(--d-m1) var(--ease-accel) both; }
+@keyframes live-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes live-out { to { opacity: 0; } }
+.live-top { display: flex; justify-content: center; padding-top: 36px; }
+.live-badge { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--on-surface-variant);
+  padding: 6px 14px; border-radius: var(--r-full); background: var(--surface); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand-pink); animation: pulse 1.6s var(--ease) infinite; }
+.live-caption {
+  align-self: center; justify-self: center; max-width: min(720px, 86vw); text-align: center;
+  font-size: 28px; line-height: 38px; font-weight: 320; font-variation-settings: "wdth" 100, "ROND" 100;
+  color: var(--on-surface); position: relative; z-index: 2; transition: color var(--d-m1) linear;
+}
+.live-caption.user { color: var(--on-surface-low); }
+.live-glow { position: absolute; inset: auto 0 0 0; height: 60vh; z-index: 1; pointer-events: none; --lvl: 0; }
+.live-glow .nl { top: auto; bottom: 0; left: -10%; right: -10%; transform: rotate(180deg) translateY(calc(var(--lvl) * -60px)) scale(calc(1 + var(--lvl) * .15));
+  --canvas-opacity: calc(.75 + var(--lvl) * .25); transition: opacity 120ms linear, transform 160ms linear; }
+.live[data-state="speaking"] .live-glow .nl { --fg-opacity: 1; }
+.live-glow .nl { --bg-center-x: 50%; --fg-center-x: 50%; --bg-center-y: -60px; --fg-center-y: -170px; --bg-opacity: .45; }
+.live-controls { display: flex; justify-content: center; gap: 20px; padding: 0 0 48px; position: relative; z-index: 2; }
+.round-btn {
+  width: 64px; height: 64px; border-radius: var(--r-full); display: grid; place-items: center;
+  background: var(--surface-high); color: var(--on-surface); transition: background-color var(--d-s3) var(--ease), transform var(--d-s3) var(--ease);
+}
+.round-btn:hover { background: var(--surface-highest); }
+.round-btn:active { transform: scale(.94); }
+.round-btn.end { background: #b3261e; color: #fff; }
+.round-btn.muted { background: var(--on-surface); color: var(--bg); }
+
