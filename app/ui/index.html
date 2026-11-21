@@ -54,6 +54,7 @@
         <div class="stop-banner" id="stopBanner" hidden>
           <button class="stop-btn" id="emergencyStop"><span data-icon="hand-stop"></span>Stopp <kbd>⌘⇧⎋</kbd></button>
         </div>
+        <p class="attach-note" id="attachNote" role="status" hidden></p>
         <form class="composer" id="composer" autocomplete="off" data-voice="off">
           <!-- Sprach-Bereich: klappt beim Sprechen nach oben auf (erkannter Text + Wellen) -->
           <div class="voice" id="voice" aria-hidden="true">
@@ -61,7 +62,9 @@
               <canvas class="voice-waves" id="voiceWaves" aria-hidden="true"></canvas>
             </div>
           </div>
-          <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Hinzufügen"></button>
+          <div class="chips" id="chips" hidden></div>
+          <input type="file" id="fileInput" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.html,.css,.js,.ts,.py,.log,.sql,.sh,text/*">
+          <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Fotos und Dateien hinzufügen" title="Fotos und Dateien hinzufügen"></button>
           <textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea>
           <div class="composer-actions">
             <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>

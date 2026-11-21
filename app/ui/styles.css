@@ -563,6 +563,29 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 ::-webkit-scrollbar-thumb:hover { background: var(--outline); background-clip: content-box; border: 3px solid transparent; }
 ::selection { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 
+/* ---------- Anhänge ---------- */
+.chips { flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 8px; padding: 0 4px 6px; }
+.chip {
+  display: flex; align-items: center; gap: 8px; max-width: 220px; height: 40px; padding: 0 6px 0 6px;
+  background: var(--surface-low); border-radius: 12px; font-size: 14px; color: var(--on-surface);
+}
+.chip img { width: 28px; height: 28px; border-radius: 8px; object-fit: cover; flex: none; }
+.chip-ic { width: 28px; height: 28px; display: grid; place-items: center; color: var(--on-surface-low); flex: none; }
+.chip-ic .ic { width: 20px; height: 20px; }
+.chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-x { width: 24px; height: 24px; border: 0; border-radius: 50%; background: none; color: var(--on-surface-low); display: grid; place-items: center; cursor: pointer; flex: none; }
+.chip-x:hover { background: var(--state-hover); color: var(--on-surface); }
+.chip-x .ic { width: 14px; height: 14px; }
+.bubble-files { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.bubble-files:last-child { margin-bottom: 0; }
+.bubble-files .chip { background: color-mix(in srgb, var(--on-surface) 8%, transparent); padding-right: 12px; }
+.attach-note { max-width: 708px; margin: 0 auto 8px; padding: 8px 14px; border-radius: 12px; background: var(--surface-low); color: var(--on-surface); font-size: 14px; }
+body.dropping::after {
+  content: "Dateien hier ablegen"; position: fixed; inset: 12px; z-index: 50; display: grid; place-items: center;
+  border: 2px dashed var(--primary); border-radius: 24px; background: color-mix(in srgb, var(--primary) 10%, var(--bg, transparent));
+  color: var(--on-surface); font-size: 20px; pointer-events: none;
+}
+
 /* Leeres Eingabefeld: die eingeklappte Sprach-Zeile darf keinen Zeilenabstand erzeugen, sonst ist es 68 statt 64 px hoch
    und die Enden sind kein perfekter Halbkreis (Radius 32 = halbe Höhe). */
 .composer:not([data-voice="live"]):not([data-voice="dictate"]) { row-gap: 0; }

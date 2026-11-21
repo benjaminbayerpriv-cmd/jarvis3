@@ -35,3 +35,13 @@ Im Live-Modus und beim Diktat klappt das Eingabefeld nach oben auf (`#voice`, `c
 ## jarvisd-Endpunkte für die Hülle
 - `GET /health` → `{ok, opencode, browser}`
 - `POST /stop` → Not-Aus (bricht Modell ab, sperrt Werkzeuge kurz, stoppt Sprache)
+
+## Anhänge („+“ im Eingabefeld)
+- Auswahl per Dateidialog, Ziehen und Ablegen auf das Fenster oder Einfügen (Strg/Cmd+V) von Bildern. Vorschau-Chips über dem Eingabefeld, jeder Chip hat ein ✕ zum Entfernen vor dem Senden.
+- Grenzen (UI und Daemon, `core/src/attachments.ts` `LIMITS`): höchstens 8 Dateien, je 10 MB, zusammen 25 MB. Verstöße zeigt die UI an und meldet sie als `client_error` ins Fehler-Log.
+- Protokoll: `{type:"chat", text, attachments:[{name, mime, data}]}`, `data` = Base64 ohne `data:`-Präfix. `text` darf leer sein.
+- jarvisd legt jede Datei unter `workspace/uploads/` ab (damit auch Werkzeuge sie lesen können) und bereitet sie auf:
+  - **Bilder** (PNG, JPEG, GIF, WebP) gehen als Bildteil an das Modell. Kann das gewählte Modell keine Bilder (`vision` in der Modellliste), wechselt jarvisd nur für diese Nachricht auf das erste verfügbare Bildmodell (Gratis zuerst) und meldet das per `notice`; gibt es keins, steht nur der Dateipfad im Prompt plus Hinweis.
+  - **Text-/Code-Dateien** (UTF-8) werden eingebettet, über 60 000 Zeichen gekürzt.
+  - **PDF**: Text per `pdftotext` (poppler), falls installiert; sonst nur Pfad.
+  - Alles andere: nur Pfad, dazu ein Hinweis; Fehlschläge landen als Kategorie `ui`, Quelle `jarvisd/attachment` im Fehler-Log.

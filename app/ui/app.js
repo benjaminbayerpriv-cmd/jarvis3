@@ -15,6 +15,7 @@ export function icon(name, cls = "ic") {
     ? `<svg class="${cls}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${i.d}</svg>`
     : `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${i.d}</svg>`;
 }
+TABLER.file ??= { d: '<path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />', fill: false };
 const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").forEach(el => {
   if (!el.dataset.painted) { el.insertAdjacentHTML("afterbegin", icon(el.dataset.icon)); el.dataset.painted = "1"; }
 });
@@ -27,6 +28,7 @@ let currentSession = null;
 let historySessions = [];
 let chatFolderNames = [];
 let editingMessage = null;
+let sending = false;
 let pendingChatAction = null;
 let live = { on: false, muted: false };
 let dictating = false;   // Diktat läuft (Mikro-Knopf wird zum Stopp, Live-Knopf zum Senden)
@@ -102,15 +104,22 @@ const stickToBottom = () => { if (conv.scrollHeight - conv.scrollTop - conv.clie
 
 const setZero = on => { $("#zero").classList.toggle("gone", !on); document.querySelector(".main").classList.toggle("is-zero", on); };
 setZero(true);
-function addUser(text) {
+function addUser(text, files = []) {
   setZero(false);
   const n = $("#tplUser").content.firstElementChild.cloneNode(true);
-  n.querySelector(".bubble").textContent = text;
+  const bubble = n.querySelector(".bubble");
+  if (files.length) {
+    const row = document.createElement("div");
+    row.className = "bubble-files";
+    for (const f of files) row.append(fileChip(f, false));
+    bubble.append(row);
+  }
+  if (text) { const t = document.createElement("div"); t.textContent = text; bubble.append(t); }
   const tools = document.createElement("div"); tools.className = "user-tools";
   const edit = document.createElement("button"); edit.type = "button"; edit.title = "Bearbeiten"; edit.setAttribute("aria-label", "Nachricht bearbeiten"); edit.innerHTML = icon("edit");
   const resend = document.createElement("button"); resend.type = "button"; resend.title = "Erneut senden"; resend.setAttribute("aria-label", "Nachricht erneut senden"); resend.innerHTML = icon("refresh");
   tools.append(edit, resend); n.append(tools);
-  edit.onclick = () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id }; input.value = text; autosize(); updateSend(); input.focus(); };
+  edit.onclick = () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id, hasFiles: !!msg.files?.length }; input.value = text; autosize(); updateSend(); input.focus(); };
   resend.onclick = () => { const msg = n.__message; if (msg?.id && currentSession) { turns.innerHTML = ""; send({ type: "resend", id: currentSession, messageID: msg.id, text }); } };
   turns.append(n);
   return n;
@@ -276,7 +285,7 @@ function heardUser(m) {
     if (current) { current.el.remove(); current = null; }
     [...turns.querySelectorAll(".turn.user")].at(-1)?.remove();
   }
-  addUser(m.text);
+  addUser(m.text, m.files);
   startJarvis();
 }
 function showError(msg) {
@@ -290,27 +299,36 @@ function showError(msg) {
   current.blocks.push({ kind: "error", el: p });
 }
 
-function ask(text) {
+async function ask(text) {
   text = text.trim();
-  if (!text) return;
-  if (editingMessage) {
-    const edit = editingMessage; editingMessage = null;
+  const edit = editingMessage;
+  const session = currentSession;
+  const files = [...pending];
+  if (!text && !files.length && !edit?.hasFiles) return false;
+  const attachments = await Promise.all(files.map(readFile));
+  if (editingMessage !== edit || currentSession !== session) return false;
+  if (ws?.readyState !== WebSocket.OPEN) throw new Error("Jarvis ist gerade nicht verbunden.");
+  if (edit) {
+    send({ type: "replace", id: edit.id, messageID: edit.messageID, text, attachments });
+    editingMessage = null;
     turns.innerHTML = "";
-    send({ type: "replace", ...edit, text });
-    return;
+  } else {
+    send({ type: "chat", text, attachments });
+    addUser(text, files);
+    startJarvis();
   }
-  addUser(text);
-  startJarvis();
-  send({ type: "chat", text });
+  pending.splice(0, files.length);
+  renderChips();
+  return true;
 }
 
 // ---------- Eingabe ----------
 const input = $("#input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
 function updateSend() {
-  const has = input.value.trim().length > 0;
+  const has = !!input.value.trim() || pending.length > 0 || !!editingMessage?.hasFiles;
   $("#send").hidden = state.busy || !(has || dictating);
-  $("#send").disabled = !has;
+  $("#send").disabled = !has || sending;
   $("#liveBtn").hidden = has || dictating || state.busy;
 }
 input.addEventListener("input", () => {
@@ -324,13 +342,99 @@ input.addEventListener("keydown", e => {
 });
 $("#composer").addEventListener("submit", e => {
   e.preventDefault();
-  if (state.busy || !input.value.trim()) return;
-  if (dictating) $("#dictate").click();   // Absenden beendet das Diktat
-  ask(input.value); input.value = ""; autosize(); updateSend();
+  if (state.busy || sending) return;
+  if (dictating) $("#dictate").click();
+  const draft = input.value;
+  sending = true;
+  updateSend();
+  ask(draft).then(sent => {
+    if (sent && input.value === draft) input.value = "";
+    autosize();
+  }).catch(error => {
+    reportError("attachments", error);
+    toast(error.message);
+  }).finally(() => {
+    sending = false;
+    updateSend();
+  });
 });
 $("#stop").onclick = () => send({ type: "stop" });
 $("#emergencyStop").onclick = () => send({ type: "stop" });
-$("#attach").onclick = () => input.focus();
+
+// ---------- Anhänge (Fotos und Dateien) ----------
+// Grenzen wie im Daemon (core/src/attachments.ts); der Daemon prüft nochmals.
+const ATT = { files: 8, fileBytes: 10 * 1024 * 1024, totalBytes: 25 * 1024 * 1024 };
+const pending = [];
+const isImage = f => /^image\/(png|jpe?g|gif|webp)$/.test(f.type);
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+function fileChip(f, removable) {
+  const c = document.createElement("div");
+  c.className = "chip";
+  if (f instanceof Blob && isImage(f)) {
+    f._url ??= URL.createObjectURL(f);
+    const im = document.createElement("img"); im.src = f._url; im.alt = ""; c.append(im);
+  } else {
+    const ic = document.createElement("span"); ic.className = "chip-ic"; ic.dataset.icon = "file"; c.append(ic);
+  }
+  const t = document.createElement("span"); t.className = "chip-name"; t.textContent = f.name; t.title = Number.isFinite(f.size) ? `${f.name} · ${fmtSize(f.size)}` : f.name; c.append(t);
+  if (removable) {
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "chip-x"; x.setAttribute("aria-label", `${f.name} entfernen`); x.dataset.icon = "x";
+    x.onclick = () => { if (sending) return; const i = pending.indexOf(f); if (i >= 0) pending.splice(i, 1); renderChips(); updateSend(); };
+    c.append(x);
+  }
+  paintIcons(c);
+  return c;
+}
+function renderChips() {
+  const box = $("#chips");
+  box.replaceChildren(...pending.map(f => fileChip(f, true)));
+  box.hidden = pending.length === 0;
+}
+function addFiles(list) {
+  const problems = [];
+  for (const f of list) {
+    const total = pending.reduce((n, p) => n + p.size, 0) + f.size;
+    if (pending.length >= ATT.files) { problems.push(`Höchstens ${ATT.files} Anhänge pro Nachricht.`); break; }
+    if (f.size === 0) problems.push(`„${f.name}“ ist leer.`);
+    else if (f.size > ATT.fileBytes) problems.push(`„${f.name}“ ist größer als ${ATT.fileBytes / 1048576} MB (${fmtSize(f.size)}).`);
+    else if (total > ATT.totalBytes) problems.push(`„${f.name}“ passt nicht mehr dazu (zusammen höchstens ${ATT.totalBytes / 1048576} MB).`);
+    else pending.push(f);
+  }
+  renderChips(); updateSend();
+  if (problems.length) {
+    toast(problems.join(" "));
+    send({ type: "client_error", where: "attachments", message: problems.join(" ") });
+  }
+}
+function toast(text) {
+  const t = $("#attachNote");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 6000);
+}
+const readFile = f => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve({ name: f.name, mime: f.type || "", data: String(r.result).split(",")[1] ?? "" });
+  r.onerror = () => reject(r.error ?? new Error(`„${f.name}“ nicht lesbar`));
+  r.readAsDataURL(f);
+});
+$("#attach").onclick = () => $("#fileInput").click();
+$("#fileInput").onchange = e => { addFiles([...e.target.files]); e.target.value = ""; input.focus(); };
+// Drag and Drop auf das ganze Fenster, Einfügen (Strg/Cmd+V) von Bildern aus der Zwischenablage
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types ?? [])].includes("Files");
+addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; document.body.classList.add("dropping"); });
+addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("dragleave", e => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
+addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping");
+  addFiles([...e.dataTransfer.files]);
+});
+input.addEventListener("paste", e => {
+  const files = [...(e.clipboardData?.files ?? [])];
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
 
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
 let dictBase = "";   // bereits fertig diktierter Text; jeder neue Satz wird angehängt statt das Feld zu überschreiben
@@ -535,7 +639,7 @@ function renderMessages(msgs = []) {
   turns.innerHTML = ""; current = null;
   setZero(msgs.length === 0);
   for (const m of msgs) {
-    if (m.role === "user") { const n = addUser(m.text); n.__message = m; }
+    if (m.role === "user") { const n = addUser(m.text, m.files); n.__message = m; }
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");

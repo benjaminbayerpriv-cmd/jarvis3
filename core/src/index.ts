@@ -3,11 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
-import { OpenCode, listModels, type ModelInfo, type BrainEvent } from "./opencode";
+import { OpenCode, listModels, type ModelInfo, type BrainEvent, type PromptImage } from "./opencode";
 import { Desktop } from "./desktop";
 import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
+import { prepare, validate, hasImages, type Attachment } from "./attachments";
 import { correct } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
@@ -203,11 +204,47 @@ async function history() {
     return [];
   }
 }
+const ATTACHMENT_HEADER = "Angehängte Dateien: ";
+type SavedAttachments = { text: string; images: PromptImage[]; names: string[] };
+
+function readChatMessage(message: any) {
+  const parts = message.parts ?? [];
+  const role = message.info?.role;
+  const blocks: string[] = [], names: string[] = [], images: PromptImage[] = [], text: string[] = [];
+  for (const part of parts) {
+    if (part.type === "text" && !part.synthetic && typeof part.text === "string") {
+      if (role === "user" && part.text.startsWith(ATTACHMENT_HEADER) && part.text.includes("\n")) {
+        try {
+          const files = JSON.parse(part.text.slice(ATTACHMENT_HEADER.length).split("\n", 1)[0]);
+          if (Array.isArray(files) && files.every(name => typeof name === "string")) {
+            names.push(...files);
+            blocks.push(part.text.slice(part.text.indexOf("\n") + 1));
+            continue;
+          }
+        } catch { /* normaler Nachrichtentext */ }
+      }
+      text.push(part.text);
+    } else if (role === "user" && part.type === "file" && /^data:image\/(png|jpe?g|gif|webp);base64,/.test(part.url)) {
+      images.push({ mime: part.mime, url: part.url, filename: part.filename });
+    }
+  }
+  if (!names.length) names.push(...images.map(image => image.filename || "Bild"));
+  const view = { id: message.info?.id, role, text: text.join(""), files: names.map(name => ({ name })) };
+  return { view, saved: { text: blocks.join("\n\n"), images, names } };
+}
+
+async function sessionMessages(id: string) {
+  const response = await fetch(`${brain.url}/session/${encodeURIComponent(id)}/message`);
+  if (!response.ok) throw new Error(`Nachrichten konnten nicht geladen werden (${response.status})`);
+  return (await response.json()) as any[];
+}
+const chatHistory = (messages: any[]) => messages.map(message => readChatMessage(message).view)
+  .filter(message => message.text || message.files.length);
+
 async function openSession(id: string) {
+  const messages = chatHistory(await sessionMessages(id));
   session = id;
-  const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
-  return msgs.map(m => ({ id: m.info?.id, role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") }))
-    .filter(m => m.text);
+  return messages;
 }
 
 // ---------- Projekte: Sitzungen übernehmen, Zuordnung durch das Modell ----------
@@ -299,19 +336,28 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
   return "Ich kümmere mich darum, einen Moment.";
 }
 
-async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false) {
+const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
+
+async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments) {
   if (busy && session && !fresh) await brain.abort(session);
+  // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
+  if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
+    const free = (m: ModelInfo) => m.vision && (limited.get(m.id) ?? 0) < Date.now() && !tried.includes(m.id);
+    const vm = models.find(m => free(m) && m.group === "free") ?? models.find(free);
+    if (vm) { broadcast({ type: "notice", text: `${model.split("/").pop()} kann keine Bilder sehen – für dieses Bild nutze ich ${vm.model}.` }); model = vm.id; }
+    else broadcast({ type: "notice", text: `${model.split("/").pop()} kann keine Bilder sehen und es ist kein Bildmodell verfügbar. Wähle in der Modellliste eins mit „Bild“.` });
+  }
   // Ein Modell, das gerade am Limit ist, gar nicht erst anfragen
   if ((limited.get(model) ?? 0) > Date.now()) {
     const alt = nextModel([...tried, model]);
-    if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh); }
+    if (alt) { broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); }
   }
   const isNew = !fresh && !session;
   const sid = fresh ? await brain.createSession("Test") : (session ??= await brain.createSession());
   if (!fresh) broadcast({ type: "session", id: sid });
   // Erste Titelfassung nach der ersten Nachricht; nach der Antwort wird ein thematischer Titel gesetzt.
   if (isNew) {
-    const title = topicTitle(text);
+    const title = topicTitle(text || atts.map(file => file.name).join(" "));
     if (!chatMeta[sid]?.title) void setSessionTitle(sid, title, true);
   }
   busy = true; broadcast(state());
@@ -331,7 +377,22 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
   };
   const system = spoken ? SYSTEM_PROMPT + "\n\nDu bist gerade im Sprachmodus: antworte in höchstens zwei kurzen Sätzen, ohne Listen." : SYSTEM_PROMPT;
-  await brain.prompt(sid, text, model, system, (e: BrainEvent) => {
+  const attachmentBlocks = saved?.text ? [saved.text] : [];
+  const attachmentNames = [...(saved?.names ?? []), ...atts.map(file => file.name)];
+  const images = canSee(model) ? [...(saved?.images ?? [])] : [];
+  if (atts.length) {
+    const prep = await prepare(atts, join(workspace, "uploads"), canSee(model));
+    attachmentBlocks.push(prep.text);
+    images.push(...prep.images);
+    if (prep.notes.length) broadcast({ type: "notice", text: prep.notes.join(" ") });
+    for (const p of prep.problems) recordError({ category: "ui", source: "jarvisd/attachment", message: p.message,
+      context: { ...p.context, name: p.name, model, session: sid } });
+  }
+  const attachmentText = attachmentNames.length
+    ? ATTACHMENT_HEADER + JSON.stringify(attachmentNames) + "\n" + attachmentBlocks.join("\n\n")
+    : "";
+  const prompt = text || (attachmentText || images.length ? "Sieh dir die angehängten Dateien an." : "");
+  await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
     if (switching) return;
     if (e.kind === "error" && isLimit(e.message)) {
       limited.set(model, Date.now() + 30 * 60_000);
@@ -339,7 +400,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (alt) {
         switching = true;
         broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` });
-        brain.abort(sid).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh); });
+        brain.abort(sid).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); });
         return;
       }
       e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
@@ -354,7 +415,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "error" && /Session not found|NotFoundError/i.test(e.message) && !tried.includes("__session")) {
       switching = true;
       if (!fresh) session = undefined;
-      brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, model, spoken, [...tried, "__session"], fresh); });
+      brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, model, spoken, [...tried, "__session"], fresh, atts, saved); });
       return;
     }
     // Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an: bis zu zweimal automatisch neu versuchen
@@ -366,7 +427,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         const alt = attempts === 0 ? model : (nextModel([...tried, model]) ?? model);
         vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
         broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal." });
-        brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh); });
+        brain.abort(sid).catch(() => {}).then(() => { busy = false; return chat(text, alt, spoken, [...tried, model], fresh, atts, saved); });
         return;
       }
       recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
@@ -403,7 +464,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }
       : { type: e.kind, ...e });
-  });
+  }, images, attachmentText);
 }
 
 /** Kurzer Chat-Titel vom schnellen Gratis-Modell (2–5 Wörter); null, wenn das Modell nichts Brauchbares liefert. */
@@ -465,8 +526,7 @@ async function rewindMessage(id: string, messageID: string) {
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
   if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
   session = id;
-  const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
-  broadcast({ type: "messages", messages: msgs.map(m => ({ id: m.info?.id, role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") })).filter(m => m.text) });
+  broadcast({ type: "messages", messages: chatHistory(await sessionMessages(id)) });
 }
 
 // ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
@@ -599,6 +659,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
     }
   },
   websocket: {
+    maxPayloadLength: 48 * 1024 * 1024, // Anhänge kommen Base64-kodiert (bis ~25 MB Dateien)
     open(ws) {
       if (ws.data.kind === "browser") { browser.attach(ws); broadcast(state()); }
       else {
@@ -624,7 +685,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
     async message(ws, raw) {
       try { await socketMessage(ws, String(raw)); } catch (error) {
         recordError({ category: ws.data.kind === "browser" ? "extension" : "daemon", source: `jarvisd/ws-${ws.data.kind}`,
-          message: String((error as Error)?.message ?? error), error, context: { raw: String(raw).slice(0, 500) } });
+          message: String((error as Error)?.message ?? error), error, context: { bytes: String(raw).length } });
       }
     },
   },
@@ -685,7 +746,29 @@ async function route(req: Request, srv: any) {
 async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
       const msg = JSON.parse(raw);
-      if (msg.type === "chat") await chat(msg.text, msg.model, false, [], ws.data.fresh);
+      if (msg.type === "chat" || msg.type === "resend" || msg.type === "replace") {
+        const atts: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : [];
+        const bad = validate(atts);
+        if (bad) {
+          recordError({ category: "ui", source: "jarvisd/attachment", message: bad, context: { count: atts.length } });
+          ws.send(JSON.stringify({ type: "error", message: bad }));
+          return;
+        }
+        const text = String(msg.text ?? "");
+        if (msg.type === "chat") {
+          if (text.trim() || atts.length) await chat(text, msg.model, false, [], ws.data.fresh, atts);
+        } else {
+          const id = String(msg.id), messageID = String(msg.messageID);
+          const original = (await sessionMessages(id)).find(message => message.info?.id === messageID && message.info.role === "user");
+          if (!original) throw new Error("Nachricht nicht gefunden");
+          const { view, saved } = readChatMessage(original);
+          const nextText = msg.type === "resend" ? view.text : text;
+          await rewindMessage(id, messageID);
+          const files = [...view.files, ...atts.map(file => ({ name: file.name }))];
+          broadcast({ type: "user", text: nextText, files });
+          await chat(nextText, settings.model, false, [], false, atts, saved);
+        }
+      }
       else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
         context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
       else if (msg.type === "stop") await stop();
@@ -710,8 +793,6 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
-      else if (msg.type === "resend") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
-      else if (msg.type === "replace") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
       else if (msg.type === "projects") ws.send(JSON.stringify({ type: "projects", ...projects.data() }));
       else if (msg.type === "project_action") {
