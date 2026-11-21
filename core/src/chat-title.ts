@@ -22,9 +22,10 @@ export function provisionalChatTitle(text: string) {
 }
 
 export function parseChatTitle(text: string) {
-  const title = text.split("\n").map(line => line.trim()).filter(Boolean)[0]
-    ?.replace(/^["„“'`*#\s]+|["“”'`*.\s]+$/g, "")
-    .replace(/^(?:Titel|Title)\s*:\s*/i, "");
-  return title && title.length >= 3 && title.length <= 60 && title.split(/\s+/).length <= 8
-    && !/[!?]$/.test(title) && !title.includes(" · ") && title !== "Neuer Chat" ? title : null;
+  const line = text.trim();
+  if (line.includes("\n") || line.startsWith("```")) return null;
+  const title = line.replace(/^["„“'`*#\s]+|["“”'`*.\s]+$/g, "").replace(/^(?:Titel|Title)\s*:\s*/i, "");
+  const words = title.split(/\s+/).length;
+  return title.length <= 60 && words >= 2 && words <= 8 && !/[!?]$/.test(title)
+    && !title.includes(" · ") && title !== "Neuer Chat" ? title : null;
 }

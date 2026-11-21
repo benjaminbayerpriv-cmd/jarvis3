@@ -21,6 +21,7 @@ test("vorläufige Titel behalten die natürliche Schreibweise", () => {
 test("ungültige Modelltitel können durch ein anderes Modell ersetzt werden", () => {
   expect(parseChatTitle("**Titel: Discord-Profil öffnen**")).toBe("Discord-Profil öffnen");
   expect(parseChatTitle("")).toBeNull();
+  expect(parseChatTitle("```mermaid")).toBeNull();
   expect(parseChatTitle("Discord · Profil · Öffnen")).toBeNull();
   expect(parseChatTitle("Kann ich dir helfen?")).toBeNull();
 });
