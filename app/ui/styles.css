@@ -508,7 +508,7 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .view-toggle { width: var(--ctl); height: var(--ctl); }
 .view-toggle[aria-pressed="false"] { color: var(--on-surface-low); opacity: .6; }
 .viewer {
-  position: relative; width: var(--viewer-w, clamp(440px, 46vw, 980px)); height: 100vh; display: flex; flex-direction: column;
+  position: relative; width: var(--viewer-w); height: 100vh; display: flex; flex-direction: column;
   padding-top: var(--inset-top); background: var(--surface-low); border-left: 1px solid var(--outline-variant);
   animation: viewer-in var(--d-m2) var(--ease) both;
 }
@@ -659,3 +659,8 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .history li.history-chat:not(.folder-chat):hover .history-menu-toggle,
 .history li.history-chat:not(.folder-chat):focus-within .history-menu-toggle,
 .history li.history-chat:not(.folder-chat) .history-menu-toggle[aria-expanded="true"] { opacity: 1; }
+
+/* Tab-Vorschau: Breite auf :root, damit auch der Live-Modus (Vollbild) daneben Platz lässt */
+:root { --viewer-w: clamp(440px, 46vw, 980px); }
+body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); left: 0; }
+@media (max-width: 900px) { body:has(.viewer:not([hidden])) .live { right: 0; } }
