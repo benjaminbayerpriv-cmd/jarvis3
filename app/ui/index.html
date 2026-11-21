@@ -5,22 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jarvis</title>
   <link rel="icon" href="icons/jarvis.svg">
+  <script>if (window.__TAURI__) document.documentElement.classList.add("tauri");</script>
   <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <defs>
-      <linearGradient id="live-grad" x1="0" y1="0" x2="24" y2="0" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#ffaee4"/><stop offset=".5" stop-color="#ad72ff"/><stop offset="1" stop-color="#c597ff"/>
-      </linearGradient>
-    </defs>
-  </svg>
   <div class="app" id="app" data-rail="collapsed">
     <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
     <nav class="rail" aria-label="Navigation">
       <div class="rail-top" data-tauri-drag-region>
-        <button class="icon-btn" id="railToggle" data-icon="menu-2" aria-label="Menü"></button>
+        <button class="rail-item" id="railToggle" aria-label="Menü"><span data-icon="menu-2"></span></button>
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <div class="rail-section rail-label">Zuletzt</div>
@@ -48,7 +42,6 @@
       <section class="conversation" id="conversation" aria-live="polite">
         <div class="zero" id="zero">
           <h1 class="greeting"><span class="greeting-q">Womit fangen wir an?</span></h1>
-          <div class="chips" id="suggestions"></div>
         </div>
         <div class="turns" id="turns"></div>
       </section>
@@ -62,7 +55,7 @@
           <textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea>
           <div class="composer-actions">
             <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>
-            <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span><span>Live</span></button>
+            <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span></button>
             <button type="submit" class="send-btn" id="send" aria-label="Senden" hidden><span data-icon="arrow-up"></span></button>
             <button type="button" class="send-btn stop" id="stop" aria-label="Stoppen" hidden><span data-icon="player-stop-filled"></span></button>
           </div>

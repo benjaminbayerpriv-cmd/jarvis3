@@ -228,6 +228,18 @@ function finishTurn(note) {
     else if (b.kind === "tools") { for (const r of b.rows.values()) if (r.status === "pending" || r.status === "running") { r.status = note ? "error" : "completed"; r.el.classList.remove("running"); } paintToolsHeader(b); }
   }
   if (!current.blocks.some(b => b.kind === "text") && !note && !current.blocks.length) textBlock().el.textContent = "…";
+  if (current.text.trim()) {  // Antwort kopieren
+    const b = document.createElement("button");
+    b.className = "copy-btn"; b.type = "button"; b.title = "Antwort kopieren"; b.setAttribute("aria-label", "Antwort kopieren");
+    b.innerHTML = icon("copy");
+    const text = current.text.trim();
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(text); } catch { return; }
+      b.innerHTML = icon("check"); b.classList.add("done");
+      setTimeout(() => { b.innerHTML = icon("copy"); b.classList.remove("done"); }, 1400);
+    };
+    el.querySelector(".body").insertBefore(b, el.querySelector(".meta"));
+  }
   const secs = ((performance.now() - started) / 1000).toFixed(1);
   el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
     .filter(Boolean).join(" · ");
@@ -303,18 +315,6 @@ $("#dictate").onclick = () => {
   $("#dictate").classList.toggle("rec", dictating);
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
 };
-
-// Vorschläge im Startzustand
-const SUGGEST = [
-  ["world", "Öffne YouTube und such nach Lofi-Musik"],
-  ["device-desktop", "Was ist gerade auf meinem Bildschirm?"],
-  ["search", "Fasse die Nachrichten von heute zusammen"],
-  ["edit", "Schreib mir eine kurze E-Mail-Vorlage"],
-];
-$("#suggestions").innerHTML = SUGGEST.map(([i, t], k) =>
-  `<button class="chip" style="animation-delay:${120 + k * 40}ms">${icon(i)}<span></span></button>`).join("");
-$("#suggestions").querySelectorAll(".chip span").forEach((s, k) => s.textContent = SUGGEST[k][1]);
-$("#suggestions").addEventListener("click", e => { const c = e.target.closest(".chip"); if (c) ask(c.textContent); });
 
 // ---------- Seitenleiste / Verlauf ----------
 $("#railToggle").onclick = () => { const a = $("#app"); a.dataset.rail = a.dataset.rail === "open" ? "collapsed" : "open"; };
