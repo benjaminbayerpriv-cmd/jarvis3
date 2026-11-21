@@ -24,7 +24,7 @@ export type BrainEvent =
   | { kind: "text"; delta: string }
   | { kind: "reasoning"; delta: string }
   | { kind: "tool"; id: string; name: string; status: string; title?: string; input?: Record<string, unknown>; error?: string }
-  | { kind: "done" }
+  | { kind: "done"; aborted?: boolean }
   | { kind: "error"; message: string; retry?: boolean };
 
 export class OpenCode {
@@ -95,7 +95,7 @@ export class OpenCode {
    */
   async abort(session: string, wait = true) {
     await fetch(`${this.url}/session/${session}/abort`, { method: "POST" }).catch(() => {});
-    this.listeners.get(session)?.({ kind: "done" });
+    this.listeners.get(session)?.({ kind: "done", aborted: true });
     this.listeners.delete(session);
     if (wait) await this.idle(session);
   }

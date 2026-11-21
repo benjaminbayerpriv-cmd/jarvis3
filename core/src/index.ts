@@ -201,6 +201,10 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       recordError({ category: "tool", source: `opencode/${e.name}`, message: e.error ?? "Werkzeug fehlgeschlagen",
         context: { tool: e.name, input: e.input, model, request: text, mode: settings.mode } });
     if (e.kind === "text") textSeen = true;
+    // Stiller Datenverlust sichtbar machen: Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an
+    if (e.kind === "done" && !e.aborted && !textSeen && !toolSeen)
+      recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
+        context: { model, request: text, mode: settings.mode, spoken, voice, session: sid, tried } });
     // Modelle, die wortlos loslegen: eine passende Ankündigung ergänzen (wie bei einem guten Assistenten)
     if (e.kind === "tool" && !textSeen && !announced && e.status !== "pending") {
       announced = true;
