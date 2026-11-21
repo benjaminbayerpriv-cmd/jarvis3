@@ -191,9 +191,18 @@ async function releaseTab(request) {
 async function listTabs() {
   const [tabs, groups] = await Promise.all([chrome.tabs.query({}), chrome.tabGroups.query({})]);
   const names = new Map(groups.map(group => [group.id, group.title ?? ""]));
-  return { tabs: tabs.map(({ id, url, pendingUrl, title, groupId, active }) => ({
+  return { tabs: tabs.map(({ id, url, pendingUrl, title, groupId, active, favIconUrl }) => ({
     tab: id, url: url || pendingUrl || "", title: title || "", group: names.get(groupId) ?? null, active,
+    favicon: /^https?:|^data:image\//.test(favIconUrl ?? "") ? favIconUrl : "",
   })) };
+}
+
+async function requireJarvisGroup(tabId) {
+  if (!Number.isInteger(tabId)) throw new Error("tab fehlt");
+  const tab = await chrome.tabs.get(tabId).catch(() => { throw new Error("Tab nicht gefunden"); });
+  const group = tab.groupId >= 0 ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
+  if (!group || !/^jarvis/i.test(group.title ?? "")) throw new Error("Tab gehört nicht zur Gruppe Jarvis");
+  return tab;
 }
 
 async function requireManaged(tabId, background = false) {
@@ -455,10 +464,15 @@ async function streamStop(tab, reason = "gestoppt") {
   sendFrame({ type: "stream_ended", tab, reason });
 }
 
-// Bild ohne clip/scale aufnehmen: Ein Ausschnitt mit Skalierungsfaktor lässt Chrome die Seite kurz umrechnen,
-// das flackert im echten Fenster. Verkleinert wird stattdessen hier in der Erweiterung.
+// Bildrate: Hintergrund-Tabs liefern über Page.startScreencast keine Bilder, nur Page.captureScreenshot. Eine einzelne Schleife
+// schafft ~18 Bilder/s, mehrere überlappende Aufnahmen schaffen 45+ (gemessen: extension/test/stream-fps.mjs). Darum laufen
+// STREAM_WORKERS Aufnahmen parallel; jede Runde dauert mindestens STREAM_CYCLE ms, das deckelt die Rate bei ~30 Bildern/s.
+const STREAM_WORKERS = 6, STREAM_CYCLE = 180, STREAM_QUALITY = 82, STREAM_MAX_WIDTH = 1600;
+
+// Nur sehr breite Tabs werden verkleinert (sonst ginge die Bildrate und die Datenmenge durch die Decke).
 async function downscale(base64, maxWidth) {
   const blob = await (await fetch("data:image/jpeg;base64," + base64)).blob();
+  // beim Dekodieren gleich verkleinern (deutlich schneller als erst voll dekodieren und dann skalieren)
   const bitmap = await createImageBitmap(blob);
   const scale = Math.min(1, maxWidth / bitmap.width);
   const width = Math.max(1, Math.round(bitmap.width * scale));
@@ -466,27 +480,59 @@ async function downscale(base64, maxWidth) {
   const canvas = new OffscreenCanvas(width, height);
   canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
   bitmap.close();
-  const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.6 })).arrayBuffer());
+  const buffer = await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 })).arrayBuffer();
+  const bytes = new Uint8Array(buffer);
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return { data: btoa(binary), w: width, h: height };
 }
 
-async function streamLoop(tab, state) {
-  while (!state.stopped && streams.get(tab) === state) {
-    const started = Date.now();
-    try {
-      const { data } = await chrome.debugger.sendCommand(state.target, "Page.captureScreenshot", {
-        format: "jpeg", quality: 70, fromSurface: true, optimizeForSpeed: true,
-      });
-      const frame = await downscale(data, 1280);
-      const current = await chrome.tabs.get(tab);
-      if (!state.stopped) sendFrame({ type: "frame", tab, ...frame, url: current.url ?? "", title: current.title ?? "" });
-    } catch {
-      if (!(await chrome.tabs.get(tab).catch(() => null))) { await streamStop(tab, "Tab geschlossen"); return; }
+// JPEG-Kopf lesen: Breite/Höhe ohne Dekodieren
+function jpegSize(base64) {
+  try {
+    const bin = atob(base64.slice(0, 4096)); let i = 2;
+    while (i < bin.length) {
+      if (bin.charCodeAt(i) !== 0xff) { i++; continue; }
+      const marker = bin.charCodeAt(i + 1);
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+        return { h: (bin.charCodeAt(i + 5) << 8) | bin.charCodeAt(i + 6), w: (bin.charCodeAt(i + 7) << 8) | bin.charCodeAt(i + 8) };
+      i += 2 + ((bin.charCodeAt(i + 2) << 8) | bin.charCodeAt(i + 3));
     }
-    await sleep(Math.max(0, 250 - (Date.now() - started)));
-  }
+  } catch {}
+  return null;
+}
+
+async function streamLoop(tab, state) {
+  state.issued = 0; state.sent = 0; state.info = { url: "", title: "", at: 0 };
+  const worker = async () => {
+    while (!state.stopped && streams.get(tab) === state) {
+      const started = Date.now();
+      const seq = ++state.issued;
+      try {
+        const { data } = await chrome.debugger.sendCommand(state.target, "Page.captureScreenshot", {
+          format: "jpeg", quality: STREAM_QUALITY, fromSurface: true, optimizeForSpeed: true,
+        });
+        if (Date.now() - state.info.at > 1000) { // Titel/URL nur gelegentlich nachfragen
+          const current = await chrome.tabs.get(tab);
+          state.info = { url: current.url ?? "", title: current.title ?? "", at: Date.now() };
+        }
+        // Chrome bearbeitet Aufnahmen eines Tabs der Reihe nach; überholte Bilder (selten) trotzdem nur verwerfen,
+        // wenn sie deutlich älter sind als das zuletzt gesendete
+        if (!state.stopped && seq > state.sent - STREAM_WORKERS) {
+          state.sent = Math.max(state.sent, seq);
+          let frame = jpegSize(data) ?? { w: 0, h: 0 };
+          if (frame.w > STREAM_MAX_WIDTH || frame.w === 0) frame = await downscale(data, STREAM_MAX_WIDTH);
+          else frame = { data, ...frame };
+          sendFrame({ type: "frame", tab, ...frame, url: state.info.url, title: state.info.title });
+        }
+      } catch {
+        if (!(await chrome.tabs.get(tab).catch(() => null))) { await streamStop(tab, "Tab geschlossen"); return; }
+        await sleep(200);
+      }
+      await sleep(Math.max(0, STREAM_CYCLE - (Date.now() - started)));
+    }
+  };
+  await Promise.all(Array.from({ length: STREAM_WORKERS }, (_, i) => sleep(i * (STREAM_CYCLE / STREAM_WORKERS)).then(worker)));
 }
 
 chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
@@ -652,7 +698,8 @@ async function dispatch(request) {
     throw new Error("Unbekannter Befehl");
   }
 
-  await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot", "preview"].includes(cmd));
+  if (cmd === "stream_start") await requireJarvisGroup(tab); // nur ansehen: jeder Tab der Gruppe "Jarvis" darf übertragen werden
+  else await requireManaged(tab, ["tab_close", "navigate", "back", "click", "type", "focus", "scroll", "shot", "preview"].includes(cmd));
   switch (cmd) {
     case "tab_close": await streamStop(tab); await chrome.tabs.remove(tab); return {};
     case "stream_start": return streamStart(tab);

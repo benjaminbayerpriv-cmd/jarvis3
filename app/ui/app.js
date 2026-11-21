@@ -63,7 +63,8 @@ function handle(m) {
     case "notice": showNotice(m.text); break;
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
-    case "stream_ended": viewer.dataset.idle = "1"; break;
+    case "tabs": viewerTabsMessage(m); break;
+    case "stream_ended": viewer.dataset.idle = "1"; viewerGotFrame = false; send({ type: "tabs" }); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -667,19 +668,63 @@ $("#exNew").onclick = () => {
 
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
-let viewerTimer;
+let viewerTimer, viewerPoll;
+let viewerTabs = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
+const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
+
+function renderViewerTabs() {
+  const box = $("#viewerTabs"); box.replaceChildren();
+  const mk = (label, sel, onclick, iconHtml = "", title = "") => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "vtab"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(sel));
+    if (iconHtml) b.insertAdjacentHTML("beforeend", iconHtml);
+    const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick; box.append(b);
+  };
+  mk("Automatisch", viewerPinned === null, () => send({ type: "viewer_tab", tab: null }), icon("sparkles"), "Dem Tab folgen, in dem Jarvis gerade arbeitet");
+  for (const t of viewerTabs) {
+    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
+    mk(t.title || t.url || "Tab", t.tab === viewerStreaming, () => { viewerStreaming = t.tab; viewerPinned = t.tab; renderViewerTabs(); send({ type: "viewer_tab", tab: t.tab }); }, fav, t.url || t.title);
+  }
+  const empty = $("#viewerEmpty");
+  if (!viewerGotFrame) empty.textContent = viewerTabs.length ? "Wähle oben einen Tab, um ihn live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  else empty.textContent = "";
+}
+function openViewer() {
+  viewer.hidden = false; state.liveView = true;
+  send({ type: "liveview", on: true }); send({ type: "tabs" });
+  clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 2000);
+  renderViewerTabs();
+}
+function hideViewer() {
+  clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
+}
+function drawFrame(m) {
+  // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
+  if (viewerBusy) { viewerNext = m; return; }
+  viewerBusy = true;
+  const bin = atob(m.data), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
+    if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
+    vctx.drawImage(bmp, 0, 0); bmp.close();
+  }).catch(() => {}).finally(() => { viewerBusy = false; if (viewerNext) { const n = viewerNext; viewerNext = null; drawFrame(n); } });
+}
 function showFrame(m) {
-  if (state.liveView === false) return;
-  $("#viewerImg").src = "data:image/jpeg;base64," + m.data;
+  if (viewer.hidden) { if (state.liveView === false) return; openViewer(); }
+  drawFrame(m);
   $("#viewerTitle").textContent = m.title || "Tab";
   try { $("#viewerHost").textContent = new URL(m.url).host.replace(/^www\./, ""); } catch { $("#viewerHost").textContent = ""; }
-  viewer.hidden = false; delete viewer.dataset.idle;
+  delete viewer.dataset.idle;
+  if (!viewerGotFrame || viewerStreaming !== m.tab) { viewerGotFrame = true; viewerStreaming = m.tab; renderViewerTabs(); }
   clearTimeout(viewerTimer);
   viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
 }
-function hideViewer() { clearTimeout(viewerTimer); viewer.hidden = true; }
+function viewerTabsMessage(m) {
+  viewerTabs = m.tabs || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
+  if (!viewer.hidden) renderViewerTabs();
+}
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
-$("#viewToggle").onclick = () => send({ type: "liveview", on: state.liveView === false });
+// Das Auge öffnet die Vorschau immer (mit der Tab-Auswahl oben) und schließt sie wieder
+$("#viewToggle").onclick = () => { if (viewer.hidden) openViewer(); else { send({ type: "liveview", on: false }); hideViewer(); } };
 // Breite per Griff ziehen (wird gemerkt)
 try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) document.documentElement.style.setProperty("--viewer-w", w + "px"); } catch {}
 $("#viewerGrip").addEventListener("pointerdown", e => {

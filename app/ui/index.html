@@ -82,7 +82,11 @@
         <span class="viewer-host" id="viewerHost"></span>
         <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
       </header>
-      <div class="viewer-frame"><img id="viewerImg" alt="Live-Bild des Tabs"></div>
+        <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Tabs der Jarvis-Gruppe"></div>
+      <div class="viewer-frame">
+        <canvas id="viewerCanvas" aria-label="Live-Bild des Tabs"></canvas>
+        <div class="viewer-empty" id="viewerEmpty"></div>
+      </div>
     </aside>
   </div>
 

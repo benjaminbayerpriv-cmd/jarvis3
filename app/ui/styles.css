@@ -523,8 +523,18 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .viewer-host { font-size: 13px; color: var(--on-surface-low); margin-left: auto; flex: none; }
 .viewer-close { width: 36px; height: 36px; flex: none; }
 .viewer-close svg { width: 20px; height: 20px; }
-.viewer-frame { flex: 1; min-height: 0; margin: 0 12px 12px; border-radius: var(--r-l); overflow: hidden; background: #000; display: grid; }
-.viewer-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.viewer-tabs { flex: none; display: flex; gap: 6px; padding: 0 12px 10px; overflow-x: auto; scrollbar-width: none; }
+.viewer-tabs::-webkit-scrollbar { display: none; }
+.vtab { flex: none; display: flex; align-items: center; gap: 8px; max-width: 220px; height: 34px; padding: 0 12px; border-radius: var(--r-full);
+  background: var(--surface); color: var(--on-surface-variant); font-size: 13px; white-space: nowrap; transition: background-color var(--d-s3) var(--ease); }
+.vtab:hover { background: var(--surface-highest); }
+.vtab[aria-selected="true"] { background: var(--primary-container); color: var(--on-primary-container); }
+.vtab img, .vtab svg { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+.vtab .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.viewer-frame { position: relative; flex: 1; min-height: 0; margin: 0 12px 12px; border-radius: var(--r-l); overflow: hidden; background: #000; display: grid; }
+.viewer-frame canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.viewer-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--on-surface-low); font-size: 14px; pointer-events: none; }
+.viewer-empty:empty { display: none; }
 .app:has(.viewer:not([hidden])) { grid-template-columns: auto minmax(0, 1fr) auto; }
 @media (max-width: 900px) { .viewer { position: fixed; z-index: 12; right: 0; top: 0; width: min(100vw, 520px); } }
 
