@@ -1,5 +1,6 @@
 // Desktop-Werkzeug: hält einen `uimap serve`-Prozess (Mac) bzw. uimap.exe (Windows) offen.
 import { join } from "node:path";
+import { recordError } from "./errorlog";
 
 type Reply = Record<string, unknown> & { ok: boolean };
 
@@ -24,11 +25,17 @@ export class Desktop {
         buf += value;
         let i;
         while ((i = buf.indexOf("\n")) >= 0) {
-          const reply = JSON.parse(buf.slice(0, i)) as Reply; buf = buf.slice(i + 1);
+          const line = buf.slice(0, i); buf = buf.slice(i + 1);
+          let reply: Reply;
+          try { reply = JSON.parse(line); } catch (error) {
+            recordError({ category: "tool", source: "desktop/uimap", message: "uimap lieferte unlesbare Antwort", error, context: { line: line.slice(0, 500), bin: this.bin } });
+            continue;
+          }
           const id = reply.rid as number;
           this.pending.get(id)?.(reply); this.pending.delete(id);
         }
       }
+      if (this.pending.size) recordError({ category: "tool", source: "desktop/uimap", message: "uimap-Prozess beendet", context: { bin: this.bin, exitCode: this.proc?.exitCode, offen: this.pending.size } });
       for (const [, resolve] of this.pending) resolve({ ok: false, error: "uimap beendet" });
       this.pending.clear();
     })();

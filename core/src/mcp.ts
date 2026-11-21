@@ -3,15 +3,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { recordError } from "./errorlog";
 import { readFileSync, unlinkSync } from "node:fs";
 
 const JARVISD = process.env.JARVISD_URL ?? "http://127.0.0.1:7777";
 const server = new McpServer({ name: "jarvis", version: "0.1.0" });
 
 async function call(target: "desktop" | "browser", cmd: Record<string, unknown>) {
-  const r = await fetch(`${JARVISD}/tool`, { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ target, cmd }) });
-  return (await r.json()) as Record<string, any>;
+  try {
+    const r = await fetch(`${JARVISD}/tool`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target, cmd }) });
+    return (await r.json()) as Record<string, any>;
+  } catch (error) { // jarvisd nicht erreichbar: direkt ins Fehler-Log schreiben (gleiche Dateien)
+    recordError({ category: "daemon", source: "mcp/call", message: `jarvisd nicht erreichbar: ${(error as Error)?.message ?? error}`, context: { target, cmd, url: JARVISD } });
+    return { ok: false, error: "jarvisd nicht erreichbar" };
+  }
 }
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
@@ -80,5 +86,24 @@ server.tool("browser_read", "Liest Text der Seite: ohne id/rect den gesamten sic
   });
 server.tool("browser_look", "Screenshot des Tabs, NUR wenn nötig.", { tab, rect: rect.optional(), marks: z.boolean().optional() },
   async a => image(await call("browser", { cmd: "shot", ...a })));
+
+// ---------- Fehler-Log (docs/errors.md) ----------
+server.tool("error_report", "Meldet einen Fehler ins zentrale Fehler-Log, wenn etwas nicht klappt und du es nicht selbst lösen kannst (Seite reagiert falsch, Element fehlt, Werkzeug liefert Unsinn). Bei Bildschirmbezug target angeben: es wird ein Screenshot gespeichert und die Stelle (id aus dem letzten scan oder rect) rot markiert.",
+  { message: z.string().describe("Was ist schiefgegangen, was hast du erwartet?"),
+    category: z.enum(["tool", "model", "speech", "daemon", "app", "extension", "ui"]).optional(),
+    target: z.enum(["browser", "desktop"]).optional().describe("Wo der Fehler sichtbar ist"),
+    tab: tab.optional(), id: id.optional(), rect: rect.optional(),
+    context: z.record(z.string(), z.unknown()).optional().describe("Bedingungen: Aufgabe, Werkzeug, Argumente, URL …") },
+  async a => {
+    try {
+      const r = await fetch(`${JARVISD}/errors`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...a, category: a.category ?? "tool", source: "model/error_report" }) });
+      const j = await r.json() as Record<string, any>;
+      return j.ok ? text(`Fehler ${j.id} gespeichert${j.screenshot ? " (mit markiertem Screenshot)" : ""}.`) : result(j);
+    } catch {
+      const e = recordError({ category: a.category ?? "tool", source: "model/error_report", message: a.message, context: { ...a.context, target: a.target, tab: a.tab } });
+      return text(`Fehler ${e?.id ?? "?"} gespeichert (ohne Screenshot, jarvisd nicht erreichbar).`);
+    }
+  });
 
 await server.connect(new StdioServerTransport());

@@ -15,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .audio import EchoGate, NativeAudio, Playback, resample, rms
 from .endpoint import Endpoint
+from .errorlog import record
 from .recognition import FRAME, RATE, load_recognizer
 from .synthesis import Synthesizer, Voice
 
@@ -143,6 +144,8 @@ class Sidecar:
 
     def emit(self, kind, id=None, **fields):
         if self.events is None:
+            if kind == "error":  # kein jarvisd verbunden, der den Fehler protokolliert
+                record("speech", "speech/sidecar", fields.get("message", "Sprachfehler"), fields)
             return
         if id is not None:
             fields["id"] = id
@@ -308,7 +311,8 @@ class Sidecar:
                 try:
                     self.command(message)
                 except Exception as error:
-                    self.emit("error", message=str(error))
+                    LOG.debug("Befehl fehlgeschlagen", exc_info=True)
+                    self.emit("error", message=str(error), command=str(message)[:300])
         except ConnectionClosed:
             pass
         finally:

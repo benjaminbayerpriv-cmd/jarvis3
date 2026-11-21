@@ -1,6 +1,6 @@
 # Jarvis 3 – Übergabe für einen neuen Agenten
 
-Lies zuerst diese Datei, dann `docs/protocol.md`, `docs/speech.md`, `docs/app.md`. Die Nutzerin bzw. der Nutzer schreibt **Deutsch**; antworte auf Deutsch, ehrlich und ohne Beschönigung.
+Lies zuerst diese Datei, dann `docs/protocol.md`, `docs/speech.md`, `docs/app.md`. Offene Fehler stehen im zentralen Fehler-Log (`bun core/scripts/errors.ts`, siehe `docs/errors.md`); behobene Fehler mit `resolve <id>` austragen. Die Nutzerin bzw. der Nutzer schreibt **Deutsch**; antworte auf Deutsch, ehrlich und ohne Beschönigung.
 
 ## Was Jarvis 3 ist
 Ein lokaler KI-Assistent für den Desktop (Mac und Windows). Ersetzt den verbuggten alten Jarvis. Bausteine:

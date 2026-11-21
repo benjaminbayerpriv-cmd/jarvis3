@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod errorlog;
 mod services;
 
 use std::{
@@ -72,7 +73,10 @@ fn dispatch(app: &AppHandle, action: Action) {
         let endpoint = app.state::<services::Services>().endpoint().clone();
         tauri::async_runtime::spawn_blocking(move || match endpoint.stop() {
             Ok(()) => eprintln!("Jarvis3: Not-Aus bestätigt (POST /stop)"),
-            Err(error) => eprintln!("Jarvis3: Not-Aus fehlgeschlagen: {error}"),
+            Err(error) => {
+                eprintln!("Jarvis3: Not-Aus fehlgeschlagen: {error}");
+                errorlog::record("app", "tauri/stop", &format!("Not-Aus fehlgeschlagen: {error}"), serde_json::json!({ "hotkey": "stop" }));
+            }
         });
         return;
     }
@@ -80,6 +84,7 @@ fn dispatch(app: &AppHandle, action: Action) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = handle_window(&window, action) {
             eprintln!("Jarvis3: Fensteraktion {action:?}: {error}");
+            errorlog::record("app", "tauri/window", &format!("Fensteraktion fehlgeschlagen: {error}"), serde_json::json!({ "action": format!("{action:?}") }));
         }
     }
 }
@@ -153,6 +158,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn main() -> tauri::Result<()> {
+    errorlog::install_panic_hook();
     let background = std::env::args_os().any(|arg| arg == "--background");
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -182,6 +188,7 @@ fn main() -> tauri::Result<()> {
                 match app.global_shortcut().register(shortcut) {
                     Ok(()) => eprintln!("Jarvis3: globaler Hotkey registriert: {action:?}"),
                     Err(error) => {
+                        errorlog::record("app", "tauri/hotkey", &format!("Globaler Hotkey nicht verfügbar: {error}"), serde_json::json!({ "action": format!("{action:?}")}));
                         eprintln!("Jarvis3: globaler Hotkey {action:?} nicht verfügbar: {error}")
                     }
                 }

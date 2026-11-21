@@ -34,6 +34,10 @@ function connect() {
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
+// Fehler der Oberfläche ins zentrale Fehler-Log des Daemons (docs/errors.md)
+const reportError = (where, error) => send({ type: "client_error", where, message: String(error?.message ?? error), stack: error?.stack });
+addEventListener("error", e => reportError("window.onerror", e.error ?? e.message));
+addEventListener("unhandledrejection", e => reportError("unhandledrejection", e.reason));
 function setOffline(off) {
   $("#footModel").textContent = off ? "– Jarvis-Dienst nicht erreichbar, verbinde neu …" : state.model;
 }
