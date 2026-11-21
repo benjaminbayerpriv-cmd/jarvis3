@@ -4,6 +4,7 @@ import { CUSTOM } from "./icons-custom.js";
 const TABLER = { ...BASE, ...CUSTOM };
 import { renderMarkdown } from "./markdown.js";
 import { BlurText } from "./blurtext.js";
+import { preferences, setPreference, lessMotion } from "./preferences.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = (location.protocol.startsWith("http") && location.port === "7777") ? location.host : "127.0.0.1:7777";
@@ -40,7 +41,9 @@ let ws, retry = 0;
 function connect() {
   ws = new WebSocket(`ws://${DAEMON}/ui`);
   ws.onopen = () => { retry = 0; setOffline(false); };
-  ws.onclose = () => { setOffline(true); setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
+  // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
+  // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
+  ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
@@ -62,12 +65,12 @@ function handle(m) {
   if (CHAT_EVENTS.has(m.type) && m.session !== undefined && m.session !== currentSession) return;
   switch (m.type) {
     case "state":
-      Object.assign(state, m); renderState(); fillAudioDevices();
+      Object.assign(state, m); renderState(); renderSettingsState();
       { const key = (m.busySessions || []).join(","); if (key !== runningKey) { runningKey = key; send({ type: "history" }); } } // Lauf-Markierung in der Seitenleiste
       // Früher schickte jede Oberfläche beim ersten "live"-State sofort voice:off und hat damit den
       // Sprachmodus anderer Clients abgewürgt. Der Daemon klärt jetzt die Zuständigkeit (voiceOwner).
       break;
-    case "delta": appendText(m.text); break;
+    case "delta": appendText(m.text); if (live.on && state.spokenReplies === false) liveUnspoken(m.text); break;
     case "tool": toolEvent(m); break;
     case "action": break; // Details kommen über "tool"
     case "latency": if (current) { current.firstMs = m.firstTokenMs; if (m.model) current.model = m.model; } break;
@@ -75,6 +78,9 @@ function handle(m) {
     case "user": heardUser(m); break;
     case "frame": showFrame(m); break;
     case "spoken": if (live.on) liveSpoken(m.text); break;
+    case "voice_sample":
+      $("#voiceSampleStatus").textContent = m.ok ? "Stimmprobe an den Sprachdienst gesendet." : "Schließe zuerst den Live-Modus oder warte auf den Sprachdienst.";
+      break;
     case "live_unspoken": if (live.on) liveUnspoken(m.text); break; // Antwort konnte nicht gesprochen werden: wenigstens zeigen
     case "tabs": viewerTabsMessage(m); break;
     case "commands": slashItems = m.items || []; renderSlash(); break;
@@ -106,13 +112,13 @@ function renderState() {
   pill.classList.toggle("stale", !!state.extStale);
   $("#modeSwitch").setAttribute("aria-checked", String(state.mode === "computer"));
   $("#setComputer").setAttribute("aria-checked", String(state.mode === "computer"));
-  if (state.sttMode) $("#setStt").value = state.sttMode;
   $("#viewToggle").setAttribute("aria-pressed", String(state.liveView !== false));
   if (state.liveView === false && !viewer.hidden) hideViewer();
   $("#stop").hidden = !state.busy;
+  const stopKeys = $("#stopKeys");
+  if (stopKeys) stopKeys.textContent = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? "⌘⇧⎋" : "Strg+Alt+Umschalt+Esc";
   updateSend();
   $("#stopBanner").hidden = !(state.busy && state.mode === "computer");
-  fillVoiceModels();
 }
 
 // ---------- Gespräch ----------
@@ -296,8 +302,13 @@ function finishTurn(note) {
     el.querySelector(".body").insertBefore(b, el.querySelector(".meta"));
   }
   const secs = ((performance.now() - started) / 1000).toFixed(1);
-  el.querySelector(".meta").textContent = [note, short(current.model ?? state.model), firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`]
-    .filter(Boolean).join(" · ");
+  const meta = el.querySelector(".meta");
+  const summary = [note, short(current.model ?? state.model)].filter(Boolean).join(" · ");
+  const timing = document.createElement("span");
+  timing.className = "response-timing";
+  timing.textContent = [firstMs ? `erstes Wort ${(firstMs / 1000).toFixed(1)} s` : "", `${secs} s`].filter(Boolean).join(" · ");
+  if (summary) timing.textContent = " · " + timing.textContent;
+  meta.replaceChildren(summary, timing);
   current = null;
   send({ type: "history" }); send({ type: "projects" });
 }
@@ -370,7 +381,9 @@ input.addEventListener("input", () => {
   if (!was && !$("#send").hidden) { const c = $("#composer"); c.classList.remove("pulse"); void c.offsetWidth; c.classList.add("pulse"); }
 });
 input.addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#composer").requestSubmit(); }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && (preferences.enterSends || e.metaKey || e.ctrlKey)) {
+    e.preventDefault(); $("#composer").requestSubmit();
+  }
 });
 $("#composer").addEventListener("submit", e => {
   e.preventDefault();
@@ -991,7 +1004,7 @@ function sizeViewer() {
 new ResizeObserver(sizeViewer).observe(viewerFrame);
 // Virtuelle Maus: wo Jarvis zuletzt geklickt/getippt hat (Bildschirmpunkt -> Bildpunkt über die Fensterlage)
 function drawVirtualCursor(m) {
-  if (!Array.isArray(m.cursor) || !Array.isArray(m.bounds) || !m.bounds[2]) return;
+  if (!preferences.showPreviewCursor || !Array.isArray(m.cursor) || !Array.isArray(m.bounds) || !m.bounds[2]) return;
   const sx = vcanvas.width / m.bounds[2], sy = vcanvas.height / m.bounds[3];
   const x = (m.cursor[0] - m.bounds[0]) * sx, y = (m.cursor[1] - m.bounds[1]) * sy;
   if (x < 0 || y < 0 || x > vcanvas.width || y > vcanvas.height) return;
@@ -1035,7 +1048,7 @@ function showFrame(m) {
   viewerTimer = setTimeout(() => {
     if (viewerPinned === null) viewerIdle();
     else viewer.dataset.idle = "1";
-  }, 12000); // Rückfall, falls die Verbindung ohne viewer_idle abreißt
+  }, Math.max(12000, (Number(state.previewIdleSeconds) || 8) * 1000 + 4000)); // Rückfall bei Verbindungsabbruch
 }
 function viewerTabsMessage(m) {
   viewerTabs = m.tabs || [];
@@ -1069,10 +1082,11 @@ viewerGrip.addEventListener("pointerdown", e => {
   viewerGrip.addEventListener("pointermove", move);
   viewerGrip.addEventListener("lostpointercapture", finish);
 });
-viewerGrip.addEventListener("dblclick", () => {
+function resetViewerWidth() {
   document.documentElement.style.removeProperty("--viewer-user-width");
   try { localStorage.removeItem("jarvis.viewerW"); } catch {}
-});
+}
+viewerGrip.addEventListener("dblclick", resetViewerWidth);
 
 // ---------- Modus „Computer übernehmen“ ----------
 const toggleMode = () => send({ type: "settings", settings: { mode: state.mode === "computer" ? "browser" : "computer" } });
@@ -1181,38 +1195,32 @@ function renderUsage(m) {
   $("#usageNote").textContent = (m.total && first ? `${first} bis ${last}. ` : "") +
     (m.estimatedShare > 0 ? `${Math.round(m.estimatedShare * 100)} % der Tokens sind geschätzt (Anbieter lieferte keine Zahlen).` : "");
 }
-function fillVoiceModels() {
-  const sel = $("#setVoiceModel");
-  const want = state.voiceModel || "opencode/deepseek-v4.1-flash-free";
-  if (sel.options.length !== state.models.length) {
-    sel.innerHTML = "";
-    for (const m of state.models) sel.add(new Option(m.id, m.id));
-  }
-  sel.value = want;
-}
-$("#setStt").onchange = e => send({ type: "settings", settings: { sttMode: e.target.value } });
-$("#setVoiceModel").onchange = e => send({ type: "settings", settings: { voiceModel: e.target.value } });
-
-// Audiogeräte: Der Sidecar meldet sie im "ready"-Event, der Daemon cached sie im State.
-function fillAudioDevices() {
-  const inputs = state.devices?.input ?? [];
-  const sel = $("#setMic");
-  const key = inputs.map(d => `${d.id}:${d.name}`).join("|");
+function fillModelSelect(sel, selected) {
+  const list = state.models ?? [];
+  const key = JSON.stringify([selected, list.map(model => model.id)]);
   if (sel.dataset.key !== key) {
     sel.dataset.key = key;
-    sel.innerHTML = "";
-    sel.add(new Option("Systemstandard", ""));
-    const count = new Map();
-    for (const d of inputs) count.set(d.name, (count.get(d.name) ?? 0) + 1);
-    // Windows listet dasselbe Mikrofon mehrfach (WASAPI/DirectSound). Die ID macht die Auswahl eindeutig.
-    for (const d of inputs) sel.add(new Option(count.get(d.name) > 1 ? `${d.name} (#${d.id})` : d.name, String(d.id)));
+    const options = list.map(model => new Option(model.id, model.id));
+    if (selected && !list.some(model => model.id === selected)) options.unshift(new Option(selected, selected));
+    sel.replaceChildren(...options);
   }
-  const want = state.micDevice == null ? "" : String(state.micDevice);
-  if (want && !inputs.some(d => String(d.id) === want) && ![...sel.options].some(o => o.value === want))
-    sel.add(new Option(`${want} (nicht verbunden)`, want));
-  sel.value = want;
+  sel.value = selected || "";
 }
-$("#setMic").onchange = e => send({ type: "settings", settings: { micDevice: e.target.value === "" ? null : Number(e.target.value) } });
+
+function fillDeviceSelect(sel, devices, selected) {
+  const list = devices ?? [];
+  const key = JSON.stringify([selected, list.map(device => [device.id, device.name])]);
+  if (sel.dataset.key !== key) {
+    sel.dataset.key = key;
+    const count = new Map();
+    for (const device of list) count.set(device.name, (count.get(device.name) ?? 0) + 1);
+    const options = list.map(device => new Option(count.get(device.name) > 1 ? `${device.name} (#${device.id})` : device.name, String(device.id)));
+    if (selected != null && !list.some(device => device.id === selected))
+      options.push(new Option("Gespeichertes Gerät (nicht verbunden)", String(selected)));
+    sel.replaceChildren(new Option("Systemstandard", ""), ...options);
+  }
+  sel.value = selected == null ? "" : String(selected);
+}
 
 // ---------- Sprachmodus (Live) ----------
 const liveEl = $("#live");
@@ -1253,6 +1261,12 @@ function liveSpoken(sentence) {
   const add = sentence.trim();
   if (!add) return;
   revealQ += (spokenText || revealQ ? " " : "") + add;
+  if (lessMotion()) {
+    clearInterval(revealTimer); revealTimer = 0;
+    spokenText += revealQ; revealQ = "";
+    liveBT.set(spokenText.slice(-260), { animate: false });
+    return;
+  }
   if (revealTimer) return;
   revealTimer = setInterval(() => {   // ~20 Zeichen/s, bei Rückstau schneller
     if (!revealQ) { clearInterval(revealTimer); revealTimer = 0; return; }
@@ -1300,7 +1314,6 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && live.on) c
 // Wellen: zwei Gruppen übereinander, Blau = Mikrofon (du), Rosa = Ausgabe (Jarvis). Amplitude folgt dem echten Pegel
 // der "level"-Ereignisse des Sprach-Sidecars; ohne Ereignisse bleibt nur eine ruhige Grundbewegung.
 const canvas = $("#voiceWaves");
-const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let micLvl = 0, outLvl = 0, micRaw = 0, outRaw = 0, rafId = 0, phase = 0, lastT = 0;
 const WAVES = [ // Frequenz, Tempo, Anteil an der Amplitude, Deckkraft, Breite
   { f: 1.1, s: 1.0, a: 1.0, o: 1.0, w: 2.4 },
@@ -1328,7 +1341,7 @@ function frame(now) {
   rafId = requestAnimationFrame(frame);
   try {
     const dt = Math.min(.05, (now - (lastT || now)) / 1000); lastT = now;
-    const slow = reduceMotion.matches ? .25 : 1;
+    const slow = lessMotion() ? .25 : 1;
     phase += dt * 2.2 * slow;
     const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
@@ -1440,7 +1453,7 @@ async function runSlash(text) {
   if (!m) return false;
   const name = m[1].toLowerCase(), args = m[2].trim();
   const done = () => { input.value = ""; autosize(); updateSend(); renderSlash(); return true; };
-  const open = pane => { $("#settingsDialog").showModal(); showSettingsPane(pane); };
+  const open = openSettings;
   switch (name) {
     case "neu": $("#newChat").click(); return done();
     case "stop": send({ type: "stop" }); return done();
@@ -1475,17 +1488,61 @@ async function runSlash(text) {
 }
 
 // ---------- Große Einstellungen ----------
-const PANES = { general: "Allgemein", voice: "Sprache und Audio", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
+const PANES = { general: "Allgemein", voice: "Sprache und Audio", display: "Darstellung", control: "Steuerung", privacy: "Datenschutz", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
 let extState = null;
 function showSettingsPane(name) {
-  document.querySelectorAll(".set-nav-item").forEach(b => b.classList.toggle("active", b.dataset.pane === name));
+  $("#settingsSearch").value = "";
+  $("#settingsResults").hidden = true;
+  document.querySelectorAll(".set-nav-item").forEach(button => {
+    const selected = button.dataset.pane === name;
+    button.classList.toggle("active", selected);
+    if (selected) button.setAttribute("aria-current", "true");
+    else button.removeAttribute("aria-current");
+  });
   document.querySelectorAll(".set-pane").forEach(p => { p.hidden = p.dataset.pane !== name; });
   $("#setTitle").textContent = PANES[name] || "";
+  if (name === "general") void refreshAutostart();
   if (name === "usage") requestUsage();
   if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
 }
 document.querySelectorAll(".set-nav-item").forEach(b => { b.onclick = () => showSettingsPane(b.dataset.pane); });
 $("#closeSettings").onclick = () => $("#settingsDialog").close();
+$("#settingsSearch").oninput = event => {
+  const query = event.target.value.toLocaleLowerCase("de").trim();
+  const results = $("#settingsResults");
+  if (!query) {
+    showSettingsPane(document.querySelector(".set-nav-item.active")?.dataset.pane ?? "general");
+    return;
+  }
+  document.querySelectorAll(".set-pane").forEach(section => { section.hidden = true; });
+  const rows = [...document.querySelectorAll(".set-pane .setting")].filter(row =>
+    !row.hidden && row.textContent.toLocaleLowerCase("de").includes(query));
+  results.replaceChildren(...rows.map(row => {
+    const pane = row.closest(".set-pane").dataset.pane;
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "set-result";
+    const title = document.createElement("span"), category = document.createElement("small");
+    title.textContent = row.querySelector("label, b")?.textContent ?? "";
+    category.textContent = PANES[pane];
+    button.append(title, category);
+    button.onclick = () => {
+      showSettingsPane(pane);
+      row.scrollIntoView({ block: "nearest" });
+      row.querySelector("button, select")?.focus();
+    };
+    item.append(button);
+    return item;
+  }));
+  if (!rows.length) {
+    const empty = document.createElement("li");
+    empty.className = "set-results-empty";
+    empty.textContent = "Keine Einstellung gefunden.";
+    results.append(empty);
+  }
+  results.hidden = false;
+};
 const STATUS_LABEL = { connected: "verbunden", disabled: "aus", failed: "Fehler", needs_auth: "Anmeldung nötig", "?": "…", unbekannt: "startet …" };
 function extRow(title, sub, { chip, chipClass, toggle, onToggle, onRemove } = {}) {
   const li = document.createElement("li"); li.className = "ext-row-item";
@@ -1558,4 +1615,85 @@ $("#importGo").onclick = () => {
   send({ type: "ext_import", from: importFrom, ids }); showNotice("Importiere … Jarvis lädt die Erweiterungen neu.");
   $("#importResult").hidden = true;
 };
-$("#openSettings").addEventListener("click", () => showSettingsPane("general"));
+function openSettings(pane = "general") {
+  const dialog = $("#settingsDialog");
+  if (!dialog.open) dialog.showModal();
+  showSettingsPane(pane);
+}
+
+const daemonControls = [...document.querySelectorAll("#settingsDialog [data-daemon]")];
+const localControls = [...document.querySelectorAll("#settingsDialog [data-local]")];
+const switchRole = (control) => control.getAttribute("role") === "switch";
+const paintSetting = (control, value) => {
+  if (switchRole(control)) control.setAttribute("aria-checked", String(value === true));
+  else if (value !== undefined) control.value = value == null ? "" : String(value);
+};
+
+const numeric = new Set(["micDevice", "speakerDevice", "voiceSpeed", "previewIdleSeconds"]);
+function renderSettingsState() {
+  fillModelSelect($("#setChatModel"), state.model);
+  fillModelSelect($("#setVoiceModel"), state.voiceModel);
+  fillDeviceSelect($("#setMic"), state.devices?.input, state.micDevice);
+  fillDeviceSelect($("#setSpeaker"), state.devices?.output, state.speakerDevice);
+  for (const control of daemonControls) {
+    const key = control.dataset.daemon;
+    paintSetting(control, state[key]);
+    const audioDevice = key === "micDevice" || key === "speakerDevice";
+    control.disabled = state[key] === undefined || (audioDevice && (!state.speech || !state.devices));
+  }
+  $("#set-actionAnnouncements").disabled ||= state.spokenReplies === false;
+  $("#set-previewAuto").disabled ||= state.liveView === false;
+  $("#set-previewIdleSeconds").disabled ||= state.liveView === false || state.previewAuto === false;
+  $("#voiceSample").disabled = !state.speech || state.busy || state.voice !== "off";
+}
+
+for (const control of daemonControls) {
+  control.disabled = true;
+  const name = control.dataset.daemon;
+  const value = () => numeric.has(name) ? (control.value === "" ? null : Number(control.value)) : control.value;
+  if (switchRole(control)) {
+    control.onclick = () => send({ type: "settings", settings: { [name]: !state[name] } });
+  } else {
+    control.onchange = () => send({ type: "settings", settings: { [name]: value() } });
+  }
+}
+for (const control of localControls) {
+  const name = control.dataset.local;
+  paintSetting(control, preferences[name]);
+  if (switchRole(control)) {
+    control.onclick = () => { setPreference(name, !preferences[name]); paintSetting(control, preferences[name]); };
+  } else {
+    control.onchange = () => { setPreference(name, control.value); if (name === "textSize") autosize(); };
+  }
+}
+$("#voiceSample").onclick = () => send({ type: "voice_sample" });
+$("#resetViewerWidth").onclick = resetViewerWidth;
+$("#openSettings").onclick = () => openSettings();
+
+const autostartControl = $("#setAutostart");
+const autostartStatus = $("#setAutostartStatus");
+function paintAutostart(enabled) {
+  paintSetting(autostartControl, enabled);
+  autostartStatus.textContent = "Startet Jarvis im Hintergrund.";
+}
+async function refreshAutostart() {
+  if (!tauri?.core?.invoke) return;
+  $("#setAutostartRow").hidden = false;
+  autostartControl.disabled = true;
+  try {
+    paintAutostart(await tauri.core.invoke("get_launch_at_login"));
+    autostartControl.disabled = false;
+  } catch {
+    autostartStatus.textContent = "Autostart-Status konnte nicht geladen werden.";
+  }
+}
+autostartControl.onclick = async () => {
+  const enabled = autostartControl.getAttribute("aria-checked") !== "true";
+  autostartControl.disabled = true;
+  try {
+    paintAutostart(await tauri.core.invoke("set_launch_at_login", { enabled }));
+  } catch {
+    autostartStatus.textContent = "Autostart konnte nicht geändert werden.";
+  } finally { autostartControl.disabled = false; }
+};
+if (tauri?.event) tauri.event.listen("jarvis:autostart", event => paintAutostart(event.payload)).catch(() => {});

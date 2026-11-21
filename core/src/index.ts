@@ -21,6 +21,7 @@ import { classificationPrompt, parseClassification } from "./classify";
 import { parseRange, readUsage, summarize } from "./usage";
 import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
+import { defaults, parseSettings, type Settings } from "./settings";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -30,10 +31,12 @@ const CHAT_FOLDERS = join(HOME, "chat-folders.json");
 const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
-interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean; micDevice: number | null; micName?: string | null; sttMode: "auto" | "de" | "en" | "fast" }
-const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true, micDevice: null, sttMode: "de" };
-let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
-if (settings.micDevice !== null && !Number.isInteger(settings.micDevice)) settings.micDevice = null; // alte/ungültige Werte
+let settings: Settings = { ...defaults };
+try {
+  if (existsSync(SETTINGS)) Object.assign(settings, parseSettings(JSON.parse(readFileSync(SETTINGS, "utf8")), true));
+} catch (error) {
+  recordError({ category: "daemon", source: "jarvisd/settings", message: "Einstellungen konnten nicht gelesen werden", error });
+}
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
 type ChatMeta = { title?: string; folder?: string; auto?: boolean };
 let chatMeta: Record<string, ChatMeta> = existsSync(CHAT_META) ? JSON.parse(readFileSync(CHAT_META, "utf8")) : {};
@@ -101,9 +104,8 @@ const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const 
 type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
-const state = () => ({ type: "state", model: settings.model, voiceModel: settings.voiceModel, mode: settings.mode,
-                       lofi: settings.lofi, sttMode: settings.sttMode, liveView: settings.liveView, extStale: extensionStale, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected, speech: speech.connected, voice, models,
-                       micDevice: settings.micDevice, devices: audioDevices });
+const state = () => ({ type: "state", ...settings, extStale: extensionStale, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
+  speech: speech.connected, voice, models, devices: audioDevices });
 
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
@@ -112,7 +114,7 @@ let voice: "off" | "live" | "dictate" | "muted" = "off";
 let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean }> | undefined;
 let speechEpoch = 0;
 import { appendFileSync } from "node:fs";
-const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
+const vlog = (line: string) => { if (!settings.voiceLog) return; try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
 let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0, micRestarted = false;
 const speaking = new Set<number>();
 const speechStarted = new Map<number, () => void>();
@@ -143,7 +145,8 @@ let userSpeaking = false;                              // speech_start gesehen, 
 const recentSaid: { text: string; at: number }[] = []; // für den Echo-Filter
 const liveAnswer = new LiveAnswer({
   say: text => say(text),
-  blocked: () => voice === "off" || voice === "dictate" ? { reason: `Live beendet (voice=${voice})`, expected: true } : undefined,
+  blocked: () => !settings.spokenReplies || voice === "off" || voice === "dictate"
+    ? { reason: settings.spokenReplies ? `Live beendet (voice=${voice})` : "Sprachausgabe deaktiviert", expected: true } : undefined,
   currentRun: () => voiceRun,
   mustWait: () => userSpeaking ? "Nutzer spricht gerade" : pendingUtterance ? "Äußerung des Nutzers noch offen"
     : !speech.connected ? "Sprachmodul nicht verbunden" : undefined,
@@ -156,6 +159,29 @@ const liveAnswer = new LiveAnswer({
   },
   now: () => Date.now(),
 });
+function configureSpeech(includeDevices = false) {
+  speech.send({ type: "config", lofi: settings.lofi, voice: settings.voicePreset, speed: settings.voiceSpeed,
+    stt: settings.sttMode, stt_prompt: recognitionPrompt(),
+    ...(includeDevices ? { input: settings.micDevice, output: settings.speakerDevice } : {}) });
+}
+function syncAudioDevices(devices: AudioDevices) {
+  let changed = false;
+  for (const side of ["input", "output"] as const) {
+    const key = side === "input" ? "micDevice" : "speakerDevice";
+    const nameKey = side === "input" ? "micName" : "speakerName";
+    const id = settings[key], name = settings[nameKey];
+    if (id === null) continue;
+    const list = devices[side];
+    const selected = list.find(d => d.id === id && (!name || d.name === name)) ?? (name ? list.find(d => d.name === name) : undefined);
+    const nextId = selected?.id ?? null, nextName = selected?.name ?? null;
+    if (nextId === id && nextName === name) continue;
+    settings[key] = nextId;
+    settings[nameKey] = nextName;
+    changed = true;
+    if (!selected) broadcast({ type: "notice", text: `Gewähltes ${side === "input" ? "Mikrofon" : "Ausgabegerät"} fehlt. Der Systemstandard ist aktiv.` });
+  }
+  if (changed) save();
+}
 const micLabel = () =>audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
   if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
@@ -179,32 +205,14 @@ const speech = new Speech(e => {
   if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
-  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); liveAnswer.release(); return; }
+  if (e.type === "connected") { configureSpeech(); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); liveAnswer.release(); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
   if (e.type === "ready") {
     audioDevices = e.devices as AudioDevices;
-    // Geräte-IDs verschieben sich, wenn Geräte (AirPods, virtuelle Mikrofone …) kommen und gehen. Darum wird zusätzlich der Name
-    // gemerkt und die ID beim Start danach neu bestimmt; fehlt das Gerät, gilt der Systemstandard.
-    if (settings.micName && settings.micDevice !== null) {
-      const byName = audioDevices.input.find(d => d.name === settings.micName);
-      if (byName && byName.id !== settings.micDevice) {
-        vlog(`Mikrofon "${settings.micName}": ID ${settings.micDevice} -> ${byName.id}`);
-        settings.micDevice = byName.id; save(); speech.send({ type: "config", input: byName.id });
-      } else if (!byName) {
-        vlog(`Mikrofon "${settings.micName}" nicht gefunden -> Systemstandard`);
-        settings.micDevice = null; settings.micName = null; save(); speech.send({ type: "config", input: null });
-        broadcast({ type: "notice", text: "Das gewählte Mikrofon ist nicht mehr da – Systemstandard aktiv." });
-      }
-    } else if (settings.micDevice !== null && !settings.micName) {
-      settings.micName = audioDevices.input.find(d => d.id === settings.micDevice)?.name ?? null; save(); // alte Einstellung nachrüsten
-    }
-    if (settings.micDevice !== null && !audioDevices.input.some(d => d.id === settings.micDevice)) {
-      vlog(`Mikrofon-ID ${settings.micDevice} nicht mehr vorhanden -> Systemstandard`);
-      settings.micDevice = null; save(); speech.send({ type: "config", input: null });
-      broadcast({ type: "notice", text: "Ausgewähltes Mikrofon ist nicht mehr verbunden – Systemstandard aktiv" });
-    }
+    syncAudioDevices(audioDevices);
+    configureSpeech(true);
     broadcast(state());
   }
   if (e.type === "final" && typeof e.text === "string") {
@@ -389,7 +397,7 @@ async function syncProjects() {
     let changed = false;
     for (const s of sessions) if (projects.upsertChat({ id: s.id, title: s.title, updated: s.updated })) changed = true;
     if (changed) broadcastProjects();
-    void analyzeProjects();
+    if (settings.autoProjects) void analyzeProjects();
   } catch (error) {
     recordError({ category: "daemon", source: "jarvisd/projects-sync", message: "Projekte konnten nicht aktualisiert werden", error });
   }
@@ -402,7 +410,7 @@ async function firstExcerpt(id: string) {
       .replace(/\s+/g, " ").trim().slice(0, 500);
   } catch { return ""; }
 }
-async function analyzeProjects() {
+async function analyzeProjects(manual = false) {
   if (analysisRunning) return;
   const data = projects.data();
   const pending = data.chats.filter(c => !c.projectId && !c.analyzed && c.title !== "Neuer Chat").slice(0, 8);
@@ -410,8 +418,10 @@ async function analyzeProjects() {
   analysisRunning = true;
   try {
     for (const c of pending) {
+      if (!manual && !settings.autoProjects) return;
       const { system, text } = classificationPrompt(projects.data(), c, await firstExcerpt(c.id));
       const parsed = parseClassification(await brain.ask(text, CLASSIFY_MODEL, system), projects.data().projects.map(p => p.id));
+      if (!manual && !settings.autoProjects) return;
       if (parsed?.projectId) projects.assign(c.id, parsed.projectId, "ki");
       else projects.markAnalyzed(c.id);
       broadcastProjects();
@@ -426,7 +436,8 @@ async function projectAction(action: Record<string, any>) {
   const op = String(action.op ?? "");
   if (op === "create") {
     const p = projects.create(String(action.name ?? ""), String(action.description ?? ""), action.parent ? String(action.parent) : null);
-    projects.resetAnalysis(); broadcastProjects(); void analyzeProjects();
+    projects.resetAnalysis(); broadcastProjects();
+    if (settings.autoProjects) void analyzeProjects();
     return { ok: true, project: p };
   }
   if (op === "update") {
@@ -441,7 +452,7 @@ async function projectAction(action: Record<string, any>) {
     const c = projects.assign(String(action.id), action.projectId ? String(action.projectId) : null, by);
     broadcastProjects(); return { ok: true, chat: c };
   }
-  if (op === "analyze") { projects.resetAnalysis(); broadcastProjects(); void analyzeProjects(); return { ok: true }; }
+  if (op === "analyze") { projects.resetAnalysis(); broadcastProjects(); void analyzeProjects(true); return { ok: true }; }
   if (op === "sync") { await syncProjects(); broadcastProjects(); return { ok: true, ...projects.data() }; }
   return { ok: false, error: `Unbekannte Projektaktion: ${op}` };
 }
@@ -519,7 +530,7 @@ const announcedActions: Record<string, string> = {
 async function announceToolAction(target: "browser" | "desktop", cmd: Record<string, any>) {
   const turn = activeTurn;
   const action = announcedActions[cmd.cmd];
-  if (!action || !turn?.spoken || !turn.sid || !busySessions.has(turn.sid) || voice !== "live" || !speech.connected) return true;
+  if (!settings.spokenReplies || !settings.actionAnnouncements || !action || !turn?.spoken || !turn.sid || !busySessions.has(turn.sid) || voice !== "live" || !speech.connected) return true;
   const stopBefore = stoppedUntil;
   const userBefore = speechEpoch;
   if (!turn.firstAction) {
@@ -579,7 +590,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   let first = true, switching = false, finished = false, textSeen = false, toolSeen = false, responseText = "", finalSpeech = "";
   // Nur ein abgelöster Lauf (neue Frage), Stopp oder Live-Ende verhindern das Sprechen. Ein Geräusch während des Nachdenkens
   // (speech_start ohne neue Frage) tut es NICHT mehr; die Antwort wird dann gehalten und nachgeholt (live-turn.ts).
-  const maySpeak = () => spoken && runId === latestRun.get(sid) && voice !== "off" && voice !== "dictate" && !userSpeaking && !pendingUtterance;
+  const maySpeak = () => settings.spokenReplies && spoken && runId === latestRun.get(sid) && voice !== "off" && voice !== "dictate" && !userSpeaking && !pendingUtterance;
   const ackTimer = setTimeout(() => {
     if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
@@ -601,6 +612,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     : "";
   const prompt = clickContext ? `${text}\n\nDer damit gemeinte vorherige Auftrag war: ${clickContext}`
     : text || (attachmentText || images.length ? "Sieh dir die angehängten Dateien an." : "");
+  try {
   await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
     // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
     // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
@@ -689,9 +701,9 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       busySessions.delete(sid); runBuffer.clear(sid);
       if (activeTurn === turn) activeTurn = undefined;
       broadcast(state());
-      if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
+      if (e.kind === "done" && isNew && settings.autoChatTitles && responseText.trim() && chatMeta[sid]?.auto !== false)
         void aiTitle(text, click ? clickOutcome(click, !!turn.clickSent) : responseText)
-          .then(title => setSessionTitle(sid, title ?? topicTitle(text), true));
+          .then(title => settings.autoChatTitles && setSessionTitle(sid, title ?? topicTitle(text), true));
     }
     if (e.kind === "text") {
       if (!spoken && !click) emit({ type: "delta", text: e.delta });
@@ -699,6 +711,16 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (!spoken && !click) emit({ type: "reasoning", text: e.delta });
     } else emit({ type: e.kind, ...e });
   }, images, attachmentText);
+  } catch (error) {
+    // Schlägt schon das Absenden fehl (OpenCode nicht erreichbar), käme nie ein „done“: ohne Rücksetzen bliebe busy für immer true
+    // und die Oberfläche zeigte im Leerlauf dauerhaft Stopp.
+    clearTimeout(ackTimer);
+    finished = true;
+    busySessions.delete(sid); runBuffer.clear(sid);
+    if (activeTurn === turn) activeTurn = undefined;
+    broadcast(state());
+    throw error;
+  }
 }
 
 /** Kurzer Chat-Titel vom schnellen Gratis-Modell (2–5 Wörter); null, wenn das Modell nichts Brauchbares liefert. */
@@ -766,7 +788,7 @@ async function rewindMessage(id: string, messageID: string) {
 
 // ---------- Live-Ansicht des Ziels, in dem Jarvis gerade arbeitet ----------
 function follow(target: PreviewTarget) {
-  if (settings.liveView && uis.size > 0) preview.work(target);
+  if (settings.liveView && settings.previewAuto && uis.size > 0) preview.work(target);
 }
 /** Tabs der Gruppe "Jarvis" (auch "Jarvis …"-Gruppen) für die Auswahl oben in der Vorschau. */
 async function jarvisTabs() {
@@ -853,7 +875,7 @@ const NO_SHOT = /nicht verbunden|Computer-Steuerung ist aus|vom Nutzer gestoppt|
 async function logToolError(target: string, cmd: Record<string, any>, message: string, opts: { category?: ErrorCategory; source?: string; context?: Record<string, unknown> } = {}) {
   const el = Number.isInteger(cmd.id) ? lastTargets.get(targetKey(target, cmd.tab ?? cmd.window ?? desktopScanWindow))?.find(t => t.id === cmd.id) : undefined;
   const boxes = [el?.rect, Array.isArray(cmd.rect) && cmd.rect.length === 4 ? cmd.rect : undefined].filter(Boolean) as number[][];
-  const screenshot = NO_SHOT.test(message) || cmd.cmd === "shot" || cmd.screenshot === false ? undefined : await errorShot(target, cmd.tab, boxes);
+  const screenshot = !settings.errorScreenshots || NO_SHOT.test(message) || cmd.cmd === "shot" || cmd.screenshot === false ? undefined : await errorShot(target, cmd.tab, boxes);
   return recordError({ category: opts.category ?? "tool", source: opts.source ?? `${target}/${cmd.cmd}`, message, screenshot,
     context: { tool: `${target}_${cmd.cmd}`, args: cmd, element: el, mode: settings.mode, model: settings.model, voice, busy: isBusy(), ...opts.context } });
 }
@@ -1113,7 +1135,7 @@ const preview = new Preview({
     }
   },
   idle: () => broadcast({ type: "viewer_idle" }),
-});
+}, { settle: 450, hold: 1800, idle: settings.previewIdleSeconds * 1000 });
 /** Fenster für die Auswahl oben in der Vorschau */
 async function previewWindows() {
   const r: any = await desktop.call({ cmd: "windows" }, 5000).catch(() => ({}));
@@ -1253,29 +1275,40 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
         context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
       else if (msg.type === "stop") await stop(!!msg.all, msg.session ? String(msg.session) : session);
-      else if (msg.type === "settings") {
-        settings = { ...settings, ...msg.settings };
-        if ("micDevice" in msg.settings) {
-          settings.micDevice = Number.isInteger(settings.micDevice) ? settings.micDevice : null;
-          settings.micName = settings.micDevice === null ? null : audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? null;
+      else if (msg.type === "settings" || msg.type === "liveview") {
+        const patch = msg.type === "settings" ? parseSettings(msg.settings) : parseSettings({ liveView: msg.on });
+        for (const [key, nameKey, side] of [["micDevice", "micName", "input"], ["speakerDevice", "speakerName", "output"]] as const) {
+          if (!(key in patch)) continue;
+          const selected = audioDevices?.[side].find(d => d.id === patch[key]);
+          if (patch[key] !== null && !selected) { delete patch[key]; continue; }
+          patch[nameKey] = selected?.name ?? null;
         }
+        const previous = settings;
+        settings = { ...settings, ...patch };
         save();
-        if (!["auto", "de", "en", "fast"].includes(settings.sttMode)) settings.sttMode = "auto";
-        if ("lofi" in msg.settings || "micDevice" in msg.settings || "sttMode" in msg.settings)
-          speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() });
+        if ((previous.liveView && !settings.liveView) || (previous.previewAuto && !settings.previewAuto && preview.pinned === undefined))
+          preview.clear();
+        if (settings.previewIdleSeconds !== previous.previewIdleSeconds) preview.setIdle(settings.previewIdleSeconds * 1000);
+        if (settings.spokenReplies !== previous.spokenReplies && !settings.spokenReplies) speech.stopSpeaking();
+        if (["lofi", "micDevice", "speakerDevice", "sttMode", "voicePreset", "voiceSpeed"].some(key => key in patch))
+          configureSpeech("micDevice" in patch || "speakerDevice" in patch);
+        if (settings.autoProjects && !previous.autoProjects) void analyzeProjects();
         broadcast(state());
       }
-      else if (msg.type === "liveview") {
-        settings.liveView = !!msg.on;
-        save();
-        if (!settings.liveView) preview.clear();
-        broadcast(state());
+      else if (msg.type === "voice_sample") {
+        const ok = speech.connected && !busySessions.size && voice === "off" && speaking.size === 0 && speech.sayTimes.size === 0;
+        if (ok) say("Hallo, ich bin Jarvis. So klingt meine Stimme.");
+        ws.send(JSON.stringify({ type: "voice_sample", ok }));
       }
       else if (msg.type === "tabs") {
         const [tabs, windows] = await Promise.all([jarvisTabs(), previewWindows()]);
         ws.send(JSON.stringify({ type: "tabs", tabs, windows, pinned: preview.pinned ?? null }));
       }
-      else if (msg.type === "viewer_tab" && settings.liveView) preview.pin(Number.isInteger(msg.tab) ? msg.tab : undefined);
+      else if (msg.type === "viewer_tab" && settings.liveView) {
+        if (Number.isInteger(msg.tab)) preview.pin(msg.tab);
+        else if (settings.previewAuto) preview.pin();
+        else preview.clear();
+      }
       else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
