@@ -207,6 +207,10 @@ const speech = new Speech(e => {
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { configureSpeech(); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); liveAnswer.release(); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
+  if (e.type === "replaced") {
+    broadcast({ type: "notice", text: "Ein anderer Jarvis-Dienst nutzt gerade den Sprachdienst. Er wird beim nächsten Diktat oder Live-Start zurückgeholt." });
+    return;
+  }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
   if (e.type === "ready") {
@@ -661,9 +665,10 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       const attempts = tried.filter(t => t !== "__session").length;
       if (attempts < 2) {
         switching = true; clearTimeout(ackTimer);
-        const alt = attempts === 0 ? model : (nextModel([...tried, model], !!click?.corner) ?? model);
+        // Ein Modell, das leer antwortet, wird sofort gewechselt (derselbe Versuch scheitert meist wieder, z. B. big-pickle)
+        const alt = nextModel([...tried, model], !!click?.corner) ?? model;
         vlog(`Leere Antwort von ${model} – neuer Versuch mit ${alt}`);
-        broadcast({ type: "notice", text: "Keine Antwort erhalten – ich versuche es noch einmal.", session: sid });
+        broadcast({ type: "notice", text: attempts === 0 ? "Keine Antwort erhalten – ich versuche es noch einmal." : `Wieder keine Antwort – ich versuche es mit ${alt}.`, session: sid });
         brain.abort(sid).catch(() => {}).then(async () => {
           // die leere Runde samt Nutzer-Nachricht zurücknehmen, sonst steht die Frage nach jedem Versuch noch einmal im Chat
           try {

@@ -487,7 +487,11 @@ const dictJoin = t => dictBase && t ? dictBase + (/\s$/.test(dictBase) ? "" : " 
 const taMirror = new BlurText($("#taMirror"));   // zeigt den diktierten Text mit Einblend-Effekt (nur während des Diktierens sichtbar)
 const syncMirrorScroll = () => { $("#taMirror").style.transform = `translateY(${-input.scrollTop}px)`; };
 input.addEventListener("scroll", syncMirrorScroll);
-function dictShow(t) {
+function dictShow(t, partial = false) {
+  // Zwischentext: Whisper hängt bei abgeschnittenem Wort "…" an ("…über ein E…"); das gehört nicht ins Feld
+  if (partial) t = String(t ?? "").replace(/\s*(\.{2,}|…)\s*$/, "");
+  // Whisper liefert bei abgeschnittenen Wörtern oder Rauschen manchmal nur "…" / "...": das darf den Text nicht ersetzen
+  if (!/[\p{L}\p{N}]/u.test(String(t ?? ""))) return;
   if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
   input.value = dictJoin(t); autosize(); updateSend();
   taMirror.set(input.value); syncMirrorScroll();
@@ -1381,7 +1385,7 @@ function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = re
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
-  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; renderSettingsState(); }
   switch (m.event) {
     case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);
@@ -1392,7 +1396,7 @@ function speechEvent(m) {
     }
     case "speech_start": liveEl.dataset.state = "listening"; break;
     case "partial":
-      if (dictating) dictShow(m.text);
+      if (dictating) dictShow(m.text, true);
       else if (live.on) liveCaption(m.text, true);
       break;
     case "final":

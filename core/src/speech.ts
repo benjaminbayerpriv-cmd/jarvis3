@@ -5,6 +5,7 @@ export class Speech {
   private ws?: WebSocket;
   private queue: string[] = [];
   connected = false;
+  private replaced = false;
   private sayId = 0;
   /** gesprochene Sätze nach ID, damit die Oberfläche beim say_start genau diesen Satz einblenden kann */
   readonly said = new Map<number, string>();
@@ -19,9 +20,12 @@ export class Speech {
     const ws = new WebSocket(this.url);
     ws.onopen = () => { this.connected = true; this.ws = ws; for (const m of this.queue.splice(0)) ws.send(m); this.onEvent({ type: "connected" }); };
     ws.onmessage = ev => this.onEvent(JSON.parse(String(ev.data)));
-    ws.onclose = () => {
+    ws.onclose = ev => {
       if (this.connected) this.onEvent({ type: "disconnected" });
       this.connected = false; this.ws = undefined;
+      // Close-Code 1012: ein anderer jarvisd hat den Sidecar übernommen. Nicht zurückholen, sonst reißen sich zwei Daemons
+      // den Sidecar alle 2 s gegenseitig weg (Diktat bekam dann kein "final", der Modus sprang ständig auf "off").
+      if (ev.code === 1012) { this.replaced = true; this.onEvent({ type: "replaced" }); return; }
       setTimeout(() => this.connect(), 2000);
     };
     ws.onerror = () => {};
@@ -29,6 +33,8 @@ export class Speech {
 
   send(msg: Record<string, unknown>) {
     const s = JSON.stringify(msg);
+    // Sprache wird wieder gebraucht: den Sidecar bewusst zurückholen
+    if (this.replaced && msg.type === "mode" && msg.value !== "off") { this.replaced = false; this.connect(); }
     if (this.ws && this.connected) this.ws.send(s);
     else if (msg.type === "mode" || msg.type === "config") this.queue.push(s);
   }
