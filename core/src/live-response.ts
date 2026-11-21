@@ -39,15 +39,12 @@ export function clickOutcome(intent: ClickIntent, sent: boolean) {
   return sent ? "Ich habe den Klick gesendet. Die Reaktion konnte ich nicht prüfen." : "Ich konnte das Ziel nicht sicher anklicken.";
 }
 
-export function conciseSpeech(answer: string, request: string) {
-  const readAloud = /\b(?:lies|lese)\b.*\bvor\b|\b(?:read aloud|vorlesen)\b/i.test(request);
+const speechSentences = new Intl.Segmenter("de", { granularity: "sentence" });
+
+export function formatLiveSpeech(answer: string, request: string) {
   const wantsDetails = /\b(?:koordinaten|coordinates|elementnummer|element.?id|elementnummern|pixelposition)\b/i.test(request);
-  const sentences = clean(answer).match(/[^.!?…]+(?:[.!?…]+|$)/g) ?? [];
-  const speakable = sentences.map(s => s.trim()).filter(s => s &&
-    (wantsDetails || !/\b(?:koordinaten|coordinates|element\s*(?:[-#]?\s*id|#?\d+)|x\s*=|y\s*=)\b|\(\s*-?\d+\s*,\s*-?\d+\s*\)/i.test(s)));
-  if (readAloud) return speakable.join(" ");
-  const short = speakable.slice(0, 2).join(" ");
-  if (short.length <= 240) return short;
-  const end = short.lastIndexOf(" ", 237);
-  return short.slice(0, end > 0 ? end : 237) + "…";
+  const technical = /\b(?:koordinaten|coordinates|element\s*(?:[-#]?\s*id|#?\d+)|x\s*=|y\s*=)\b|\(\s*-?\d+\s*,\s*-?\d+\s*\)/i;
+  return Array.from(speechSentences.segment(clean(answer)), part => part.segment.trim())
+    .filter(sentence => sentence && (wantsDetails || !technical.test(sentence)))
+    .join(" ");
 }
