@@ -18,6 +18,7 @@ import { Capture } from "./capture";
 import { applyImport, expandTemplate, loadStore, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
 import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
+import { parseRange, readUsage, summarize } from "./usage";
 import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -1177,6 +1178,7 @@ async function route(req: Request, srv: any) {
       return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
     }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
+    if (u.pathname === "/usage") return Response.json(summarize(readUsage(), parseRange(u.searchParams.get("range"))));
     if (u.pathname === "/models") return Response.json(models = await listModels());
     if (u.pathname === "/projects" && req.method === "GET") return Response.json(projects.data());
     if (u.pathname === "/projects" && req.method === "POST") {
@@ -1273,6 +1275,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
+      else if (msg.type === "usage") ws.send(JSON.stringify({ type: "usage", ...summarize(readUsage(), parseRange(msg.range)) }));
       else if (msg.type === "projects") ws.send(JSON.stringify({ type: "projects", ...projects.data() }));
       else if (msg.type === "project_action") {
         const r = await projectAction(msg.action ?? msg);

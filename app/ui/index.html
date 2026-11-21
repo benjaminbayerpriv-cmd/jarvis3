@@ -167,6 +167,7 @@
         <h2>Einstellungen</h2>
         <button type="button" class="set-nav-item active" data-pane="general"><span data-icon="settings"></span>Allgemein</button>
         <button type="button" class="set-nav-item" data-pane="voice"><span data-icon="microphone"></span>Sprache und Audio</button>
+        <button type="button" class="set-nav-item" data-pane="usage"><span data-icon="history"></span>Nutzung</button>
         <div class="set-nav-group">Erweiterungen</div>
         <button type="button" class="set-nav-item" data-pane="mcp"><span data-icon="world"></span>MCP-Server</button>
         <button type="button" class="set-nav-item" data-pane="skills"><span data-icon="sparkles"></span>Skills</button>
@@ -185,6 +186,16 @@
       <div class="setting"><div><b>Spracherkennung</b><p>Nur Deutsch (empfohlen): ca. 0,7 s, kennt Begriffe wie Jarvis, Claude oder GitHub aus der Wortliste. Automatisch erkennt auch Englisch (ca. 1,3 s). Schnell (0,1 s) verwechselt Sprachen öfter.</p></div>
         <select id="setStt"><option value="de">Nur Deutsch (empfohlen)</option><option value="auto">Automatisch (Deutsch + Englisch)</option><option value="en">Nur Englisch</option><option value="fast">Schnell (Parakeet)</option></select></div>
       <div class="setting"><div><b>Sprachmodell</b><p>Für Live-Gespräche (schnelle Antworten)</p></div><select id="setVoiceModel"></select></div>
+        </div>
+        <div class="set-pane" data-pane="usage" hidden>
+        <div class="usage-range" role="group" aria-label="Zeitraum">
+          <button type="button" class="chip" data-range="1d">1T</button><button type="button" class="chip active" data-range="7d">7T</button><button type="button" class="chip" data-range="30d">30T</button><button type="button" class="chip" data-range="all">Gesamt</button>
+        </div>
+        <div class="usage-total"><span id="usageTotal">0</span><small>Tokens</small></div>
+        <p class="usage-split" id="usageSplit"></p>
+        <div class="usage-chart" id="usageChart" role="img" aria-label="Tokens pro Zeitraum"></div>
+        <div class="usage-models" id="usageModels"></div>
+        <p class="usage-note" id="usageNote"></p>
         </div>
         <div class="set-pane" data-pane="mcp" hidden>
           <p class="set-intro">MCP-Server geben Jarvis zusätzliche Werkzeuge (Dateien, Datenbanken, Webdienste). Aktive Server stehen dem Modell sofort zur Verfügung.</p>
