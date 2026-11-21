@@ -608,7 +608,25 @@ chatHistory.addEventListener("click", e => {
   e.stopImmediatePropagation();
 }, true);
 
+// Die Liste wird komplett neu aufgebaut. Passiert das zwischen Maus-Druck und Loslassen (Polling,
+// Lauf-Punkt, fertige Antwort), verschwindet das gedrückte Element und der Klick geht verloren.
+// Darum: unveränderte Daten nicht neu zeichnen, und während ein Zeiger gedrückt ist erst danach.
+let historyPressed = false, historyPending = null, historySig = "";
+const releaseHistory = () => {
+  if (!historyPressed) return;
+  historyPressed = false;
+  setTimeout(() => { if (!historyPressed && historyPending) { const list = historyPending; historyPending = null; renderHistory(list); } }, 80);
+};
+chatHistory.addEventListener("pointerdown", e => { if (e.isPrimary) historyPressed = true; }, true);
+window.addEventListener("pointerup", releaseHistory, true);
+window.addEventListener("pointercancel", releaseHistory, true);
+window.addEventListener("blur", releaseHistory);
 function renderHistory(list = []) {
+  if (historyPressed) { historyPending = list; return; }
+  historyPending = null;
+  const sig = JSON.stringify([list, chatFolderNames, $("#chatSearch").value, localStorage.getItem("jarvis.collapsedFolders"), localStorage.getItem("jarvis.collapsedHistorySections")]);
+  if (sig === historySig && chatHistory.childElementCount) return;
+  historySig = sig;
   historySessions = list;
   const folders = [...new Set([...chatFolderNames, ...list.map(s => s.folder).filter(Boolean)])];
   const ul = $("#history"), q = $("#chatSearch").value.trim().toLocaleLowerCase("de-DE"); ul.innerHTML = "";
