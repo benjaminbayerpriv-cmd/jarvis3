@@ -46,7 +46,7 @@ const { base, extension, connections, frames, devtools, evaluate, until, ok, fai
 try {
   const { id: extensionId } = await devtools("Extensions.loadUnpacked", { path: extension });
   await until(() => connections.length, "Extension did not connect to the mock");
-  assert.deepEqual(connections[0].message, { hello: "jarvis-extension", version: "1.2.0" });
+  assert.deepEqual(connections[0].message, { hello: "jarvis-extension", version: "1.2.1" });
   const sentinel = await until(async () => (await ok("tab_list")).tabs.find(t => t.active && t.url === base + "/sentinel"),
     "Sentinel tab failed to load");
   const { tab } = await ok("tab_open", { url: base + "/fixture" });
