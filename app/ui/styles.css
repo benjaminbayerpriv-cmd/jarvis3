@@ -599,3 +599,5 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .round-btn.end { background: #b3261e; color: #fff; }
 .round-btn.muted { background: var(--on-surface); color: var(--bg); }
 
+
+.sheet:focus-visible { outline: none; }   /* Dialog selbst bekommt keinen Fokusring (Rahmen um das ganze Fenster) */
