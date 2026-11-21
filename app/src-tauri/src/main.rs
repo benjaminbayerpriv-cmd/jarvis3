@@ -182,7 +182,11 @@ fn main() -> tauri::Result<()> {
         .manage(services::Services::new())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(if background {
+                tauri::ActivationPolicy::Accessory
+            } else {
+                tauri::ActivationPolicy::Regular
+            });
             setup_tray(app.handle())?;
             for (shortcut, action) in shortcuts() {
                 match app.global_shortcut().register(shortcut) {
