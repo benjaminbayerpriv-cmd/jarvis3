@@ -48,7 +48,28 @@ const projects = new Projects();
 try { projects.load(); } catch (error) {
   recordError({ category: "daemon", source: "jarvisd/projects-load", message: "Projekte konnten nicht gelesen werden", error });
 }
-const broadcastProjects = () => broadcast({ type: "projects", ...projects.data() });
+// Projekte sind die einzigen Ordner: die Seitenleiste zeigt dieselben Projekte (Name samt Überprojekt als Pfad).
+const folderLabels = () => projects.data().projects.map(p => projects.label(p.id)).sort((a, b) => a.localeCompare(b, "de"));
+const projectByLabel = (label: string) => projects.data().projects.find(p => projects.label(p.id) === label);
+const broadcastProjects = () => { broadcast({ type: "projects", ...projects.data() }); void history().then(sessions => broadcast({ type: "history", sessions, folders: folderLabels() })); };
+
+// Einmalig: die alten Seitenleisten-Ordner (chat-folders.json / chat-meta.json) werden zu Projekten.
+function migrateFolders() {
+  try {
+    const names = new Set([...chatFolders, ...Object.values(chatMeta).map(m => m.folder ?? "")].filter(Boolean));
+    if (!names.size) return;
+    for (const name of names) if (!projectByLabel(name)) projects.create(name);
+    for (const [id, m] of Object.entries(chatMeta)) {
+      if (!m.folder) continue;
+      const target = projectByLabel(m.folder);
+      projects.upsertChat({ id, title: m.title || id });
+      if (target && !projects.chat(id)?.projectId) projects.assign(id, target.id, "manual");
+      delete m.folder;
+    }
+    chatFolders = []; writeFileSync(CHAT_FOLDERS, "[]"); saveChatMeta();
+  } catch (error) { recordError({ category: "daemon", source: "jarvisd/migrate-folders", message: "Ordner konnten nicht zu Projekten werden", error }); }
+}
+migrateFolders();
 let models: ModelInfo[] = [];
 let session: string | undefined;
 let busy = false;
@@ -174,7 +195,7 @@ async function history() {
     return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title),
-                   folder: chatMeta[s.id]?.folder || "", active: s.id === session,
+                   folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session,
                    updated: s.time?.updated ?? 0, projectId: projects.chat(s.id)?.projectId ?? null,
                    project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
   } catch (error) {
@@ -381,13 +402,13 @@ async function setSessionTitle(id: string, title: string, automatic = false) {
   saveChatMeta();
   await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: chatMeta[id].title }) }).catch(() => {});
   void syncProjects();
-  broadcast({ type: "history", sessions: await history(), folders: chatFolders });
+  broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
 async function updateChat(msg: any) {
   const id = String(msg.id ?? "");
   if (msg.action === "folder") {
     const name = String(msg.name ?? "").trim().slice(0, 50);
-    if (name && !chatFolders.includes(name)) { chatFolders.push(name); saveChatFolders(); }
+    if (name && !projectByLabel(name)) projects.create(name);
   } else if (!id) return;
   else if (msg.action === "rename") {
     const title = String(msg.title ?? "").trim().slice(0, 100);
@@ -395,18 +416,19 @@ async function updateChat(msg: any) {
     chatMeta[id] = { ...chatMeta[id], title, auto: false }; saveChatMeta();
     await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
   } else if (msg.action === "move") {
-    const folder = String(msg.folder ?? "").trim().slice(0, 50);
-    chatMeta[id] = { ...chatMeta[id], folder }; saveChatMeta();
-    if (folder && !chatFolders.includes(folder)) { chatFolders.push(folder); saveChatFolders(); }
+    const folder = String(msg.folder ?? "").trim().slice(0, 100);
+    let target = folder ? projectByLabel(folder) : undefined;
+    if (folder && !target) target = projects.create(folder);
+    projects.upsertChat({ id, title: chatMeta[id]?.title || id });
+    projects.assign(id, target?.id ?? null, "manual");
   } else if (msg.action === "delete") {
     const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
     if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`);
     delete chatMeta[id]; saveChatMeta();
     if (session === id) { session = undefined; broadcast({ type: "session", id: null }); broadcast({ type: "messages", messages: [] }); }
   }
-  broadcast({ type: "history", sessions: await history(), folders: chatFolders });
+  broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
-const saveChatFolders = () => writeFileSync(CHAT_FOLDERS, JSON.stringify(chatFolders, null, 2));
 async function rewindMessage(id: string, messageID: string) {
   if (busy && session) await brain.abort(session);
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
@@ -541,7 +563,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
         vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
         if (uis.size === 0 && !ws.data.fresh) session = undefined;
-        uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: chatFolders })));
+        uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: folderLabels() })));
         ws.send(JSON.stringify({ type: "projects", ...projects.data() })); void syncProjects();
       }
     },
@@ -635,7 +657,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
-      else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: chatFolders })); void syncProjects(); }
+      else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));

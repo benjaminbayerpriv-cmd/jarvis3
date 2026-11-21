@@ -18,8 +18,8 @@
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
-      <button class="rail-item folder-add" id="newFolder"><span data-icon="folder-plus"></span><span class="rail-label">Neuer Ordner</span></button>
-      <button class="rail-item" id="openProjects"><span data-icon="copy"></span><span class="rail-label">Projekte</span></button>
+      <button class="rail-item folder-add" id="newFolder"><span data-icon="folder-plus"></span><span class="rail-label">Neues Projekt</span></button>
+      <button class="rail-item" id="openProjects"><span data-icon="folder-open"></span><span class="rail-label">Projekte</span></button>
       <div class="rail-section rail-label">Zuletzt</div>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
@@ -108,25 +108,26 @@
     </form>
   </dialog>
 
-  <!-- Projekte: echte Unterverzeichnisse mit Chats -->
-  <dialog class="sheet projects-sheet" id="projectsDialog">
-    <div class="sheet-inner">
-      <header class="sheet-head"><h2>Projekte</h2><button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button></header>
-      <div class="projects-tools">
-        <button type="button" class="chip-btn" id="analyzeProjects"><span data-icon="refresh"></span>Automatisch zuordnen</button>
-        <span class="projects-path" id="projectsPath"></span>
+  <!-- Projekte: Datei-Explorer (Projekte = Ordner, Chats = Dateien) -->
+  <dialog class="sheet explorer" id="projectsDialog">
+    <div class="ex">
+      <header class="ex-head">
+        <h2>Projekte</h2>
+        <nav class="ex-crumbs" id="exCrumbs" aria-label="Pfad"></nav>
+        <div class="ex-tools">
+          <button type="button" class="chip-btn" id="exNew"><span data-icon="folder-plus"></span>Neues Projekt</button>
+          <button type="button" class="chip-btn" id="analyzeProjects"><span data-icon="refresh"></span>Automatisch zuordnen</button>
+          <button type="button" class="icon-btn" id="closeProjects" data-icon="x" aria-label="Schließen"></button>
+        </div>
+      </header>
+      <div class="ex-body">
+        <aside class="ex-tree" id="exTree" aria-label="Projektbaum"></aside>
+        <section class="ex-main">
+          <div class="ex-cols" aria-hidden="true"><span>Name</span><span>Typ</span><span>Geändert</span><span></span></div>
+          <ul class="ex-list" id="exList"></ul>
+        </section>
       </div>
-      <form class="project-form" id="projectForm">
-        <input id="projectName" placeholder="Neues Projekt" aria-label="Projektname" autocomplete="off">
-        <select id="projectParent" aria-label="Überprojekt"></select>
-        <button type="submit" class="chip-btn">Anlegen</button>
-      </form>
-      <form class="project-form" id="assignForm">
-        <select id="assignChat" aria-label="Chat"></select>
-        <select id="assignProject" aria-label="Zielprojekt"></select>
-        <button type="submit" class="chip-btn">Zuordnen</button>
-      </form>
-      <div class="project-tree" id="projectTree"></div>
+      <footer class="ex-foot" id="exStatus"></footer>
     </div>
   </dialog>
 
@@ -143,7 +144,7 @@
 
   <dialog class="sheet" id="chatActionDialog">
     <form method="dialog" class="sheet-inner" id="chatActionForm">
-      <header class="sheet-head"><h2 id="chatActionTitle">Ordner erstellen</h2><button class="icon-btn" value="cancel" data-icon="x" aria-label="Schließen"></button></header>
+      <header class="sheet-head"><h2 id="chatActionTitle">Projekt erstellen</h2><button class="icon-btn" value="cancel" data-icon="x" aria-label="Schließen"></button></header>
       <p id="chatActionDesc" class="chat-action-desc"></p>
       <label class="search" id="chatActionField"><span data-icon="edit"></span><input id="chatActionValue" autocomplete="off"></label>
       <datalist id="chatFolderOptions"></datalist>

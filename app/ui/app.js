@@ -365,9 +365,98 @@ try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch
 $("#newChat").onclick = () => {
   send({ type: "new" }); currentSession = null; editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
 };
+
+// Chatzeilen werden innerhalb der WebView verschoben. Das native Datei-Drag-and-drop
+// braucht dafür weder Daten im Drag-Transfer noch Zugriff auf die Geste.
+const chatHistory = $("#history");
+let chatDrag = null;
+let suppressChatClick = false;
+
+chatHistory.addEventListener("pointerdown", e => {
+  if (!e.isPrimary || e.button !== 0) return;
+  suppressChatClick = false;
+  const row = e.target.closest(".history-chat[data-id]");
+  if (!row || e.target.closest(".history-menu")) return;
+  chatDrag = { pointer: e.pointerId, row, id: row.dataset.id, x: e.clientX, y: e.clientY };
+});
+
+function chatDropTarget(x, y) {
+  const target = document.elementFromPoint(x, y)?.closest("[data-chat-drop-folder]");
+  return target && chatHistory.contains(target) ? target : null;
+}
+
+function updateChatDrag() {
+  const drag = chatDrag;
+  const bounds = chatHistory.getBoundingClientRect();
+  if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom) {
+    if (drag.y < bounds.top + 24) chatHistory.scrollTop -= 7;
+    else if (drag.y > bounds.bottom - 24) chatHistory.scrollTop += 7;
+  }
+  const target = chatDropTarget(drag.x, drag.y);
+  if (drag.target !== target) {
+    drag.target?.classList.remove("drop-target");
+    target?.classList.add("drop-target");
+    drag.target = target;
+  }
+  drag.frame = requestAnimationFrame(updateChatDrag);
+}
+
+window.addEventListener("pointermove", e => {
+  const drag = chatDrag;
+  if (!drag || e.pointerId !== drag.pointer) return;
+  if (!drag.preview) {
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
+    if (!drag.row.isConnected) { chatDrag = null; return; }
+    chatHistory.setPointerCapture(e.pointerId);
+    suppressChatClick = true;
+    drag.row.classList.add("chat-drag-source");
+    drag.preview = document.createElement("div");
+    drag.preview.className = "chat-drag-preview";
+    drag.preview.setAttribute("aria-hidden", "true");
+    drag.preview.textContent = drag.row.querySelector(".history-title").textContent;
+    document.body.append(drag.preview);
+    drag.frame = requestAnimationFrame(updateChatDrag);
+  }
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  drag.preview.style.transform = `translate(${drag.x + 12}px, ${drag.y + 12}px)`;
+});
+
+function clearChatDrag() {
+  const drag = chatDrag;
+  chatDrag = null;
+  if (!drag?.preview) return;
+  cancelAnimationFrame(drag.frame);
+  drag.target?.classList.remove("drop-target");
+  drag.row.classList.remove("chat-drag-source");
+  drag.preview.remove();
+  if (chatHistory.hasPointerCapture(drag.pointer)) chatHistory.releasePointerCapture(drag.pointer);
+}
+
+window.addEventListener("pointerup", e => {
+  const drag = chatDrag;
+  if (!drag || e.pointerId !== drag.pointer) return;
+  const folder = drag.preview ? chatDropTarget(e.clientX, e.clientY)?.dataset.chatDropFolder : undefined;
+  clearChatDrag();
+  const chat = historySessions.find(s => s.id === drag.id);
+  if (chat && folder !== undefined && folder !== (chat.folder || "")) {
+    send({ type: "chat_action", action: "move", id: chat.id, folder });
+  }
+});
+window.addEventListener("pointercancel", e => { if (e.pointerId === chatDrag?.pointer) clearChatDrag(); });
+chatHistory.addEventListener("lostpointercapture", e => { if (e.pointerId === chatDrag?.pointer) clearChatDrag(); });
+window.addEventListener("blur", clearChatDrag);
+window.addEventListener("keydown", e => { if (e.key === "Escape") clearChatDrag(); });
+chatHistory.addEventListener("click", e => {
+  if (!suppressChatClick || !e.detail) return;
+  suppressChatClick = false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+
 function renderHistory(list = []) {
   historySessions = list;
-  const folders = chatFolderNames.length ? chatFolderNames : [...new Set(list.map(s => s.folder).filter(Boolean))];
+  const folders = [...new Set([...chatFolderNames, ...list.map(s => s.folder).filter(Boolean)])];
   const ul = $("#history"), q = $("#chatSearch").value.trim().toLocaleLowerCase("de-DE"); ul.innerHTML = "";
   const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
   const collapsedSections = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedHistorySections") || "[]"));
@@ -375,16 +464,19 @@ function renderHistory(list = []) {
   const addSection = (name, key) => {
     const li = document.createElement("li"); li.className = "history-section";
     const toggle = document.createElement("button"); toggle.className = "history-section-toggle";
-    toggle.innerHTML = `${icon("chevron-down")}<span>${name}</span>`;
+    if (key === "chats") toggle.dataset.chatDropFolder = "";
+    const label = document.createElement("span"); label.textContent = name;
+    toggle.append(label, document.createRange().createContextualFragment(icon("chevron-down")));
     toggle.setAttribute("aria-expanded", String(isSearching || !collapsedSections.has(key)));
     toggle.onclick = () => { collapsedSections.has(key) ? collapsedSections.delete(key) : collapsedSections.add(key); localStorage.setItem("jarvis.collapsedHistorySections", JSON.stringify([...collapsedSections])); renderHistory(historySessions); };
     li.append(toggle); ul.append(li);
     return isSearching || !collapsedSections.has(key);
   };
   const appendChat = (s, parent) => {
-    const li = document.createElement("li"); li.className = "history-chat"; li.draggable = true; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
+    const li = document.createElement("li"); li.className = "history-chat"; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
+    if (!s.folder) li.dataset.chatDropFolder = "";
     const title = document.createElement("button"); title.className = "history-title";
-    title.textContent = (s.title || "Unterhaltung") + (s.project ? ` · ${s.project}` : ""); title.title = title.textContent;
+    title.textContent = s.title || "Unterhaltung";
     title.onclick = () => { currentSession = s.id; send({ type: "open", id: s.id }); };
     const menu = document.createElement("div"); menu.className = "history-menu";
     const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
@@ -397,21 +489,28 @@ function renderHistory(list = []) {
     button("Löschen", icon("trash"), () => showChatAction("delete", s.id, s.title));
     menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
     menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
-    li.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; });
   };
   const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
   const addFolder = name => {
     const row = document.createElement("li"); row.className = "history-chat folder-chat"; row.dataset.folder = name;
     const isFolderCollapsed = !isSearching && collapsed.has(name);
     const toggle = document.createElement("button"); toggle.className = "folder-toggle";
+    toggle.dataset.chatDropFolder = name;
     toggle.innerHTML = icon(isFolderCollapsed ? "folder" : "folder-open");
     const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel);
     toggle.setAttribute("aria-expanded", String(!isFolderCollapsed));
-    toggle.setAttribute("aria-label", `${isFolderCollapsed ? "Ordner öffnen" : "Ordner schließen"}: ${name}`);
+    toggle.setAttribute("aria-label", `${isFolderCollapsed ? "Projekt öffnen" : "Projekt schließen"}: ${name}`);
     toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
-    row.append(toggle);
-    row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drop-target"); }); row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
-    row.addEventListener("drop", e => { e.preventDefault(); row.classList.remove("drop-target"); send({type:"chat_action", action:"move", id:e.dataTransfer.getData("text/plain"), folder:name}); });
+    const menu = document.createElement("div"); menu.className = "history-menu";
+    const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
+    menuToggle.title = "Projektaktionen"; menuToggle.setAttribute("aria-label", `Aktionen für Projekt ${name}`); menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
+    const action = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
+    action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name));
+    action("Verschieben", icon("folder"), () => showChatAction("move-folder", "", name));
+    action("Löschen", icon("trash"), () => showChatAction("delete-folder", "", name));
+    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menu.append(menuToggle, actions); row.append(toggle, menu);
     if (!isFolderCollapsed) {
       const children = document.createElement("ul"); children.className = "folder-children";
       visible.filter(s => s.folder === name).forEach(s => appendChat(s, children));
@@ -419,7 +518,7 @@ function renderHistory(list = []) {
     }
     ul.append(row);
   };
-  if (addSection("Ordner", "folders")) folders.forEach(addFolder);
+  if (addSection("Projekte", "folders")) folders.forEach(addFolder);
   if (addSection("Chats", "chats")) visible.filter(s => !s.folder).forEach(s => appendChat(s, ul));
 }
 document.addEventListener("click", () => {
@@ -448,114 +547,122 @@ function renderMessages(msgs = []) {
 }
 
 // ---------- Projekte ----------
+// ---------- Projekte: Explorer (Projekte = Ordner, Chats = Dateien) ----------
 const projectAction = action => send({ type: "project_action", ...action });
+let exSel = null;                 // gewähltes Projekt (null = oberste Ebene)
+const exOpen = new Set();         // aufgeklappte Projekte im Baum
+const pById = id => projectData.projects.find(x => x.id === id);
+const childrenOf = id => projectData.projects.filter(x => (x.parentId ?? null) === id);
+const chatsOf = id => projectData.chats.filter(c => (c.projectId ?? null) === id);
 function projectLabel(id) {
   const names = [], seen = new Set();
-  let p = projectData.projects.find(x => x.id === id);
-  while (p && !seen.has(p.id)) { seen.add(p.id); names.unshift(p.name); p = projectData.projects.find(x => x.id === p.parentId); }
+  let p = pById(id);
+  while (p && !seen.has(p.id)) { seen.add(p.id); names.unshift(p.name); p = pById(p.parentId); }
   return names.join(" / ");
 }
-function fillProjectSelects() {
-  const parent = $("#projectParent"), chat = $("#assignChat"), target = $("#assignProject");
-  parent.innerHTML = `<option value="">Ohne Überprojekt</option>`;
-  target.innerHTML = `<option value="">Ohne Projekt</option>`;
-  for (const p of projectData.projects) {
-    const label = projectLabel(p.id);
-    parent.append(new Option(label, p.id));
-    target.append(new Option(label, p.id));
+const countDeep = id => chatsOf(id).length + childrenOf(id).reduce((n, p) => n + countDeep(p.id), 0);
+const fmtDate = t => { if (!t) return ""; const d = new Date(t), now = new Date();
+  return d.toDateString() === now.toDateString() ? d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: now.getFullYear() === d.getFullYear() ? undefined : "2-digit" }); };
+
+function exBtn(name, label, fn) {
+  const b = document.createElement("button"); b.type = "button"; b.className = "ex-act"; b.title = label; b.setAttribute("aria-label", label);
+  b.innerHTML = icon(name); b.onclick = e => { e.stopPropagation(); fn(b); }; return b;
+}
+function exRename(row, current, save) {
+  const name = row.querySelector(".ex-name"); const input = document.createElement("input");
+  input.className = "ex-rename"; input.value = current; name.replaceChildren(input); input.focus(); input.select();
+  let done = false; const finish = ok => { if (done) return; done = true; const v = input.value.trim(); if (ok && v && v !== current) save(v); else renderProjects(); };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true); input.onclick = e => e.stopPropagation();
+}
+function exMoveMenu(anchor, onPick, exclude = new Set()) {
+  document.querySelectorAll(".ex-menu").forEach(m => m.remove());
+  const menu = document.createElement("div"); menu.className = "ex-menu";
+  const add = (label, id, depth) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.style.paddingLeft = `${12 + depth * 14}px`;
+    b.onclick = e => { e.stopPropagation(); menu.remove(); onPick(id); }; menu.append(b); };
+  add("Ohne Projekt (oberste Ebene)", null, 0);
+  const walk = (parent, depth) => { for (const p of childrenOf(parent)) { if (exclude.has(p.id)) continue; add(p.name, p.id, depth + 1); walk(p.id, depth + 1); } };
+  walk(null, 0);
+  anchor.closest(".ex-row").append(menu);
+  const off = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("pointerdown", off, true); } };
+  setTimeout(() => document.addEventListener("pointerdown", off, true));
+}
+const descendants = id => { const out = new Set([id]); const walk = p => childrenOf(p).forEach(c => { out.add(c.id); walk(c.id); }); walk(id); return out; };
+
+function exProjectRow(p) {
+  const li = document.createElement("li"); li.className = "ex-row is-folder"; li.tabIndex = 0;
+  const n = countDeep(p.id), sub = childrenOf(p.id).length;
+  li.innerHTML = `<span class="ex-name">${icon("folder")}<span class="ex-text"></span></span><span class="ex-type">Projekt</span><span class="ex-date">${n} ${n === 1 ? "Chat" : "Chats"}${sub ? ` · ${sub} ${sub === 1 ? "Unterprojekt" : "Unterprojekte"}` : ""}</span><span class="ex-acts"></span>`;
+  li.querySelector(".ex-text").textContent = p.name;
+  li.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
+  li.onkeydown = e => { if (e.key === "Enter") li.click(); };
+  li.querySelector(".ex-acts").append(
+    exBtn("edit", "Umbenennen", () => exRename(li, p.name, name => projectAction({ op: "update", id: p.id, patch: { name } }))),
+    exBtn("move", "Verschieben", b => exMoveMenu(b, to => projectAction({ op: "update", id: p.id, patch: { parentId: to } }), descendants(p.id))),
+    exBtn("trash", "Löschen", () => { if (confirm(`Projekt „${p.name}“ samt Unterprojekten löschen? Die Chats bleiben erhalten.`)) { if (exSel && descendants(p.id).has(exSel)) exSel = p.parentId ?? null; projectAction({ op: "delete", id: p.id }); } }));
+  return li;
+}
+function exChatRow(c) {
+  const li = document.createElement("li"); li.className = "ex-row is-chat"; li.tabIndex = 0;
+  li.innerHTML = `<span class="ex-name">${icon("message")}<span class="ex-text"></span></span><span class="ex-type">Chat${c.assignedBy === "ki" ? " · KI" : ""}</span><span class="ex-date">${fmtDate(c.updated)}</span><span class="ex-acts"></span>`;
+  li.querySelector(".ex-text").textContent = c.title;
+  const open = () => { currentSession = c.id; send({ type: "open", id: c.id }); $("#projectsDialog").close(); };
+  li.onclick = open; li.onkeydown = e => { if (e.key === "Enter") open(); };
+  li.querySelector(".ex-acts").append(
+    exBtn("move", "In Projekt verschieben", b => exMoveMenu(b, to => projectAction({ op: "assign", id: c.id, projectId: to, by: "manual" }))));
+  return li;
+}
+function exTreeNode(parent, depth, host) {
+  for (const p of childrenOf(parent)) {
+    const kids = childrenOf(p.id).length, open = exOpen.has(p.id);
+    const row = document.createElement("button"); row.type = "button"; row.className = "ex-node" + (exSel === p.id ? " active" : ""); row.style.setProperty("--d", depth);
+    row.innerHTML = `<span class="ex-chev${kids ? "" : " none"}${open ? " open" : ""}">${icon("chevron-right")}</span>${icon(open && kids ? "folder-open" : "folder")}<span class="ex-text"></span>`;
+    row.querySelector(".ex-text").textContent = p.name;
+    row.querySelector(".ex-chev").onclick = e => { e.stopPropagation(); open ? exOpen.delete(p.id) : exOpen.add(p.id); renderProjects(); };
+    row.onclick = () => { exSel = p.id; exOpen.add(p.id); renderProjects(); };
+    host.append(row);
+    if (open) exTreeNode(p.id, depth + 1, host);
   }
-  chat.innerHTML = "";
-  for (const c of projectData.chats) {
-    const where = projectLabel(c.projectId);
-    chat.append(new Option(c.title + (where ? ` · ${where}` : ""), c.id));
-  }
-}
-function renameProject(p, button) {
-  const input = document.createElement("input");
-  input.className = "proj-rename"; input.value = p.name;
-  button.replaceWith(input); input.focus(); input.select();
-  let done = false;
-  const finish = save => {
-    if (done) return; done = true;
-    const name = input.value.trim();
-    if (save && name && name !== p.name) projectAction({ op: "update", id: p.id, patch: { name } });
-    else renderProjects();
-  };
-  input.onkeydown = e => {
-    if (e.key === "Enter") { e.preventDefault(); finish(true); }
-    else if (e.key === "Escape") finish(false);
-  };
-  input.onblur = () => finish(true);
-}
-function projectRow(p, depth) {
-  const row = document.createElement("div");
-  row.className = "proj-row"; row.style.setProperty("--depth", String(depth));
-  const name = document.createElement("button");
-  name.type = "button"; name.className = "proj-name"; name.textContent = p.name;
-  name.title = p.description || "Projekt umbenennen";
-  name.onclick = () => renameProject(p, name);
-  const count = document.createElement("span"); count.className = "proj-count";
-  const n = projectData.chats.filter(c => c.projectId === p.id).length;
-  count.textContent = n ? String(n) : "";
-  const del = document.createElement("button");
-  del.type = "button"; del.className = "proj-action"; del.textContent = "×"; del.title = "Projekt löschen";
-  del.onclick = () => {
-    if (confirm(`Projekt „${p.name}“ samt Unterprojekten löschen? Die Chats bleiben erhalten.`)) projectAction({ op: "delete", id: p.id });
-  };
-  row.append(name, count, del);
-  return row;
-}
-function chatRow(c, depth) {
-  const row = document.createElement("div");
-  row.className = "chat-row"; row.style.setProperty("--depth", String(depth));
-  const open = document.createElement("button");
-  open.type = "button"; open.className = "proj-name"; open.textContent = c.title; open.title = "Chat öffnen";
-  open.onclick = () => { send({ type: "open", id: c.id }); $("#projectsDialog").close(); };
-  const tag = document.createElement("span"); tag.className = "chat-tag";
-  tag.textContent = c.assignedBy === "ki" ? "KI" : c.assignedBy === "auto" ? "Auto" : c.assignedBy === "manual" ? "Manuell" : "";
-  const detach = document.createElement("button");
-  detach.type = "button"; detach.className = "proj-action"; detach.textContent = "×"; detach.title = "Aus Projekt lösen";
-  detach.onclick = () => projectAction({ op: "assign", id: c.id, projectId: null, by: "manual" });
-  row.append(open, tag, detach);
-  return row;
 }
 function renderProjects(m = projectData) {
   projectData = m;
-  $("#projectsPath").textContent = m.root ? `~/${m.root}` : "";
-  fillProjectSelects();
-  const root = $("#projectTree"); root.innerHTML = "";
-  const walk = (parent, depth) => {
-    for (const p of m.projects.filter(x => (x.parentId ?? null) === parent)) {
-      root.append(projectRow(p, depth));
-      for (const c of m.chats.filter(x => x.projectId === p.id)) root.append(chatRow(c, depth + 1));
-      walk(p.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  const loose = m.chats.filter(c => !c.projectId);
-  if (loose.length) {
-    const h = document.createElement("div"); h.className = "proj-group"; h.textContent = "Ohne Projekt"; root.append(h);
-    for (const c of loose) root.append(chatRow(c, 1));
+  if (exSel && !pById(exSel)) exSel = null;
+  // Baum
+  const tree = $("#exTree"); tree.innerHTML = "";
+  const root = document.createElement("button"); root.type = "button"; root.className = "ex-node" + (exSel === null ? " active" : ""); root.style.setProperty("--d", 0);
+  root.innerHTML = `<span class="ex-chev none">${icon("chevron-right")}</span>${icon("home")}<span class="ex-text">Alle Projekte</span>`;
+  root.onclick = () => { exSel = null; renderProjects(); };
+  tree.append(root); exTreeNode(null, 0, tree);
+  // Pfad
+  const crumbs = $("#exCrumbs"); crumbs.innerHTML = "";
+  const chain = []; for (let p = pById(exSel); p; p = pById(p.parentId)) chain.unshift(p);
+  const crumb = (label, id, last) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = last ? "last" : "";
+    b.onclick = () => { exSel = id; renderProjects(); }; crumbs.append(b); if (!last) crumbs.insertAdjacentHTML("beforeend", icon("chevron-right")); };
+  crumb("Projekte", null, chain.length === 0); chain.forEach((p, i) => crumb(p.name, p.id, i === chain.length - 1));
+  // Inhalt
+  const list = $("#exList"); list.innerHTML = "";
+  const subs = childrenOf(exSel), chats = chatsOf(exSel);
+  for (const p of subs) list.append(exProjectRow(p));
+  for (const c of chats) list.append(exChatRow(c));
+  if (!subs.length && !chats.length) {
+    const e = document.createElement("li"); e.className = "ex-empty";
+    e.textContent = exSel ? "Dieses Projekt ist leer. Ordne Chats zu oder lege Unterprojekte an." : "Noch keine Projekte. Lege oben „Neues Projekt“ an.";
+    list.append(e);
   }
-  if (!m.projects.length && !m.chats.length) {
-    const empty = document.createElement("div"); empty.className = "proj-group"; empty.textContent = "Noch keine Projekte."; root.append(empty);
-  }
+  $("#exStatus").textContent = `${subs.length} ${subs.length === 1 ? "Projekt" : "Projekte"} · ${chats.length} ${chats.length === 1 ? "Chat" : "Chats"}${m.root ? ` · ~/${m.root}` : ""}`;
 }
-$("#openProjects").onclick = () => { send({ type: "projects" }); $("#projectsDialog").showModal(); };
+$("#openProjects").onclick = () => { send({ type: "projects" }); renderProjects(); $("#projectsDialog").showModal(); };
 $("#closeProjects").onclick = () => $("#projectsDialog").close();
 $("#analyzeProjects").onclick = () => projectAction({ op: "analyze" });
-$("#projectForm").onsubmit = e => {
-  e.preventDefault();
-  const name = $("#projectName").value.trim();
-  if (!name) return;
-  projectAction({ op: "create", name, description: "", parent: $("#projectParent").value || null });
-  $("#projectName").value = "";
-};
-$("#assignForm").onsubmit = e => {
-  e.preventDefault();
-  const id = $("#assignChat").value;
-  if (!id) return;
-  projectAction({ op: "assign", id, projectId: $("#assignProject").value || null, by: "manual" });
+$("#exNew").onclick = () => {
+  const list = $("#exList"); const li = document.createElement("li"); li.className = "ex-row is-folder";
+  li.innerHTML = `<span class="ex-name">${icon("folder")}<input class="ex-rename" placeholder="Name des Projekts" aria-label="Projektname"></span><span class="ex-type">Projekt</span><span class="ex-date"></span><span class="ex-acts"></span>`;
+  list.querySelector(".ex-empty")?.remove(); list.prepend(li);
+  const input = li.querySelector("input"); input.focus(); let done = false;
+  const finish = ok => { if (done) return; done = true; const name = input.value.trim(); if (ok && name) { projectAction({ op: "create", name, description: "", parent: exSel }); if (exSel) exOpen.add(exSel); } else renderProjects(); };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") finish(false); };
+  input.onblur = () => finish(true);
 };
 
 // ---------- Live-Ansicht des Tabs ----------
@@ -620,12 +727,12 @@ $(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !
 $("#newFolder").onclick = () => { setRail(true); showChatAction("folder"); };
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
-  const labels = { folder: "Ordner erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?" };
+  const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?" };
   $("#chatActionTitle").textContent = labels[action];
-  $("#chatActionDesc").textContent = action === "delete" ? `„${title}“ wird dauerhaft aus dem Verlauf entfernt.` : action === "move" ? "Ordnernamen eingeben oder einen vorhandenen Ordner auswählen. Leer lassen, um den Chat aus dem Ordner zu lösen." : "";
+  $("#chatActionDesc").textContent = action === "delete" ? `„${title}“ wird dauerhaft aus dem Verlauf entfernt.` : action === "move" ? "Projektnamen eingeben oder ein vorhandenes Projekt auswählen. Leer lassen, um den Chat aus dem Projekt zu lösen." : "";
   $("#chatActionField").hidden = action === "delete";
   $("#chatActionValue").value = value;
-  $("#chatActionValue").placeholder = action === "folder" ? "Ordnername" : action === "rename" ? "Chatname" : "Ordnername";
+  $("#chatActionValue").placeholder = action === "folder" ? "Projektname" : action === "rename" ? "Chatname" : "Projektname";
   $("#chatActionValue").setAttribute("list", "chatFolderOptions");
   $("#chatFolderOptions").replaceChildren(...chatFolderNames.map(name => { const option = document.createElement("option"); option.value = name; return option; }));
   $("#chatActionDialog").showModal();

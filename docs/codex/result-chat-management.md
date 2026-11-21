@@ -1,5 +1,15 @@
 # Codex Übergabe: Chatverwaltung
 
+Aufgeklappte Ordner bleiben beim Überfahren ihrer Chats transparent. Nur die
+jeweilige Zeile erhält einen Hover-Hintergrund. Der Tooltip über Chattiteln ist
+entfernt.
+
+Drag-and-drop nutzt jetzt Pointer Events innerhalb der Sidebar. Ordnerzeilen und
+„Chats“ akzeptieren einen Drop. Ablageziel und Ziehvorschau sind sichtbar, und
+Escape bricht den Vorgang ab. Headless Chrome mit simuliertem Daemon bestätigte
+beide Verschieberichtungen, Escape und den normalen Klick zum Öffnen. Die
+Tauri-WebView wurde dafür nicht gestartet.
+
 In `app/ui` und `core/src/index.ts` umgesetzt:
 
 - Chatnamen werden automatisch aus der ersten Nachricht und der Antwort abgeleitet; nach der Antwort wird der Thementitel aktualisiert. Manuell umbenannte Chats werden dabei nicht überschrieben.
@@ -9,6 +19,7 @@ In `app/ui` und `core/src/index.ts` umgesetzt:
 - Beim Anlegen klappt die Sidebar auf und zeigt den neuen Ordner sofort optimistisch an; der Daemon speichert ihn anschließend dauerhaft.
 - Ordner erscheinen wie Chatzeilen mit einem 24-px-Ordnersymbol. Ihre Chats stehen eingerückt darunter; „Zuletzt“ als zusätzliche Überschrift wurde entfernt.
 - Getrennte einklappbare Bereiche „Ordner“ und „Chats“ ergänzt. Während einer Suche werden passende Gruppen automatisch aufgeklappt.
+- Bereichszeilen an der Gemini-Referenz ausgerichtet: kleine Schrift, dezenter Klapppfeil rechts, kein pillenförmiger Auswahlrahmen.
 - Ordner erstellen, umbenennen, verschieben und löschen verwenden ein eingebautes Tauri-kompatibles Dialogfenster statt Browser-Prompts.
 - Chats umbenennen, löschen, in persistente Ordner einsortieren; Ordner lassen sich erstellen, ein- und ausklappen. Drag-and-drop verschiebt Chats in Ordner.
 - Nachrichten bearbeiten oder erneut senden. Der Daemon springt dafür in derselben OpenCode-Sitzung zur ausgewählten Nachricht zurück und setzt den Verlauf dort fort.
