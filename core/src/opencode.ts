@@ -35,6 +35,7 @@ export class OpenCode {
   private partKinds = new Map<string, string>();
   private listeners = new Map<string, (e: BrainEvent) => void>();
   private started = new Set<string>(); // Sitzungen, in denen der aktuelle Lauf schon Ereignisse geliefert hat
+  private runStart = new Map<string, number>(); // Sitzung -> Beginn des aktuellen Laufs (für die Wiederherstellung verlorener Antworten)
   private lastStreamError = 0;
   private lastEvent = new Map<string, number>(); // Sitzung -> letztes Ereignis bzw. Start des Laufs
   private watchdog?: ReturnType<typeof setInterval>;
@@ -91,6 +92,7 @@ export class OpenCode {
     this.listeners.set(session, onEvent);
     this.runs.set(session, { model, inChars: text.length + system.length + attachmentText.length, outChars: 0, real: false });
     this.lastEvent.set(session, Date.now());
+    this.runStart.set(session, Date.now());
     this.started.delete(session); // ein spätes "idle" des vorherigen (abgebrochenen) Laufs darf diesen nicht beenden
     const parts: unknown[] = [{ type: "text", text }];
     if (attachmentText) parts.push({ type: "text", text: attachmentText });
@@ -153,11 +155,32 @@ export class OpenCode {
       if (!cb) continue;
       this.listeners.delete(sid);
       this.finishRun(sid);
+      // Die Antwort kann in OpenCode fertig sein, ohne dass ein Ereignis bei uns ankam (anderer Server/Verzeichnis, Strom getrennt):
+      // dann den Text direkt aus der Sitzung holen, statt neu zu fragen.
+      const recovered = await this.recoverText(sid);
+      if (recovered) {
+        this.onLog(`OpenCode: Antwort für ${sid} ohne Ereignisse angekommen – ${recovered.length} Zeichen aus der Sitzung geholt`);
+        recordError({ category: "model", source: "opencode/recovered-text", message: "Antwort kam ohne Ereignisse an und wurde aus der Sitzung geholt", context: { session: sid, chars: recovered.length } });
+        cb({ kind: "text", delta: recovered });
+        cb({ kind: "done" });
+        continue;
+      }
       this.onLog(`OpenCode: Sitzung ${sid} im Leerlauf, aber kein idle-Ereignis angekommen -> Lauf beendet`);
       recordError({ category: "model", source: "opencode/missing-idle", message: "Lauf-Ende (session.idle) nicht angekommen, vom Wächter beendet",
         context: { session: sid, started: this.started.has(sid) } });
       cb({ kind: "done" });
     }
+  }
+
+  /** Text der letzten Assistentenantwort dieses Laufs direkt aus OpenCode lesen (leer, wenn es keine gibt). */
+  private async recoverText(sid: string): Promise<string> {
+    const since = this.runStart.get(sid) ?? 0;
+    try {
+      const msgs = await (await fetch(`${this.url}/session/${sid}/message`)).json() as any[];
+      const last = msgs.filter(m => m.info?.role === "assistant" && (m.info.time?.created ?? 0) >= since - 2000 && !m.info.error).pop();
+      if (!last) return "";
+      return last.parts.filter((p: any) => p.type === "text").map((p: any) => String(p.text ?? "")).join("").trim();
+    } catch { return ""; }
   }
 
   private async listen() {
