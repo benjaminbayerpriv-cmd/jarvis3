@@ -662,7 +662,7 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
     return r;
   }
-  if (settings.mode !== "computer" && !["scan", "read", "shot"].includes(cmd.cmd))
+  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
