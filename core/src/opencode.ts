@@ -40,7 +40,7 @@ export class OpenCode {
   }
 
   async start() {
-    if (await this.healthy()) return; // läuft schon (z. B. nach Daemon-Neustart)
+    if (await this.healthy()) { this.listen(); return; } // läuft schon (z. B. nach Daemon-Neustart)
     this.proc = Bun.spawn(["opencode", "serve", "--port", String(this.port), "--hostname", "127.0.0.1"],
       { cwd: this.workspace, stdout: "ignore", stderr: "inherit", env: { ...process.env } });
     for (let i = 0; i < 60 && !(await this.healthy()); i++) await Bun.sleep(250);
@@ -75,10 +75,29 @@ export class OpenCode {
     if (!r.ok) { this.listeners.delete(session); onEvent({ kind: "error", message: `${r.status} ${await r.text()}` }); }
   }
 
-  async abort(session: string) {
+  /** Wartet, bis OpenCode die Sitzung wirklich im Leerlauf meldet (nach einem Abbruch läuft noch Aufräumarbeit). */
+  async idle(session: string, maxMs = 4000) {
+    const t0 = Date.now();
+    for (;;) {
+      try {
+        const st = await (await fetch(`${this.url}/session/status`)).json() as Record<string, unknown>;
+        if (!st[session]) break;
+      } catch { /* weiter versuchen */ }
+      if (Date.now() - t0 > maxMs) break;
+      await Bun.sleep(80);
+    }
+    await Bun.sleep(150); // das späte "idle"-Ereignis des abgebrochenen Laufs trifft noch ein, solange kein Zuhörer registriert ist
+  }
+
+  /**
+   * Bricht den laufenden Lauf ab. Mit wait=true (Standard) kehrt die Funktion erst zurück, wenn die Sitzung im Leerlauf ist;
+   * sonst würde das späte "idle" des abgebrochenen Laufs den NÄCHSTEN Lauf beenden, bevor dessen Text ankommt.
+   */
+  async abort(session: string, wait = true) {
     await fetch(`${this.url}/session/${session}/abort`, { method: "POST" }).catch(() => {});
     this.listeners.get(session)?.({ kind: "done" });
     this.listeners.delete(session);
+    if (wait) await this.idle(session);
   }
 
   private async listen() {
