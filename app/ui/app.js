@@ -489,7 +489,7 @@ const syncMirrorScroll = () => { $("#taMirror").style.transform = `translateY(${
 input.addEventListener("scroll", syncMirrorScroll);
 function dictShow(t, partial = false) {
   // Zwischentext: Whisper hängt bei abgeschnittenem Wort "…" an ("…über ein E…"); das gehört nicht ins Feld
-  if (partial) t = String(t ?? "").replace(/s*(.{2,}|…)s*$/, "");
+  if (partial) t = String(t ?? "").replace(/\s*(\.{2,}|…)\s*$/, "");
   // Whisper liefert bei abgeschnittenen Wörtern oder Rauschen manchmal nur "…" / "...": das darf den Text nicht ersetzen
   if (!/[\p{L}\p{N}]/u.test(String(t ?? ""))) return;
   if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
