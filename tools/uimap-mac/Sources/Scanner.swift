@@ -195,6 +195,16 @@ private func collect(
     return targets
 }
 
+// Electron-/Chromium-Programme (Claude, VS Code, Slack, Discord, Chrome …) bauen ihren Bedienbaum erst, wenn man es verlangt.
+// AXManualAccessibility schaltet ihn ein, ohne dass VoiceOver o. Ä. laufen muss. Pro Programm nur einmal.
+var accessibilityRequested = Set<pid_t>()
+func requestAccessibility(_ app: AXUIElement, pid: pid_t) -> Bool {
+    guard accessibilityRequested.insert(pid).inserted else { return false }
+    let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    _ = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    return manual == .success
+}
+
 func scan(display: CGRect, frontPID: pid_t?, dockPID: pid_t?, menuExtrasPID: pid_t?) -> [Target] {
     AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.08)
     let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -216,6 +226,7 @@ func scan(display: CGRect, frontPID: pid_t?, dockPID: pid_t?, menuExtrasPID: pid
         if !visible.isEmpty {
             if appWindows[window.pid] == nil {
                 let app = AXUIElementCreateApplication(window.pid)
+                if requestAccessibility(app, pid: window.pid) { usleep(150_000) }  // dem Programm kurz Zeit geben, den Baum aufzubauen
                 let elements = attribute(app, "AXWindows") as? [AXUIElement] ?? []
                 appWindows[window.pid] = elements.prefix(50).compactMap { element in
                     windowFrame(element).map { (element, $0) }

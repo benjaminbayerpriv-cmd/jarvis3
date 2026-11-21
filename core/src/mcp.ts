@@ -67,8 +67,10 @@ server.tool("desktop_look", "Screenshot NUR wenn scan/read nicht reichen (Spiele
     }
     return image(await call("desktop", { cmd: "shot", ...a }));
   });
-server.tool("desktop_key", "Drückt eine Tastenkombination, z. B. 'cmd+t', 'return', 'escape'.", { combo: z.string() },
+server.tool("desktop_key", "Drückt EINE Taste oder Tastenkombination, z. B. 'cmd+t', 'cmd+shift+4', 'return', 'escape', 'tab', 'left', 'f5', 'cmd+z'. Auch einzelne Zeichen wie '8', '*', '=' gehen (richtet sich nach der Tastatur). Modifier immer MIT einer Taste verbinden (nicht 'shift' allein), keine Anführungszeichen. Zum SCHREIBEN von Text, Zahlen oder Rechnungen desktop_type_text benutzen, nicht viele einzelne Tasten.", { combo: z.string() },
   async a => result(await call("desktop", { cmd: "key", ...a })));
+server.tool("desktop_type_text", "Schreibt Text in das gerade fokussierte Feld bzw. Programm (Rechner, Notizen, Suchfeld …), ohne Element-ID. Zuerst das Feld/Programm mit desktop_click bzw. desktop_open_app in den Vordergrund bringen. Für Rechnen: z. B. text='8*8=' und danach ggf. desktop_key 'return'. Passwortfelder sind gesperrt.",
+  { text: z.string().max(2000) }, async a => result(await call("desktop", { cmd: "typetext", ...a })));
 server.tool("desktop_open_app", "Öffnet ein Programm per Name.", { name: z.string() },
   async a => result(await call("desktop", { cmd: "open_app", ...a })));
 

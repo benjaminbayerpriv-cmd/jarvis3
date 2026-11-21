@@ -96,14 +96,7 @@ final class Session {
         }
         if !focus(t) { _ = click(t) }
         usleep(80_000)
-        for scalar in text.utf16 {
-            var unit = scalar
-            for down in [true, false] {
-                let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
-                e?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
-                e?.post(tap: .cghidEventTap)
-            }
-        }
+        postText(text)
         return "keys"
     }
 
@@ -149,6 +142,18 @@ final class Session {
                 if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
                 let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [])
                 return ["ok": true, "path": path, "rect": [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)]]
+            case "typetext":
+                // Text ohne Element-ID in das gerade fokussierte Feld schreiben (Rechner, Notizen, Suchfelder …)
+                var focusedRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), "AXFocusedUIElement" as CFString, &focusedRef) == .success,
+                   let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+                    var roleRef: CFTypeRef?
+                    let focused = focusedRef as! AXUIElement
+                    if AXUIElementCopyAttributeValue(focused, "AXRole" as CFString, &roleRef) == .success,
+                       (roleRef as? String) == "AXSecureTextField" { throw Failure(message: "Passwortfelder sind gesperrt") }
+                }
+                postText(request["text"] as? String ?? "")
+                return ["ok": true, "via": "keys"]
             case "key":
                 try pressCombo(request["combo"] as? String ?? "")
                 return ["ok": true]
