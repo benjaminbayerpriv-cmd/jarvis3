@@ -17,19 +17,17 @@
         <button class="rail-item" id="railToggle" aria-label="Seitenleiste öffnen" aria-expanded="false"><span data-icon="layout-sidebar-left-expand"></span></button>
       </div>
       <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
-      <div class="rail-section rail-label">Zuletzt</div>
+      <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
+      <button class="rail-item folder-add" id="newFolder"><span data-icon="folder-plus"></span><span class="rail-label">Neuer Ordner</span></button>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
+      <button class="rail-item model-item" id="modelChip" aria-haspopup="dialog" title="Modell wählen"><span data-icon="sparkles"></span><span class="rail-label model-text"><span class="brand">Jarvis</span><span class="model-name" id="modelName">…</span></span></button>
       <button class="rail-item" id="openSettings"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
     </nav>
 
     <main class="main">
       <header class="topbar" data-tauri-drag-region>
-        <button class="model-chip" id="modelChip" aria-haspopup="dialog">
-          <span class="brand">Jarvis</span>
-          <span class="model-name" id="modelName">…</span>
-          <span data-icon="chevron-down" class="chev"></span>
-        </button>
+        <span></span>
         <div class="topbar-right">
           <button class="icon-btn view-toggle" id="viewToggle" data-icon="eye" aria-pressed="true" title="Live-Ansicht des Tabs"></button>
           <span class="status-pill" id="browserPill" title="Chrome-Erweiterung"><span data-icon="world"></span><span>Browser</span></span>

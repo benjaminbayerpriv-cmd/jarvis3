@@ -23,6 +23,10 @@ paintIcons();
 // ---------- Zustand ----------
 const state = { model: "", mode: "browser", busy: false, browser: false, models: [], voiceModel: "", lofi: false, micDevice: null, devices: null };
 let current = null;        // aktuelle Jarvis-Antwort {el, text, started}
+let currentSession = null;
+let historySessions = [];
+let chatFolderNames = [];
+let editingMessage = null;
 let live = { on: false, muted: false };
 
 // ---------- Verbindung ----------
@@ -60,8 +64,9 @@ function handle(m) {
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
-    case "history": renderHistory(m.sessions); break;
+    case "history": chatFolderNames = m.folders || chatFolderNames; renderHistory(m.sessions); break;
     case "messages": renderMessages(m.messages); break;
+    case "session": currentSession = m.id; break;
   }
   if (m.type === "state" && !m.busy && current) finishTurn();
 }
@@ -97,7 +102,14 @@ function addUser(text) {
   setZero(false);
   const n = $("#tplUser").content.firstElementChild.cloneNode(true);
   n.querySelector(".bubble").textContent = text;
+  const tools = document.createElement("div"); tools.className = "user-tools";
+  const edit = document.createElement("button"); edit.type = "button"; edit.title = "Bearbeiten"; edit.setAttribute("aria-label", "Nachricht bearbeiten"); edit.innerHTML = icon("edit");
+  const resend = document.createElement("button"); resend.type = "button"; resend.title = "Erneut senden"; resend.setAttribute("aria-label", "Nachricht erneut senden"); resend.innerHTML = icon("refresh");
+  tools.append(edit, resend); n.append(tools);
+  edit.onclick = () => { const msg = n.__message; if (!msg?.id || !currentSession) return; editingMessage = { id: currentSession, messageID: msg.id }; input.value = text; autosize(); updateSend(); input.focus(); };
+  resend.onclick = () => { const msg = n.__message; if (msg?.id && currentSession) { turns.innerHTML = ""; send({ type: "resend", id: currentSession, messageID: msg.id, text }); } };
   turns.append(n);
+  return n;
 }
 function startJarvis() {
   const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
@@ -277,6 +289,12 @@ function showError(msg) {
 function ask(text) {
   text = text.trim();
   if (!text) return;
+  if (editingMessage) {
+    const edit = editingMessage; editingMessage = null;
+    turns.innerHTML = "";
+    send({ type: "replace", ...edit, text });
+    return;
+  }
   addUser(text);
   startJarvis();
   send({ type: "chat", text });
@@ -329,24 +347,56 @@ const setRail = open => {
 railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
 try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
 $("#newChat").onclick = () => {
-  send({ type: "new" }); turns.innerHTML = ""; current = null; setZero(true); input.focus();
+  send({ type: "new" }); currentSession = null; editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
 };
 function renderHistory(list = []) {
-  const ul = $("#history");
-  ul.innerHTML = "";
-  for (const s of list.slice(0, 40)) {
-    const li = document.createElement("li");
-    li.textContent = s.title || "Unterhaltung";
-    li.classList.toggle("active", !!s.active);
-    li.onclick = () => send({ type: "open", id: s.id });
-    ul.append(li);
-  }
+  historySessions = list;
+  const folders = chatFolderNames.length ? chatFolderNames : [...new Set(list.map(s => s.folder).filter(Boolean))];
+  const ul = $("#history"), q = $("#chatSearch").value.trim().toLocaleLowerCase("de-DE"); ul.innerHTML = "";
+  const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
+  const appendChat = (s, parent) => {
+    const li = document.createElement("li"); li.className = "history-chat"; li.draggable = true; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
+    const title = document.createElement("button"); title.className = "history-title"; title.textContent = s.title || "Unterhaltung"; title.title = title.textContent;
+    title.onclick = () => { currentSession = s.id; send({ type: "open", id: s.id }); };
+    const menu = document.createElement("div"); menu.className = "history-menu";
+    const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
+    menuToggle.title = "Chataktionen"; menuToggle.setAttribute("aria-label", `Aktionen für ${s.title || "Chat"}`);
+    menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
+    const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
+    const button = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.title = label; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
+    button("Umbenennen", icon("edit"), () => { const value = prompt("Chat umbenennen", s.title); if (value?.trim()) send({type:"chat_action", action:"rename", id:s.id, title:value}); });
+    button("Verschieben", icon("folder"), () => { const value = prompt(`Ordnername (leer = ohne Ordner)\n${folders.join(", ")}`, s.folder || ""); if (value !== null) send({type:"chat_action",action:"move",id:s.id,folder:value}); });
+    button("Löschen", icon("trash"), () => { if (confirm(`„${s.title}“ löschen?`)) send({type:"chat_action",action:"delete",id:s.id}); });
+    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
+    li.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; });
+  };
+  const visible = list.filter(s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q));
+  const addFolder = name => {
+    const row = document.createElement("li"); row.className = "folder-row"; row.dataset.folder = name;
+    const toggle = document.createElement("button"); toggle.className = "folder-toggle"; toggle.innerHTML = icon(collapsed.has(name) ? "folder" : "folder-open"); const folderLabel = document.createElement("span"); folderLabel.textContent = name; toggle.append(folderLabel); toggle.setAttribute("aria-expanded", String(!collapsed.has(name)));
+    toggle.onclick = () => { collapsed.has(name) ? collapsed.delete(name) : collapsed.add(name); localStorage.setItem("jarvis.collapsedFolders", JSON.stringify([...collapsed])); renderHistory(historySessions); };
+    row.append(toggle); row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drop-target"); }); row.addEventListener("dragleave", () => row.classList.remove("drop-target"));
+    row.addEventListener("drop", e => { e.preventDefault(); row.classList.remove("drop-target"); send({type:"chat_action", action:"move", id:e.dataTransfer.getData("text/plain"), folder:name}); }); ul.append(row);
+    if (!collapsed.has(name)) visible.filter(s => s.folder === name).forEach(s => appendChat(s, ul));
+  };
+  folders.forEach(addFolder);
+  const loose = visible.filter(s => !s.folder); if (loose.length) { const section = document.createElement("li"); section.className = "folder-row loose-row"; section.textContent = "Zuletzt"; ul.append(section); loose.forEach(s => appendChat(s, ul)); }
 }
+document.addEventListener("click", () => {
+  document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+  document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+  document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+});
 function renderMessages(msgs = []) {
   turns.innerHTML = ""; current = null;
   setZero(msgs.length === 0);
   for (const m of msgs) {
-    if (m.role === "user") addUser(m.text);
+    if (m.role === "user") { const n = addUser(m.text); n.__message = m; }
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");
@@ -415,6 +465,9 @@ function renderModels(filter = "") {
     }
   }
 }
+$("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
+$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
+$("#newFolder").onclick = () => { const name = prompt("Name des neuen Ordners"); if (name?.trim()) send({type:"chat_action", action:"folder", name:name.trim()}); };
 $("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
 $("#openSettings").onclick = () => $("#settingsDialog").showModal();

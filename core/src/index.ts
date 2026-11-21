@@ -14,6 +14,8 @@ import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES,
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
 const SETTINGS = join(HOME, "settings.json");
+const CHAT_META = join(HOME, "chat-meta.json");
+const CHAT_FOLDERS = join(HOME, "chat-folders.json");
 const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
@@ -22,6 +24,10 @@ const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceMo
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
 if (settings.micDevice !== null && !Number.isInteger(settings.micDevice)) settings.micDevice = null; // alte/ungültige Werte
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
+type ChatMeta = { title?: string; folder?: string; auto?: boolean };
+let chatMeta: Record<string, ChatMeta> = existsSync(CHAT_META) ? JSON.parse(readFileSync(CHAT_META, "utf8")) : {};
+let chatFolders: string[] = existsSync(CHAT_FOLDERS) ? JSON.parse(readFileSync(CHAT_FOLDERS, "utf8")) : [];
+const saveChatMeta = () => writeFileSync(CHAT_META, JSON.stringify(chatMeta, null, 2));
 
 // OpenCode-Arbeitsordner mit Jarvis-MCP und voller Autonomie (Nutzerentscheidung).
 const workspace = join(ROOT, "workspace");
@@ -160,7 +166,7 @@ async function history() {
     const isEmpty = (t: string) => !t || t === "Jarvis" || /^New session/i.test(t) || /^Child session/i.test(t);
     return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
-      .map(s => ({ id: s.id, title: isEmpty(s.title) ? "Neuer Chat" : s.title, active: s.id === session }));
+      .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title), folder: chatMeta[s.id]?.folder || "", active: s.id === session }));
   } catch (error) {
     recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
     return [];
@@ -169,7 +175,7 @@ async function history() {
 async function openSession(id: string) {
   session = id;
   const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
-  return msgs.map(m => ({ role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") }))
+  return msgs.map(m => ({ id: m.info?.id, role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") }))
     .filter(m => m.text);
 }
 
@@ -205,15 +211,15 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   }
   const isNew = !fresh && !session;
   const sid = fresh ? await brain.createSession("Test") : (session ??= await brain.createSession());
-  // Titel aus dem Anfang der ersten Nachricht (statt 20 Mal "Jarvis" im Verlauf)
+  if (!fresh) broadcast({ type: "session", id: sid });
+  // Erste Titelfassung nach der ersten Nachricht; nach der Antwort wird ein thematischer Titel gesetzt.
   if (isNew) {
-    const title = text.replace(/\s+/g, " ").trim().slice(0, 48) + (text.trim().length > 48 ? "…" : "");
-    void fetch(`${brain.url}/session/${sid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) })
-      .then(() => { for (const ui of uis) history().then(h => ui.send(JSON.stringify({ type: "history", sessions: h }))); }).catch(() => {});
+    const title = topicTitle(text);
+    if (!chatMeta[sid]?.title) void setSessionTitle(sid, title, true);
   }
   busy = true; broadcast(state());
   const started = performance.now();
-  let first = true, switching = false, textSeen = false, announced = false;
+  let first = true, switching = false, textSeen = false, announced = false, responseText = "";
   splitter = spoken ? new SentenceSplitter() : undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   // Nach dem ersten Werkzeugaufruf werden Sätze 1 s zurückgehalten: Folgt direkt ein weiteres Werkzeug, war es ein Zwischentext
@@ -246,7 +252,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "tool" && e.status === "error" && !e.name.startsWith("jarvis_")) // Jarvis-Werkzeuge protokolliert runTool selbst
       recordError({ category: "tool", source: `opencode/${e.name}`, message: e.error ?? "Werkzeug fehlgeschlagen",
         context: { tool: e.name, input: e.input, model, request: text, mode: settings.mode } });
-    if (e.kind === "text") textSeen = true;
+    if (e.kind === "text") { textSeen = true; responseText += e.delta; }
     // Stiller Datenverlust sichtbar machen: Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an
     if (e.kind === "done" && !e.aborted && !textSeen && !toolSeen)
       recordError({ category: "model", source: "jarvisd/chat", message: "Antwort ohne Inhalt: Lauf beendet, aber weder Text noch Werkzeugaufruf angekommen",
@@ -274,10 +280,63 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
     if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
-    if (e.kind === "done" || e.kind === "error") { busy = false; broadcast(state()); }
+    if (e.kind === "done" || e.kind === "error") {
+      busy = false; broadcast(state());
+      if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
+        void setSessionTitle(sid, topicTitle(`${text} ${responseText}`), true);
+    }
     broadcast(e.kind === "text" ? { type: "delta", text: e.delta } : e.kind === "reasoning" ? { type: "reasoning", text: e.delta }
       : { type: e.kind, ...e });
   });
+}
+
+function topicTitle(text: string) {
+  const stop = new Set("aber alle also auch auf aus bei bin bis das dass dein deine dem den der des die dies doch du ein eine einer eines für gegen habe hat hier ich ihr im in ist ja kann kein mit nach nicht noch oder sein sie sind so über um und uns von vor was wenn wie wir zu zum zur".split(" "));
+  const words = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}+-]*/gu) ?? [];
+  const ranked = new Map<string, number>();
+  for (const word of words) if (word.length > 2 && !stop.has(word)) ranked.set(word, (ranked.get(word) ?? 0) + 1);
+  const key = [...ranked].sort((a,b) => b[1]-a[1]).slice(0, 4).map(([w]) => w);
+  return key.length ? key.map(w => w[0].toLocaleUpperCase("de-DE") + w.slice(1)).join(" · ") : "Neuer Chat";
+}
+async function setSessionTitle(id: string, title: string, automatic = false) {
+  chatMeta[id] ??= {};
+  if (automatic) { if (chatMeta[id].auto === false) return; chatMeta[id].title = title; chatMeta[id].auto = true; }
+  else if (!chatMeta[id].title) chatMeta[id].title = title;
+  saveChatMeta();
+  await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: chatMeta[id].title }) }).catch(() => {});
+  broadcast({ type: "history", sessions: await history(), folders: chatFolders });
+}
+async function updateChat(msg: any) {
+  const id = String(msg.id ?? "");
+  if (msg.action === "folder") {
+    const name = String(msg.name ?? "").trim().slice(0, 50);
+    if (name && !chatFolders.includes(name)) { chatFolders.push(name); saveChatFolders(); }
+  } else if (!id) return;
+  else if (msg.action === "rename") {
+    const title = String(msg.title ?? "").trim().slice(0, 100);
+    if (!title) return;
+    chatMeta[id] = { ...chatMeta[id], title, auto: false }; saveChatMeta();
+    await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+  } else if (msg.action === "move") {
+    const folder = String(msg.folder ?? "").trim().slice(0, 50);
+    chatMeta[id] = { ...chatMeta[id], folder }; saveChatMeta();
+    if (folder && !chatFolders.includes(folder)) { chatFolders.push(folder); saveChatFolders(); }
+  } else if (msg.action === "delete") {
+    const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`);
+    delete chatMeta[id]; saveChatMeta();
+    if (session === id) { session = undefined; broadcast({ type: "session", id: null }); broadcast({ type: "messages", messages: [] }); }
+  }
+  broadcast({ type: "history", sessions: await history(), folders: chatFolders });
+}
+const saveChatFolders = () => writeFileSync(CHAT_FOLDERS, JSON.stringify(chatFolders, null, 2));
+async function rewindMessage(id: string, messageID: string) {
+  if (busy && session) await brain.abort(session);
+  const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
+  if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
+  session = id;
+  const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
+  broadcast({ type: "messages", messages: msgs.map(m => ({ id: m.info?.id, role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") })).filter(m => m.text) });
 }
 
 // ---------- Live-Ansicht des Tabs, in dem Jarvis gerade arbeitet ----------
@@ -405,7 +464,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
         vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
         if (uis.size === 0 && !ws.data.fresh) session = undefined;
-        uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s })));
+        uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: chatFolders })));
       }
     },
     close(ws) {
@@ -493,8 +552,12 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
-      else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history() }));
+      else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: chatFolders }));
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
+      else if (msg.type === "chat_action") await updateChat(msg);
+      else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
+      else if (msg.type === "resend") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
+      else if (msg.type === "replace") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
 }
 
