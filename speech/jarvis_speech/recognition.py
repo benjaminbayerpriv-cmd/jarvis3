@@ -87,9 +87,9 @@ class MlxWhisper:
 
         self.mw = mlx_whisper
 
-    def decode(self, samples, language=None):
+    def decode(self, samples, language=None, prompt=None):
         result = self.mw.transcribe(samples, path_or_hf_repo=self.repo, language=language, temperature=0.0,
-                                    condition_on_previous_text=False)
+                                    condition_on_previous_text=False, initial_prompt=prompt or None)
         return result["text"].strip()
 
 
@@ -124,9 +124,9 @@ class Whisper:
             LOG.exception("CUDA konnte nicht abgefragt werden. Verwende die CPU.")
         return "cpu", "int8"
 
-    def decode(self, samples, language="de"):
+    def decode(self, samples, language="de", prompt=None):
         segments, _ = self.model.transcribe(
-            samples, language=language, beam_size=1, condition_on_previous_text=False, without_timestamps=True,
+            samples, language=language, initial_prompt=prompt or None, beam_size=1, condition_on_previous_text=False, without_timestamps=True,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 

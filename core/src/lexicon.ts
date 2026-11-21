@@ -45,6 +45,12 @@ export const BUILTIN_TERMS = [
   "Browser", "Download", "Desktop", "Screenshot", "Tabgruppe", "Pull Request", "MacBook", "Obsidian", "Spotify", "WhatsApp",
 ];
 
+/** Wortliste für die Spracherkennung (Whisper-Startprompt): eingebaute und eigene Begriffe, kurz gehalten. */
+export function recognitionPrompt(): string {
+  const terms = [...new Set([...BUILTIN_TERMS, ...loadUser().begriffe])];
+  return terms.join(", ").slice(0, 500);
+}
+
 const USER_FILE = () => process.env.JARVIS_LEXICON ?? join(homedir(), ".jarvis3", "lexicon.json");
 let cache: { mtime: number; lex: Lexicon } | undefined;
 

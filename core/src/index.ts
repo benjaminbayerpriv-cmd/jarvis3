@@ -9,7 +9,7 @@ import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
 import { prepare, validate, hasImages, type Attachment } from "./attachments";
-import { correct } from "./lexicon";
+import { correct, recognitionPrompt } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
 import { classificationPrompt, parseClassification } from "./classify";
@@ -23,7 +23,7 @@ const ROOT = join(import.meta.dir, "../..");
 mkdirSync(HOME, { recursive: true });
 
 interface Settings { model: string; voiceModel: string; mode: "browser" | "computer"; lofi: boolean; liveView: boolean; micDevice: number | null; micName?: string | null; sttMode: "auto" | "de" | "en" | "fast" }
-const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true, micDevice: null, sttMode: "auto" };
+const defaults: Settings = { model: "opencode/deepseek-v4.1-flash-free", voiceModel: "opencode/deepseek-v4.1-flash-free", mode: "browser", lofi: false, liveView: true, micDevice: null, sttMode: "de" };
 let settings: Settings = existsSync(SETTINGS) ? { ...defaults, ...JSON.parse(readFileSync(SETTINGS, "utf8")) } : defaults;
 if (settings.micDevice !== null && !Number.isInteger(settings.micDevice)) settings.micDevice = null; // alte/ungültige Werte
 const save = () => writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
@@ -108,7 +108,7 @@ const speech = new Speech(e => {
   if (e.type === "level") micPeak = Math.max(micPeak, Number(e.mic) || 0);
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
-  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
+  if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
   if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
     context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
@@ -806,7 +806,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         save();
         if (!["auto", "de", "en", "fast"].includes(settings.sttMode)) settings.sttMode = "auto";
         if ("lofi" in msg.settings || "micDevice" in msg.settings || "sttMode" in msg.settings)
-          speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode });
+          speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() });
         broadcast(state());
       }
       else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; await stopStream(); } broadcast(state()); }
