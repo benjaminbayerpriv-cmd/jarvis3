@@ -27,6 +27,7 @@ let currentSession = null;
 let historySessions = [];
 let chatFolderNames = [];
 let editingMessage = null;
+let pendingChatAction = null;
 let live = { on: false, muted: false };
 
 // ---------- Verbindung ----------
@@ -309,6 +310,7 @@ function updateSend() {
   $("#liveBtn").hidden = has || state.busy;
 }
 input.addEventListener("input", () => {
+  if (dictating) dictBase = input.value;   // eigene Änderungen während des Diktierens bleiben erhalten
   const was = !$("#send").hidden;
   autosize(); updateSend();
   if (!was && !$("#send").hidden) { const c = $("#composer"); c.classList.remove("pulse"); void c.offsetWidth; c.classList.add("pulse"); }
@@ -327,8 +329,15 @@ $("#attach").onclick = () => input.focus();
 
 // Diktat: Sprach-Sidecar transkribiert ins Eingabefeld
 let dictating = false;
+let dictBase = "";   // bereits fertig diktierter Text; jeder neue Satz wird angehängt statt das Feld zu überschreiben
+const dictJoin = t => dictBase && t ? dictBase + (/\s$/.test(dictBase) ? "" : " ") + t : dictBase || t;
+function dictShow(t) {
+  if (!input.value.trim()) dictBase = "";   // Nachricht wurde abgeschickt oder Feld geleert
+  input.value = dictJoin(t); autosize(); updateSend();
+}
 $("#dictate").onclick = () => {
   dictating = !dictating;
+  if (dictating) dictBase = input.value;
   $("#dictate").classList.toggle("rec", dictating);
   if (!live.on) setVoiceUi(dictating ? "dictate" : "off");
   send({ type: "voice", mode: dictating ? "dictate" : "off" });
@@ -364,9 +373,9 @@ function renderHistory(list = []) {
     menuToggle.setAttribute("aria-expanded", "false"); menuToggle.innerHTML = icon("menu-2");
     const actions = document.createElement("div"); actions.className = "history-actions"; actions.hidden = true;
     const button = (label, glyph, fn) => { const b = document.createElement("button"); b.type = "button"; b.title = label; b.innerHTML = glyph; const text = document.createElement("span"); text.textContent = label; b.append(text); b.onclick = e => { e.stopPropagation(); actions.hidden = true; menuToggle.setAttribute("aria-expanded", "false"); fn(); }; actions.append(b); };
-    button("Umbenennen", icon("edit"), () => { const value = prompt("Chat umbenennen", s.title); if (value?.trim()) send({type:"chat_action", action:"rename", id:s.id, title:value}); });
-    button("Verschieben", icon("folder"), () => { const value = prompt(`Ordnername (leer = ohne Ordner)\n${folders.join(", ")}`, s.folder || ""); if (value !== null) send({type:"chat_action",action:"move",id:s.id,folder:value}); });
-    button("Löschen", icon("trash"), () => { if (confirm(`„${s.title}“ löschen?`)) send({type:"chat_action",action:"delete",id:s.id}); });
+    button("Umbenennen", icon("edit"), () => showChatAction("rename", s.id, s.title));
+    button("Verschieben", icon("folder"), () => showChatAction("move", s.id, s.title, s.folder || ""));
+    button("Löschen", icon("trash"), () => showChatAction("delete", s.id, s.title));
     menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
     menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
     li.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; });
@@ -467,7 +476,33 @@ function renderModels(filter = "") {
 }
 $("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
 $(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
-$("#newFolder").onclick = () => { const name = prompt("Name des neuen Ordners"); if (name?.trim()) send({type:"chat_action", action:"folder", name:name.trim()}); };
+$("#newFolder").onclick = () => showChatAction("folder");
+function showChatAction(action, id = "", title = "", value = "") {
+  pendingChatAction = { action, id, title };
+  const labels = { folder: "Ordner erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?" };
+  $("#chatActionTitle").textContent = labels[action];
+  $("#chatActionDesc").textContent = action === "delete" ? `„${title}“ wird dauerhaft aus dem Verlauf entfernt.` : action === "move" ? "Ordnernamen eingeben oder einen vorhandenen Ordner auswählen. Leer lassen, um den Chat aus dem Ordner zu lösen." : "";
+  $("#chatActionField").hidden = action === "delete";
+  $("#chatActionValue").value = value;
+  $("#chatActionValue").placeholder = action === "folder" ? "Ordnername" : action === "rename" ? "Chatname" : "Ordnername";
+  $("#chatActionValue").setAttribute("list", "chatFolderOptions");
+  $("#chatFolderOptions").replaceChildren(...chatFolderNames.map(name => { const option = document.createElement("option"); option.value = name; return option; }));
+  $("#chatActionDialog").showModal();
+  if (action !== "delete") requestAnimationFrame(() => $("#chatActionValue").focus());
+}
+$("#chatActionDialog").addEventListener("close", () => {
+  const action = pendingChatAction, result = $("#chatActionDialog").returnValue;
+  pendingChatAction = null;
+  if (!action || result !== "apply") return;
+  const value = $("#chatActionValue").value.trim();
+  if (action.action === "folder" && value) send({ type:"chat_action", action:"folder", name:value });
+  else if (action.action === "rename" && value) send({ type:"chat_action", action:"rename", id:action.id, title:value });
+  else if (action.action === "move") send({ type:"chat_action", action:"move", id:action.id, folder:value });
+  else if (action.action === "delete") send({ type:"chat_action", action:"delete", id:action.id });
+});
+$("#chatActionValue").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); $("#chatActionDialog").close("apply"); }
+});
 $("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
 $("#openSettings").onclick = () => $("#settingsDialog").showModal();
@@ -615,11 +650,11 @@ function speechEvent(m) {
       break;
     case "speech_start": setVoiceState("listening"); break;
     case "partial":
-      if (dictating) { input.value = m.text; autosize(); updateSend(); }
+      if (dictating) dictShow(m.text);
       else if (live.on) liveCaption(m.text, true);
       break;
     case "final":
-      if (dictating) { input.value = m.text; autosize(); updateSend(); input.focus(); }
+      if (dictating) { dictShow(m.text); dictBase = input.value; input.focus(); }
       else if (live.on) liveCaption(m.text, true);  // die Nachricht erscheint, wenn der Daemon sie nach einer Pause abschickt
       break;
     case "say_start": setVoiceState("speaking"); break;

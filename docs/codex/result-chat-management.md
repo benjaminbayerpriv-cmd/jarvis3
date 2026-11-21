@@ -6,6 +6,7 @@ In `app/ui` und `core/src/index.ts` umgesetzt:
 - Suchfeld mit Tabler-Lupe, die auch bei eingeklappter Seitenleiste sichtbar bleibt und diese beim Anklicken öffnet.
 - Alle Sidebar-Symbole (Navigation, Suche, Ordner sowie Chat-Aktionen) sind Tabler-Icons. Die Lupe ist im offenen und geschlossenen Zustand an derselben linken Position ausgerichtet.
 - Neuer Ordner bleibt in beiden Sidebar-Zuständen sichtbar. Chataktionen sind hinter einem Tabler-Menüicon aufklappbar.
+- Ordner erstellen, umbenennen, verschieben und löschen verwenden ein eingebautes Tauri-kompatibles Dialogfenster statt Browser-Prompts.
 - Chats umbenennen, löschen, in persistente Ordner einsortieren; Ordner lassen sich erstellen, ein- und ausklappen. Drag-and-drop verschiebt Chats in Ordner.
 - Nachrichten bearbeiten oder erneut senden. Der Daemon springt dafür in derselben OpenCode-Sitzung zur ausgewählten Nachricht zurück und setzt den Verlauf dort fort.
 - Chat-Metadaten und Ordner werden unter `~/.jarvis3/chat-meta.json` und `~/.jarvis3/chat-folders.json` gespeichert.

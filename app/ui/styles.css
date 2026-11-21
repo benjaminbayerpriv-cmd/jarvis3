@@ -464,6 +464,12 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .search { display: flex; align-items: center; gap: 8px; margin: 4px 8px 8px; padding: 0 12px; height: 44px;
   border-radius: var(--r-full); background: var(--surface); color: var(--on-surface-low); }
 .search input { flex: 1; border: 0; outline: 0; background: none; color: var(--on-surface); font: inherit; }
+.chat-action-desc { margin: 0 20px 8px; color: var(--on-surface-low); }
+.chat-action-buttons { display:flex; justify-content:flex-end; gap:8px; padding:8px 12px 0; }
+.text-btn { min-height:38px; padding:0 16px; border-radius:var(--r-full); color:var(--on-surface-variant); }
+.text-btn:hover { background:var(--state-hover); }
+.text-btn.primary-action { background:var(--primary); color:var(--bg); }
+.text-btn.primary-action:hover { filter:brightness(1.08); }
 .model-list { overflow-y: auto; padding: 0 4px; }
 .model-group { font-size: 13px; color: var(--on-surface-low); padding: 12px 12px 4px; }
 .model-opt {

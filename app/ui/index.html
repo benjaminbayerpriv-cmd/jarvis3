@@ -110,6 +110,16 @@
     </form>
   </dialog>
 
+  <dialog class="sheet" id="chatActionDialog">
+    <form method="dialog" class="sheet-inner" id="chatActionForm">
+      <header class="sheet-head"><h2 id="chatActionTitle">Ordner erstellen</h2><button class="icon-btn" value="cancel" data-icon="x" aria-label="Schließen"></button></header>
+      <p id="chatActionDesc" class="chat-action-desc"></p>
+      <label class="search" id="chatActionField"><span data-icon="edit"></span><input id="chatActionValue" autocomplete="off"></label>
+      <datalist id="chatFolderOptions"></datalist>
+      <div class="chat-action-buttons"><button class="text-btn" value="cancel">Abbrechen</button><button class="text-btn primary-action" value="apply">Übernehmen</button></div>
+    </form>
+  </dialog>
+
   <template id="tplUser"><div class="turn user"><div class="bubble"></div></div></template>
   <template id="tplJarvis"><div class="turn jarvis"><div class="loader" aria-label="Jarvis denkt nach"><svg viewBox="0 0 24 24" aria-hidden="true"><g class="orbit"><circle class="d d1" cx="12" cy="4.5" r="2.1"/><circle class="d d2" cx="19" cy="14" r="1.5"/><circle class="d d3" cx="6" cy="17" r="1.2"/></g><circle class="d core" cx="12" cy="12" r="1.7"/></svg></div><div class="body"><div class="blocks"></div><div class="meta"></div></div></div></template>
 
