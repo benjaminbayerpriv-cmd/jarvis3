@@ -165,6 +165,7 @@
     <div class="set-wrap">
       <nav class="set-nav" aria-label="Einstellungen">
         <h2>Einstellungen</h2>
+        <label class="search set-search"><span data-icon="search"></span><input id="settingsSearch" type="search" placeholder="Einstellungen suchen" aria-label="Einstellungen suchen" autocomplete="off"></label>
         <button type="button" class="set-nav-item active" data-pane="general"><span data-icon="settings"></span>Allgemein</button>
         <button type="button" class="set-nav-item" data-pane="voice"><span data-icon="microphone"></span>Sprache und Audio</button>
         <button type="button" class="set-nav-item" data-pane="display"><span data-icon="device-desktop"></span>Darstellung</button>
@@ -180,7 +181,6 @@
       </nav>
       <div class="set-main">
         <header class="set-head"><h3 id="setTitle">Allgemein</h3><button type="button" class="icon-btn" id="closeSettings" data-icon="x" aria-label="Schließen"></button></header>
-        <label class="search set-search"><span data-icon="search"></span><input id="settingsSearch" type="search" placeholder="Einstellungen suchen" aria-label="Einstellungen suchen" autocomplete="off"></label>
         <ul class="set-results" id="settingsResults" aria-label="Gefundene Einstellungen" hidden></ul>
         <section class="set-pane" data-pane="general">
           <div class="setting"><div><label for="setChatModel" id="setChatModel-label">Chatmodell</label><p id="setChatModel-desc">Für normale Chatnachrichten.</p></div><select id="setChatModel" aria-describedby="setChatModel-desc" data-daemon="model"></select></div>
