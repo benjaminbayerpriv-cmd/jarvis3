@@ -12,6 +12,8 @@ import { prepare, validate, hasImages, type Attachment } from "./attachments";
 import { correct, recognitionPrompt } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
+import { SidecarSupervisor } from "./sidecar";
+import { Capture } from "./capture";
 import { classificationPrompt, parseClassification } from "./classify";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -102,10 +104,40 @@ const holds = new Set<ReturnType<typeof setTimeout>>(); // zurückgehaltene Sät
 const clearHolds = () => { for (const t of holds) clearTimeout(t); holds.clear(); };
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
-let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined;
+let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0, micRestarted = false;
+const speaking = new Set<number>();
+// Mikrofon-Wächter: kommt nach dem Start des Zuhörens 7 s lang kein Pegel, ist das Gerät stumm oder der Sidecar hat die Audiogeräte
+// veraltet. Einmal pro Gespräch wird der Sidecar dann automatisch neu gestartet (liest die Geräte frisch ein), danach folgt ein Hinweis.
+function armMicWatch() {
+  clearTimeout(micWatch); micPeak = 0;
+  if (voice !== "live" && voice !== "dictate") { micRestarted = false; return; }
+  micWatch = setTimeout(() => {
+    if ((voice !== "live" && voice !== "dictate") || micPeak >= 0.004) return;
+    if (!micRestarted && speech.connected) {
+      micRestarted = true;
+      restartSidecar(`Mikrofon „${micLabel()}“ lieferte kein Signal`);
+    } else broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
+  }, 7000);
+}
+function restartSidecar(reason: string) {
+  if (!sidecar || Date.now() - lastRestart < 30_000) return;
+  lastRestart = Date.now();
+  vlog(`Sprach-Sidecar wird neu gestartet: ${reason}`);
+  broadcast({ type: "notice", text: `${reason} – das Sprachmodul startet neu (ca. 30 s).` });
+  void sidecar.restart();
+}
 const micLabel = () => audioDevices?.input.find(d => d.id === settings.micDevice)?.name ?? (settings.micDevice === null ? "Systemstandard" : `Gerät ${settings.micDevice}`);
 const speech = new Speech(e => {
-  if (e.type === "level") micPeak = Math.max(micPeak, Number(e.mic) || 0);
+  if (e.type === "level") { micPeak = Math.max(micPeak, Number(e.mic) || 0); lastLevelAt = Date.now(); }
+  if (e.type === "speech_start" || e.type === "partial") lastUserActivityAt = Date.now();
+  // Der Nutzer unterbricht: der Sidecar verwirft seine Warteschlange ohne say_start/say_end zu melden, und angesammelte
+  // Ansagen ("gehalten") würden danach mitten in seinen Satz platzen.
+  if (e.type === "speech_start" && voice === "live") { speech.sayTimes.clear(); clearHolds(); }
+  // Sätze ohne hörbaren Ton (z. B. nur "1.") bekommen nie ein say_start: alles bis zur gestarteten/beendeten ID gilt als erledigt
+  const doneUpTo = (id: number) => { for (const k of [...speech.sayTimes.keys()]) if (k <= id) speech.sayTimes.delete(k); };
+  if (e.type === "say_start") { speaking.add(Number(e.id)); doneUpTo(Number(e.id)); }
+  if (e.type === "say_end") { speaking.delete(Number(e.id)); doneUpTo(Number(e.id)); }
+  if (e.type === "connected") { lastLevelAt = 0; micPeak = 0; speech.sayTimes.clear(); speaking.clear(); armMicWatch(); }
   if (e.type === "say_start") { const text = speech.said.get(Number(e.id)); if (text) broadcast({ type: "spoken", id: e.id, text }); } // Live-Anzeige: nur, was schon gesprochen wird
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
@@ -156,14 +188,30 @@ let pendingUtterance = "";
 let utterTimer: ReturnType<typeof setTimeout> | undefined;
 let lastRun: { text: string; toolSeen: boolean; startedAt: number } | undefined;
 const STOP_WORDS = /^(stopp?|halt|abbrechen|hör auf|hoer auf|lass das|stop it)[.!?\s]*$/i;
+// Wann ist der Nutzer wirklich fertig? Der Sidecar meldet schon nach ~0,3 s Pause einen "final". Bei einem langen Satz mit Atempausen
+// würde das den Satz in Stücke schneiden und das erste Stück zu früh abschicken. Darum wartet jarvisd mit dem Absenden, solange
+// (a) der Nutzer erneut zu sprechen anfängt (speech_start/partial), (b) der Satz offensichtlich unfertig ist (kurzes Bruchstück,
+// endet auf "und/dass/auf/…" oder ohne Satzzeichen) – dann bis zu 3,5 s, insgesamt höchstens 8 s.
+let lastUserActivityAt = 0, pendingSince = 0;
+function looksUnfinished(text: string) {
+  const t = text.trim();
+  // Die Erkennung setzt am Ende eines vollständigen Satzes fast immer ein Satzzeichen; abgeschnittene Bruchstücke haben keins.
+  if (/[.!?…]["»“]?$/.test(t)) return false;
+  return true;
+}
 function hear(text: string) {
   if (STOP_WORDS.test(text.trim())) { pendingUtterance = ""; clearTimeout(utterTimer); void stop(); return; }
   if (!worthAnswering(text) && !pendingUtterance) return;
+  if (!pendingUtterance) pendingSince = Date.now();
   pendingUtterance = `${pendingUtterance} ${text}`.trim();
   clearTimeout(utterTimer);
-  utterTimer = setTimeout(sendUtterance, UTTER_WAIT_MS);
+  utterTimer = setTimeout(sendUtterance, looksUnfinished(pendingUtterance) ? 3500 : UTTER_WAIT_MS);
 }
 function sendUtterance() {
+  // Der Nutzer redet noch (neue Sprache seit kurzem): weiter warten, aber nie länger als 8 s seit dem ersten Stück
+  if (pendingUtterance && voice === "live" && Date.now() - lastUserActivityAt < 1200 && Date.now() - pendingSince < 8000) {
+    utterTimer = setTimeout(sendUtterance, 600); return;
+  }
   const text = pendingUtterance.trim(); pendingUtterance = "";
   if (!worthAnswering(text) || voice !== "live") return;
   let full = text, replace = false;
@@ -182,14 +230,20 @@ function worthAnswering(text: string) {
   if (!content.length || content.join("").length < 3) return false;
   return !/untertitel|copyright|vielen dank fürs zuschauen/i.test(text);
 }
+const sidecar = process.env.JARVIS_SPEECH_URL || process.env.JARVIS_NO_SIDECAR ? undefined : new SidecarSupervisor(() => speech.connected, vlog, ROOT, HOME);
+sidecar?.start();
+setInterval(() => {   // Wächter: hängt der Sidecar (keine Pegel mehr) oder die Sprachausgabe (Satz gesendet, nie gestartet)?
+  if (!speech.connected) return;
+  const now = Date.now();
+  if (voice !== "off" && lastLevelAt && now - lastLevelAt > 5000) { lastLevelAt = now; restartSidecar("Das Sprachmodul reagierte nicht mehr"); return; }
+  const oldest = Math.min(Infinity, ...speech.sayTimes.values());
+  // nur wenn der Nutzer lange still war: nach einer Unterbrechung fehlen say_start-Meldungen zu Recht
+  if (speaking.size === 0 && Number.isFinite(oldest) && now - oldest > 30_000 && now - lastUserActivityAt > 20_000) { speech.sayTimes.clear(); restartSidecar("Die Sprachausgabe hing"); }
+}, 2000);
 function setVoice(mode: typeof voice) {
   vlog(`setVoice ${voice} -> ${mode}`);
   voice = mode;
-  clearTimeout(micWatch); micPeak = 0;
-  if (mode === "live" || mode === "dictate") micWatch = setTimeout(() => {
-    if (voice === "live" || voice === "dictate") if (micPeak < 0.004)
-      broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
-  }, 7000);
+  armMicWatch();
   if (mode === "off") voiceOwner = undefined;
   speech.mode(mode);
   // "muted" schließt nur das Mikrofon; eine laufende Antwort wird weiter gesprochen.
@@ -362,7 +416,9 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
+let runSeq = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments) {
+  const runId = ++runSeq;
   if (busy && session && !fresh) await brain.abort(session);
   // Bilder angehängt, aber das Modell kann nicht sehen: für diese Nachricht auf ein Bildmodell wechseln
   if ((hasImages(atts) || saved?.images.length) && !canSee(model)) {
@@ -387,6 +443,15 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   busy = true; broadcast(state());
   const started = performance.now();
   let first = true, switching = false, textSeen = false, announced = false, responseText = "";
+  // Sprachmodus: arbeitet Jarvis lange mit Werkzeugen und hat nichts gesagt, kurz Bescheid geben (sonst wirkt es wie "antwortet nicht")
+  let progressSaid = 0;
+  const progressTimer = setInterval(() => {
+    if (!spoken || runId !== runSeq || !busy || voice === "off") { clearInterval(progressTimer); return; }
+    if (lastRun?.toolSeen && Date.now() - lastSayAt > 18_000 && progressSaid < 3) {
+      progressSaid++; lastSayAt = Date.now();
+      speech.say(progressSaid === 1 ? "Ich bin noch dran." : "Dauert noch einen Moment.");
+    }
+  }, 5000);
   splitter = spoken ? new SentenceSplitter() : undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   // Nach dem ersten Werkzeugaufruf werden Sätze 1 s zurückgehalten: Folgt direkt ein weiteres Werkzeug, war es ein Zwischentext
@@ -395,6 +460,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   const speakAll = (parts: string[]) => {
     for (const p of parts) {
       vlog(`say: ${toolSeen ? "(gehalten) " : ""}${p.slice(0, 120)}`);
+      lastSayAt = Date.now();
       if (!toolSeen) { speech.say(p); continue; }
       const t = setTimeout(() => { holds.delete(t); speech.say(p); }, 1000);
       holds.add(t);
@@ -417,6 +483,13 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     : "";
   const prompt = text || (attachmentText || images.length ? "Sieh dir die angehängten Dateien an." : "");
   await brain.prompt(sid, prompt, model, system, (e: BrainEvent) => {
+    // Ein Lauf, der von einer neueren Nachricht abgelöst wurde, endet oft "leer" (OpenCode meldet idle vor unserem Abbruch).
+    // Früher startete das eine Wiederholung PARALLEL zur neuen Nachricht: zwei Läufe gleichzeitig, die neue Frage ging unter.
+    if (runId !== runSeq) {
+      if (e.kind === "done" || e.kind === "error") clearInterval(progressTimer);
+      if (e.kind === "done" && e.aborted) broadcast({ type: "done", ...e }); // Oberfläche schließt die abgebrochene Antwort ab
+      return;
+    }
     if (switching) return;
     if (e.kind === "error" && isLimit(e.message)) {
       limited.set(model, Date.now() + 30 * 60_000);
@@ -482,6 +555,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (splitter && (e.kind === "done" || e.kind === "error")) { clearTimeout(flushTimer); speakAll(splitter.flush()); splitter = undefined; }
     if (e.kind === "text" && first) { first = false; broadcast({ type: "latency", firstTokenMs: Math.round(performance.now() - started), model }); }
     if (e.kind === "done" || e.kind === "error") {
+      clearInterval(progressTimer);
       busy = false; broadcast(state());
       if (e.kind === "done" && isNew && responseText.trim() && chatMeta[sid]?.auto !== false)
         void aiTitle(text, responseText).then(title => setSessionTitle(sid, title ?? topicTitle(`${text} ${responseText}`), true));
@@ -663,14 +737,79 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) void ensureStream(r.tab as number);
     return r;
   }
-  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays"].includes(cmd.cmd))
+  if (settings.mode !== "computer" && !["scan", "read", "shot", "displays", "windows"].includes(cmd.cmd))
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
     const code = await p.exited;
     return code === 0 ? { ok: true } : { ok: false, error: `Programm „${cmd.name}“ nicht geöffnet (Exit-Code ${code})` };
   }
-  return desktop.call(cmd);
+  if (Number.isInteger(cmd.window)) void ensureWindowStream(cmd.window);
+  // Fensterbild über den Aufnahme-Dienst (auch verdeckt); geht das nicht, macht uimap ein Bild des sichtbaren Bereichs
+  if (cmd.cmd === "shot" && Number.isInteger(cmd.window) && !cmd.marks && capture.available()) {
+    const r = await capture.call({ cmd: "windowshot", window: cmd.window });
+    if (r.ok) return r;
+    vlog(`Aufnahme-Dienst: ${r.error}`);
+  }
+  const r = await desktop.call(cmd);
+  if (Array.isArray(r.point)) { lastDesktopPoint = r.point as [number, number]; if (streamWin !== undefined) void capture.call({ cmd: "cursor", point: r.point }); }
+  return r;
+}
+
+// ---------- Live-Bild eines Fensters, das Jarvis bedient (Aufnahme-Dienst, virtuelle Maus) ----------
+const capture = new Capture();
+let streamWin: number | undefined;
+let streamWinTimer: ReturnType<typeof setTimeout> | undefined;
+let lastDesktopPoint: [number, number] | undefined;
+capture.onEvent = m => {
+  if (m.event === "frame") broadcast({ type: "frame", tab: `win:${m.window}`, data: m.data, w: m.w, h: m.h, bounds: m.bounds,
+    title: m.title ? `${m.app} – ${m.title}` : m.app, url: "", cursor: lastDesktopPoint });
+  else if (m.event === "stream_ended") { if (m.window === streamWin) streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${m.window}` }); }
+};
+let pinnedWin: number | undefined;   // vom Nutzer in der Vorschau gewähltes Fenster
+let lowFpsNoticeAt = 0;
+async function stopWindowStream() {
+  clearTimeout(streamWinTimer);
+  if (streamWin === undefined) return;
+  streamWin = undefined;
+  await capture.call({ cmd: "stream_stop" }, 4000).catch(() => {});
+}
+/** Rückfall ohne Bildschirmaufnahme-Freigabe: Einzelbilder des sichtbaren Fensterbereichs über uimap (ca. 4–6 Bilder/s). */
+async function windowFallbackLoop(win: number) {
+  while (streamWin === win && uis.size > 0) {
+    const f: any = await desktop.call({ cmd: "framejpeg", window: win, maxWidth: 1280 }, 6000);
+    if (streamWin !== win) break;
+    if (!f.ok) { vlog(`Fenster-Vorschau (Rückfall) beendet: ${f.error}`); streamWin = undefined; broadcast({ type: "stream_ended", tab: `win:${win}` }); break; }
+    broadcast({ type: "frame", tab: `win:${win}`, data: f.data, w: f.w, h: f.h, bounds: f.bounds,
+      title: f.title ? `${f.app} – ${f.title}` : f.app, url: "", cursor: lastDesktopPoint });
+    await Bun.sleep(80);
+  }
+}
+async function ensureWindowStream(win: number, manual = false) {
+  if (!manual && (!settings.liveView || (pinnedWin !== undefined && pinnedWin !== win))) return;
+  if (uis.size === 0) return;
+  clearTimeout(streamWinTimer);
+  if (pinnedWin === undefined) streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000);  // 20 s nach der letzten Aktion
+  if (streamWin === win) return;
+  await stopWindowStream();
+  await stopStream();   // ein Live-Bild zur Zeit: Browser-Tab-Übertragung beenden
+  lastDesktopPoint = undefined;
+  const r = capture.available() ? await capture.call({ cmd: "stream_start", window: win, fps: 20 }, 10_000) : { ok: false, error: "kein Aufnahme-Dienst" };
+  streamWin = win;
+  if (r.ok) return;
+  vlog(`Fenster-Live-Bild über den Aufnahme-Dienst nicht möglich (${r.error}) – Rückfall auf Einzelbilder`);
+  if (/TCC|abgelehnt|Freigabe/i.test(String(r.error)) && Date.now() - lowFpsNoticeAt > 10 * 60_000) {
+    lowFpsNoticeAt = Date.now();
+    broadcast({ type: "notice", text: "Fenster-Vorschau im Sparmodus (nur sichtbare Fenster, ruckelig). Für das flüssige Bild „Jarvis Bildschirm“ unter Bildschirmaufnahme erlauben." });
+  }
+  void windowFallbackLoop(win);
+}
+/** Fenster für die Auswahl oben in der Vorschau */
+async function previewWindows() {
+  const r: any = await desktop.call({ cmd: "windows" }, 5000).catch(() => ({}));
+  return (Array.isArray(r?.windows) ? r.windows : [])
+    .filter((w: any) => w.title && w.rect?.[3] >= 150 && !/^Jarvis/.test(w.title) && !/AuthWarn|UserNotificationCenter|loginwindow/i.test(w.app))
+    .slice(0, 12).map((w: any) => ({ id: w.id, app: w.app, title: w.title, onScreen: w.onScreen }));
 }
 
 Bun.serve<{ kind: string; fresh?: boolean }, {}>({
@@ -809,13 +948,18 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           speech.send({ type: "config", lofi: settings.lofi, input: settings.micDevice, stt: settings.sttMode, stt_prompt: recognitionPrompt() });
         broadcast(state());
       }
-      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; await stopStream(); } broadcast(state()); }
-      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+      else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) { pinnedTab = undefined; pinnedWin = undefined; await stopStream(); await stopWindowStream(); } broadcast(state()); }
+      else if (msg.type === "tabs") ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
+      else if (msg.type === "viewer_window") { // Nutzer wählt ein Programmfenster für die Vorschau
+        pinnedTab = undefined;
+        if (Number.isInteger(msg.window)) { pinnedWin = msg.window; await ensureWindowStream(msg.window, true); }
+        else { pinnedWin = undefined; await stopWindowStream(); }
+      }
       else if (msg.type === "viewer_tab") {
         // Nutzer wählt einen Tab (Zahl) oder "Automatisch" (null: Jarvis' aktuellem Tab folgen)
-        if (Number.isInteger(msg.tab)) { pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
-        else { pinnedTab = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); }
-        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), pinned: pinnedTab ?? null, streaming: streamTab ?? null }));
+        if (Number.isInteger(msg.tab)) { pinnedWin = undefined; await stopWindowStream(); pinnedTab = msg.tab; await ensureStream(msg.tab, true); }
+        else { pinnedTab = undefined; pinnedWin = undefined; clearTimeout(streamTimer); streamTimer = setTimeout(stopStream, 12_000); clearTimeout(streamWinTimer); streamWinTimer = setTimeout(() => void stopWindowStream(), 20_000); }
+        ws.send(JSON.stringify({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: pinnedTab ?? (pinnedWin !== undefined ? `win:${pinnedWin}` : null), streaming: streamWin !== undefined ? `win:${streamWin}` : streamTab ?? null }));
       }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }

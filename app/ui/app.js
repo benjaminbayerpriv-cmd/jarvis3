@@ -451,6 +451,7 @@ function dictShow(t) {
 }
 $("#dictate").onclick = () => {
   dictating = !dictating;
+  if (dictating && state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Diktieren geht, sobald es bereit ist.");
   if (dictating) { dictBase = input.value; taMirror.set(input.value, { animate: false }); }
   $("#dictate").classList.toggle("rec", dictating);
   $("#dictate").innerHTML = icon(dictating ? "player-stop-filled" : "microphone");
@@ -779,7 +780,7 @@ $("#exNew").onclick = () => {
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");
 let viewerTimer, viewerPoll;
-let viewerTabs = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
+let viewerTabs = [], viewerWindows = [], viewerPinned = null, viewerStreaming = null, viewerGotFrame = false, viewerBusy = false, viewerNext = null;
 const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
 function renderViewerTabs() {
@@ -794,8 +795,14 @@ function renderViewerTabs() {
     const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
     mk(t.title || t.url || "Tab", t.tab === viewerStreaming, () => { viewerStreaming = t.tab; viewerPinned = t.tab; renderViewerTabs(); send({ type: "viewer_tab", tab: t.tab }); }, fav, t.url || t.title);
   }
+  // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
+  for (const w of viewerWindows) {
+    const key = `win:${w.id}`;
+    mk(w.title || w.app, viewerStreaming === key, () => { viewerStreaming = key; viewerPinned = key; renderViewerTabs(); send({ type: "viewer_window", window: w.id }); },
+      icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
+  }
   const empty = $("#viewerEmpty");
-  if (!viewerGotFrame) empty.textContent = viewerTabs.length ? "Wähle oben einen Tab, um ihn live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
   else empty.textContent = "";
 }
 const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
@@ -809,6 +816,19 @@ function hideViewer() {
   clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
   syncViewerButtons();
 }
+// Virtuelle Maus: wo Jarvis zuletzt geklickt/getippt hat (Bildschirmpunkt -> Bildpunkt über die Fensterlage)
+function drawVirtualCursor(m) {
+  if (!Array.isArray(m.cursor) || !Array.isArray(m.bounds) || !m.bounds[2]) return;
+  const sx = vcanvas.width / m.bounds[2], sy = vcanvas.height / m.bounds[3];
+  const x = (m.cursor[0] - m.bounds[0]) * sx, y = (m.cursor[1] - m.bounds[1]) * sy;
+  if (x < 0 || y < 0 || x > vcanvas.width || y > vcanvas.height) return;
+  const k = Math.max(1, vcanvas.width / 1100);
+  vctx.save(); vctx.translate(x, y); vctx.scale(k, k);
+  vctx.shadowColor = "rgba(0,0,0,.55)"; vctx.shadowBlur = 8;
+  vctx.fillStyle = "#a78bfa"; vctx.strokeStyle = "#fff"; vctx.lineWidth = 1.6;
+  vctx.beginPath(); vctx.moveTo(0, 0); vctx.lineTo(0, 23); vctx.lineTo(6, 17); vctx.lineTo(11, 27); vctx.lineTo(15, 25); vctx.lineTo(10, 15); vctx.lineTo(19, 15); vctx.closePath();
+  vctx.fill(); vctx.stroke(); vctx.restore();
+}
 function drawFrame(m) {
   // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
   if (viewerBusy) { viewerNext = m; return; }
@@ -818,6 +838,7 @@ function drawFrame(m) {
   createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
     if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
     vctx.drawImage(bmp, 0, 0); bmp.close();
+    drawVirtualCursor(m);
   }).catch(() => {}).finally(() => { viewerBusy = false; if (viewerNext) { const n = viewerNext; viewerNext = null; drawFrame(n); } });
 }
 function showFrame(m) {
@@ -831,7 +852,7 @@ function showFrame(m) {
   viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 6000); // keine Bilder mehr: Punkt grau, Panel bleibt bis zum Schließen offen
 }
 function viewerTabsMessage(m) {
-  viewerTabs = m.tabs || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
+  viewerTabs = m.tabs || []; viewerWindows = m.windows || []; viewerPinned = m.pinned ?? null; if (m.streaming != null) viewerStreaming = m.streaming;
   if (!viewer.hidden) renderViewerTabs();
 }
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
@@ -1008,6 +1029,7 @@ function liveSpoken(sentence) {
 function flushSpoken() { if (revealQ) { spokenText += revealQ; revealQ = ""; showSpoken(); } }  // Satz ist zu Ende gesprochen: Rest sofort zeigen
 function openLive() {
   if (live.on) return;
+  if (state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Live beginnt, sobald es bereit ist.");
   if (dictating) $("#dictate").click();
   live.on = true; live.muted = false;
   liveEl.hidden = false; liveEl.classList.remove("closing"); liveEl.dataset.state = "listening";

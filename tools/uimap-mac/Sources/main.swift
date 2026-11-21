@@ -8,6 +8,7 @@
 //       {"cmd":"scroll","id":2,"dy":-3} {"cmd":"focus","id":4} {"cmd":"displays"}
 //   IDs gelten bis zum nächsten scan.
 import AppKit
+import CoreImage
 import ApplicationServices
 
 struct Failure: Error { let message: String }
@@ -30,9 +31,14 @@ func pid(_ bundle: String) -> pid_t? {
 final class Session {
     var display = 0
     var targets: [Target] = []
+    /// Fenster-Modus: Jarvis steuert genau dieses Fenster (auch verdeckt); nil = ganzer Monitor
+    var window: WindowInfo?
+    let streamer = WindowStreamer()
+    func mark(_ point: CGPoint) { streamer.cursor = point }   // virtuelle Maus im Live-Bild
 
     // Für die KI unwichtig: riesige Container und namenlose Gruppen/Texte.
     func useful(_ t: Target, _ screen: CGRect) -> Bool {
+        if t.kind == .text { return !t.label.isEmpty }
         if t.rect.width * t.rect.height > screen.width * screen.height * 0.35 { return false }
         let generic: Set<String> = ["Gruppe", "Text", "Bedienelement", "HTML-Inhalte", "Bild"]
         if ["AXGroup", "AXStaticText", "AXWebArea", "AXImage", "AXScrollArea", "AXUnknown"].contains(t.role),
@@ -40,11 +46,16 @@ final class Session {
         return true
     }
 
-    func scanNow(all: Bool = false) -> [[String: Any]] {
+    func scanNow(all: Bool = false) throws -> [[String: Any]] {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let screen = displayRect(display)
-        targets = scan(display: screen, frontPID: front,
-                       dockPID: pid("com.apple.dock"), menuExtrasPID: pid("com.apple.systemuiserver"))
+        var screen = displayRect(display)
+        if let w = window {
+            screen = w.bounds
+            targets = try scanWindow(w)
+        } else {
+            targets = scan(display: screen, frontPID: front,
+                           dockPID: pid("com.apple.dock"), menuExtrasPID: pid("com.apple.systemuiserver"))
+        }
         if !all { targets = targets.filter { useful($0, screen) } }
         return targets.enumerated().map { index, t in
             [
@@ -74,6 +85,7 @@ final class Session {
             }
         }
         let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
+        if let w = window { clickInApp(w.pid, at: point); return "app-mouse" }   // echte Maus bleibt, wo sie ist
         for type in [CGEventType.leftMouseDown, .leftMouseUp] {
             CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
                 .post(tap: .cghidEventTap)
@@ -96,19 +108,14 @@ final class Session {
         }
         if !focus(t) { _ = click(t) }
         usleep(80_000)
-        for scalar in text.utf16 {
-            var unit = scalar
-            for down in [true, false] {
-                let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
-                e?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
-                e?.post(tap: .cghidEventTap)
-            }
-        }
+        if let w = window { typeInApp(w.pid, text); return "app-keys" }
+        postText(text)
         return "keys"
     }
 
     func scroll(_ t: Target, _ dy: Int) {
         let point = CGPoint(x: t.rect.midX, y: t.rect.midY)
+        if let w = window { scrollInApp(w.pid, at: point, dy: dy); return }
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
             .post(tap: .cghidEventTap)
         CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: Int32(-dy), wheel2: 0, wheel3: 0)?
@@ -119,18 +126,22 @@ final class Session {
         do {
             switch request["cmd"] as? String {
             case "scan":
-                if let d = request["display"] as? Int { display = d }
+                if let d = request["display"] as? Int { display = d; window = nil }
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                else if request["display"] != nil || request["window"] is NSNull { window = nil }
                 let started = Date()
-                let list = scanNow(all: request["all"] as? Bool ?? false)
+                let list = try scanNow(all: request["all"] as? Bool ?? false)
                 var reply: [String: Any] = ["ok": true, "targets": list, "ms": Int(Date().timeIntervalSince(started) * 1000)]
                 if request["text"] as? Bool == true { reply["text"] = textList(list) }
                 return reply
             case "click":
-                return ["ok": true, "via": click(try target(request["id"] as? Int))]
+                let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
+                return ["ok": true, "via": click(t), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
             case "focus":
                 return ["ok": focus(try target(request["id"] as? Int))]
             case "type":
-                return ["ok": true, "via": try type(try target(request["id"] as? Int), request["text"] as? String ?? "")]
+                let t = try target(request["id"] as? Int); mark(CGPoint(x: t.rect.midX, y: t.rect.midY))
+                return ["ok": true, "via": try type(t, request["text"] as? String ?? ""), "point": [Int(t.rect.midX), Int(t.rect.midY)]]
             case "scroll":
                 scroll(try target(request["id"] as? Int), request["dy"] as? Int ?? 3)
                 return ["ok": true]
@@ -146,11 +157,60 @@ final class Session {
                 return ["ok": true, "text": try ocr(CGRect(x: r[0], y: r[1], width: r[2], height: r[3])), "via": "ocr"]
             case "shot":
                 var rect = displayRect(display)
-                if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
-                let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [])
+                var shotWindow: CGWindowID?
+                if let id = request["window"] as? Int { let w = try windowInfo(CGWindowID(id)); rect = w.bounds; shotWindow = w.id }
+                else if let w = window, request["rect"] == nil, request["display"] == nil { rect = w.bounds; shotWindow = w.id }
+                if let r = request["rect"] as? [Int], r.count == 4 { rect = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]); shotWindow = nil }
+                let path = try screenshot(rect, marks: request["marks"] as? Bool == true ? targets : [], window: shotWindow)
                 return ["ok": true, "path": path, "rect": [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)]]
+            case "typetext":
+                // Text ohne Element-ID in das gerade fokussierte Feld schreiben (Rechner, Notizen, Suchfelder …)
+                var focusedRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), "AXFocusedUIElement" as CFString, &focusedRef) == .success,
+                   let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+                    var roleRef: CFTypeRef?
+                    let focused = focusedRef as! AXUIElement
+                    if AXUIElementCopyAttributeValue(focused, "AXRole" as CFString, &roleRef) == .success,
+                       (roleRef as? String) == "AXSecureTextField" { throw Failure(message: "Passwortfelder sind gesperrt") }
+                }
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                if let w = window { typeInApp(w.pid, request["text"] as? String ?? ""); return ["ok": true, "via": "app-keys", "window": Int(w.id)] }
+                postText(request["text"] as? String ?? "")
+                return ["ok": true, "via": "keys"]
             case "key":
-                try pressCombo(request["combo"] as? String ?? "")
+                if let id = request["window"] as? Int { window = try windowInfo(CGWindowID(id)) }
+                try pressCombo(request["combo"] as? String ?? "", pid: window?.pid)
+                return ["ok": true]
+            case "windows":
+                let screens = displays().indices.map { displayRect($0) }
+                return ["ok": true, "windows": listWindows().map { w in
+                    ["id": Int(w.id), "app": w.app, "title": w.title, "pid": Int(w.pid), "onScreen": w.onScreen,
+                     "display": screens.firstIndex(where: { $0.intersects(w.bounds) }) ?? -1,
+                     "rect": [Int(w.bounds.minX), Int(w.bounds.minY), Int(w.bounds.width), Int(w.bounds.height)]] as [String: Any]
+                }]
+            case "framejpeg":
+                // Einzelbild für die Vorschau, wenn der Aufnahme-Dienst (noch) keine Freigabe hat: sichtbarer Fensterbereich
+                guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                let w = try windowInfo(CGWindowID(id))
+                let (url, image) = try captureWindow(w.id)
+                try? FileManager.default.removeItem(at: url)
+                let maxWidth = CGFloat(request["maxWidth"] as? Int ?? 1280)
+                let scale = min(1, maxWidth / CGFloat(image.width))
+                let ci = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      let jpeg = CIContext().jpegRepresentation(of: ci, colorSpace: space,
+                                                               options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]) else {
+                    throw Failure(message: "Bild konnte nicht kodiert werden")
+                }
+                return ["ok": true, "data": jpeg.base64EncodedString(), "w": Int(ci.extent.width), "h": Int(ci.extent.height),
+                        "bounds": [Int(w.bounds.minX), Int(w.bounds.minY), Int(w.bounds.width), Int(w.bounds.height)],
+                        "title": w.title, "app": w.app]
+            case "stream_start":
+                guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                try streamer.start(try windowInfo(CGWindowID(id)), fps: request["fps"] as? Int ?? 20)
+                return ["ok": true]
+            case "stream_stop":
+                streamer.stop()
                 return ["ok": true]
             case "displays":
                 return ["ok": true, "displays": displays().indices.map { i in
@@ -176,6 +236,7 @@ func kindName(_ kind: Target.Kind) -> String {
     case .field: return "field"
     case .link: return "link"
     case .control: return "control"
+    case .text: return "text"
     }
 }
 
@@ -189,10 +250,22 @@ func textList(_ list: [[String: Any]]) -> String {
     }.joined(separator: "\n")
 }
 
+private let emitLock = NSLock()
+/// Ziel der Ausgabe: stdout (serve) oder der verbundene Client (capture-serve)
+var outputFD: Int32 = STDOUT_FILENO
 func emit(_ object: [String: Any]) {
-    let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
-    FileHandle.standardOutput.write(data)
-    FileHandle.standardOutput.write(Data("\n".utf8))
+    var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+    data.append(Data("\n".utf8))
+    emitLock.lock()
+    data.withUnsafeBytes { raw in
+        var offset = 0
+        while offset < raw.count {
+            let n = write(outputFD, raw.baseAddress! + offset, raw.count - offset)
+            if n <= 0 { break }
+            offset += n
+        }
+    }
+    emitLock.unlock()
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -222,7 +295,63 @@ case "serve":
         if let id = request["rid"] { reply["rid"] = id }
         emit(reply)
     }
+case "capture-serve":
+    // Läuft als App-Bundle "Jarvis Bildschirm.app" mit eigener Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert
+    // einem Kommandozeilenprogramm keine Bilder). Nur Aufnahme: stream_start/stream_stop/windowshot/cursor.
+    let port = args.firstIndex(of: "--port").flatMap { args.indices.contains($0 + 1) ? UInt16(args[$0 + 1]) : nil } ?? 7779
+    let server = socket(AF_INET, SOCK_STREAM, 0)
+    var yes: Int32 = 1
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(server, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+    guard bound == 0, listen(server, 4) == 0 else { FileHandle.standardError.write(Data("Port \(port) belegt\n".utf8)); exit(1) }
+    signal(SIGPIPE, SIG_IGN)
+    // Fehlt die Bildschirmaufnahme-Freigabe, zeigt macOS hiermit den Dialog bzw. trägt die App in die Liste ein.
+    if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+    while true {
+        let client = accept(server, nil, nil)
+        if client < 0 { continue }
+        outputFD = client
+        let input = fdopen(client, "r")
+        var line: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        while getline(&line, &capacity, input) > 0 {
+            guard let text = line.map({ String(cString: $0) }), let data = text.data(using: .utf8),
+                  let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            var reply: [String: Any]
+            switch request["cmd"] as? String {
+            case "windowshot":
+                do {
+                    guard let id = request["window"] as? Int else { throw Failure(message: "window fehlt") }
+                    let image = try windowImage(CGWindowID(id))
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("uimap-win-\(UUID().uuidString.prefix(8)).png")
+                    if let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, image, nil); CGImageDestinationFinalize(dest)
+                    }
+                    reply = ["ok": true, "path": url.path, "w": image.width, "h": image.height]
+                } catch let f as Failure { reply = ["ok": false, "error": f.message] } catch { reply = ["ok": false, "error": "\(error)"] }
+            case "cursor":
+                if let p = request["point"] as? [Int], p.count == 2 { session.streamer.cursor = CGPoint(x: p[0], y: p[1]) }
+                reply = ["ok": true]
+            case "stream_start", "stream_stop":
+                reply = session.handle(request)
+            case "ping":
+                reply = ["ok": true, "screen": CGPreflightScreenCaptureAccess()]
+            default:
+                reply = ["ok": false, "error": "Aufnahme-Dienst kennt nur windowshot, stream_start, stream_stop, cursor"]
+            }
+            if let id = request["rid"] { reply["rid"] = id }
+            emit(reply)
+        }
+        session.streamer.stop()
+        free(line)
+        fclose(input)
+        outputFD = STDOUT_FILENO
+    }
 default:
-    FileHandle.standardError.write(Data("uimap scan|serve|displays [--display N]\n".utf8))
+    FileHandle.standardError.write(Data("uimap scan|serve|capture-serve|displays [--display N]\n".utf8))
     exit(2)
 }
