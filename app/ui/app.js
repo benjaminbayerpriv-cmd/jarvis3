@@ -688,14 +688,16 @@ function renderViewerTabs() {
   if (!viewerGotFrame) empty.textContent = viewerTabs.length ? "Wähle oben einen Tab, um ihn live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
   else empty.textContent = "";
 }
+const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
 function openViewer() {
-  viewer.hidden = false; state.liveView = true;
+  viewer.hidden = false; state.liveView = true; syncViewerButtons();
   send({ type: "liveview", on: true }); send({ type: "tabs" });
   clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 2000);
   renderViewerTabs();
 }
 function hideViewer() {
   clearTimeout(viewerTimer); clearInterval(viewerPoll); viewer.hidden = true; viewerGotFrame = false; viewerPinned = null; viewerStreaming = null;
+  syncViewerButtons();
 }
 function drawFrame(m) {
   // Dekodieren abseits des Hauptthreads; kommt ein neues Bild, während eins dekodiert wird, zählt nur das neueste
@@ -724,7 +726,9 @@ function viewerTabsMessage(m) {
 }
 $("#viewerClose").onclick = () => { send({ type: "liveview", on: false }); hideViewer(); };
 // Das Auge öffnet die Vorschau immer (mit der Tab-Auswahl oben) und schließt sie wieder
-$("#viewToggle").onclick = () => { if (viewer.hidden) openViewer(); else { send({ type: "liveview", on: false }); hideViewer(); } };
+const toggleViewer = () => { if (viewer.hidden) openViewer(); else { send({ type: "liveview", on: false }); hideViewer(); } };
+$("#viewToggle").onclick = toggleViewer;
+$("#liveView").onclick = toggleViewer;   // auch im Live-Modus erreichbar
 // Breite per Griff ziehen (wird gemerkt)
 try { const w = Number(localStorage.getItem("jarvis.viewerW")); if (w >= 360) document.documentElement.style.setProperty("--viewer-w", w + "px"); } catch {}
 $("#viewerGrip").addEventListener("pointerdown", e => {

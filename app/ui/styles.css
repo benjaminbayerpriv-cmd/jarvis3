@@ -674,3 +674,6 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 :root { --viewer-w: clamp(440px, 46vw, 980px); }
 body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); left: 0; }
 @media (max-width: 900px) { body:has(.viewer:not([hidden])) .live { right: 0; } }
+
+/* Live-Modus: Vorschau-Knopf zeigt an, ob die Tab-Vorschau offen ist */
+.round-btn[aria-pressed="true"] { background: var(--primary-container); color: var(--on-primary-container); }
