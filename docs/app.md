@@ -24,6 +24,12 @@ Aufteilung: **Hülle** = `app/src-tauri` (Rust, Codex). **Oberfläche** = `app/u
 
 ## Sprach-Animation im Eingabefeld
 Im Live-Modus und beim Diktat klappt das Eingabefeld nach oben auf (`#voice`, `composer[data-voice="live"|"dictate"|"off"]`). Oben steht der erkannte Text (im Live-Modus bei Jarvis' Antwort dessen Text), darunter eine Canvas mit Wellen: blau = Mikrofon, rosa = Ausgabe von Jarvis. Die Amplitude folgt dem echten Pegel der `level`-Ereignisse des Sidecars (`mic`/`out`); ohne Ereignisse bleibt eine ruhige Grundbewegung, stumm = flache Linie. Im Ruhezustand ist der Bereich eingeklappt. Fehler der Animation landen als `ui`-Eintrag im Fehler-Log. Die frühere Vollbild-Ansicht entfällt.
+## Projekte
+- Projekte sind echte Ordner unter `~/.jarvis3/projects/<projekt>/`, Chats liegen als Unterordner `chats/<session-id>/chat.json` (Titel, Zuordnung, Analyzestatus). Die Nachrichten selbst bleiben in OpenCode; die Ordner sind nur die Struktur. Unterprojekte sind verschachtelte Projektordner.
+- Der Daemon übernimmt OpenCode-Sitzungen beim Verbinden und bei jedem Verlaufsabruf. Noch nicht zugeordnete Chats werden im Hintergrund vom schnellen Gratis-Modell einem passenden Projekt zugeordnet (`ki`); manuelle Zuordnungen (`manual`) werden nie überschrieben. Ein neues Projekt löst die erneute Prüfung freier Chats aus. Die Analyse läuft parallel und blockiert keine Antwort.
+- Modellwerkzeuge: `project_list`, `project_create`, `project_update`, `project_delete`, `project_assign`, `project_analyze` (in der Modellansicht mit Präfix `jarvis_`). `project_list` zeigt IDs, die die übrigen Werkzeuge brauchen.
+- WebSocket: `{type:"projects", projects, chats, root}` kommt bei Verbindung und nach jeder Änderung; `{type:"projects"}` erfragt den Baum, `{type:"project_action", op:"create|update|delete|assign|analyze|sync", …}` ändert ihn. Die Oberfläche bietet dafür „Projekte“ in der Seitenleiste mit Baum, Neues-Projekt-Formular, Chat-Zuordnung und Lösen.
+- HTTP für das MCP: `GET /projects` → Baum, `POST /projects` → dieselben Aktionen wie `project_action`.
 
 ## jarvisd-Endpunkte für die Hülle
 - `GET /health` → `{ok, opencode, browser}`

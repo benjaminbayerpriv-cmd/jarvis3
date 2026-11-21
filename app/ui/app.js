@@ -30,6 +30,7 @@ let editingMessage = null;
 let pendingChatAction = null;
 let live = { on: false, muted: false };
 let dictating = false;   // Diktat läuft (Mikro-Knopf wird zum Stopp, Live-Knopf zum Senden)
+let projectData = { projects: [], chats: [], root: "" };
 
 // ---------- Verbindung ----------
 let ws, retry = 0;
@@ -69,6 +70,7 @@ function handle(m) {
     case "history": chatFolderNames = m.folders || chatFolderNames; renderHistory(m.sessions); break;
     case "messages": renderMessages(m.messages); break;
     case "session": currentSession = m.id; break;
+    case "projects": renderProjects(m); break;
   }
   if (m.type === "state" && !m.busy && current) finishTurn();
 }
@@ -370,7 +372,8 @@ function renderHistory(list = []) {
   const collapsed = new Set(JSON.parse(localStorage.getItem("jarvis.collapsedFolders") || "[]"));
   const appendChat = (s, parent) => {
     const li = document.createElement("li"); li.className = "history-chat"; li.draggable = true; li.classList.toggle("active", !!s.active); li.dataset.id = s.id;
-    const title = document.createElement("button"); title.className = "history-title"; title.textContent = s.title || "Unterhaltung"; title.title = title.textContent;
+    const title = document.createElement("button"); title.className = "history-title";
+    title.textContent = (s.title || "Unterhaltung") + (s.project ? ` · ${s.project}` : ""); title.title = title.textContent;
     title.onclick = () => { currentSession = s.id; send({ type: "open", id: s.id }); };
     const menu = document.createElement("div"); menu.className = "history-menu";
     const menuToggle = document.createElement("button"); menuToggle.type = "button"; menuToggle.className = "history-menu-toggle";
@@ -431,6 +434,117 @@ function renderMessages(msgs = []) {
   }
   conv.scrollTop = conv.scrollHeight;
 }
+
+// ---------- Projekte ----------
+const projectAction = action => send({ type: "project_action", ...action });
+function projectLabel(id) {
+  const names = [], seen = new Set();
+  let p = projectData.projects.find(x => x.id === id);
+  while (p && !seen.has(p.id)) { seen.add(p.id); names.unshift(p.name); p = projectData.projects.find(x => x.id === p.parentId); }
+  return names.join(" / ");
+}
+function fillProjectSelects() {
+  const parent = $("#projectParent"), chat = $("#assignChat"), target = $("#assignProject");
+  parent.innerHTML = `<option value="">Ohne Überprojekt</option>`;
+  target.innerHTML = `<option value="">Ohne Projekt</option>`;
+  for (const p of projectData.projects) {
+    const label = projectLabel(p.id);
+    parent.append(new Option(label, p.id));
+    target.append(new Option(label, p.id));
+  }
+  chat.innerHTML = "";
+  for (const c of projectData.chats) {
+    const where = projectLabel(c.projectId);
+    chat.append(new Option(c.title + (where ? ` · ${where}` : ""), c.id));
+  }
+}
+function renameProject(p, button) {
+  const input = document.createElement("input");
+  input.className = "proj-rename"; input.value = p.name;
+  button.replaceWith(input); input.focus(); input.select();
+  let done = false;
+  const finish = save => {
+    if (done) return; done = true;
+    const name = input.value.trim();
+    if (save && name && name !== p.name) projectAction({ op: "update", id: p.id, patch: { name } });
+    else renderProjects();
+  };
+  input.onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") finish(false);
+  };
+  input.onblur = () => finish(true);
+}
+function projectRow(p, depth) {
+  const row = document.createElement("div");
+  row.className = "proj-row"; row.style.setProperty("--depth", String(depth));
+  const name = document.createElement("button");
+  name.type = "button"; name.className = "proj-name"; name.textContent = p.name;
+  name.title = p.description || "Projekt umbenennen";
+  name.onclick = () => renameProject(p, name);
+  const count = document.createElement("span"); count.className = "proj-count";
+  const n = projectData.chats.filter(c => c.projectId === p.id).length;
+  count.textContent = n ? String(n) : "";
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "proj-action"; del.textContent = "×"; del.title = "Projekt löschen";
+  del.onclick = () => {
+    if (confirm(`Projekt „${p.name}“ samt Unterprojekten löschen? Die Chats bleiben erhalten.`)) projectAction({ op: "delete", id: p.id });
+  };
+  row.append(name, count, del);
+  return row;
+}
+function chatRow(c, depth) {
+  const row = document.createElement("div");
+  row.className = "chat-row"; row.style.setProperty("--depth", String(depth));
+  const open = document.createElement("button");
+  open.type = "button"; open.className = "proj-name"; open.textContent = c.title; open.title = "Chat öffnen";
+  open.onclick = () => { send({ type: "open", id: c.id }); $("#projectsDialog").close(); };
+  const tag = document.createElement("span"); tag.className = "chat-tag";
+  tag.textContent = c.assignedBy === "ki" ? "KI" : c.assignedBy === "auto" ? "Auto" : c.assignedBy === "manual" ? "Manuell" : "";
+  const detach = document.createElement("button");
+  detach.type = "button"; detach.className = "proj-action"; detach.textContent = "×"; detach.title = "Aus Projekt lösen";
+  detach.onclick = () => projectAction({ op: "assign", id: c.id, projectId: null, by: "manual" });
+  row.append(open, tag, detach);
+  return row;
+}
+function renderProjects(m = projectData) {
+  projectData = m;
+  $("#projectsPath").textContent = m.root ? `~/${m.root}` : "";
+  fillProjectSelects();
+  const root = $("#projectTree"); root.innerHTML = "";
+  const walk = (parent, depth) => {
+    for (const p of m.projects.filter(x => (x.parentId ?? null) === parent)) {
+      root.append(projectRow(p, depth));
+      for (const c of m.chats.filter(x => x.projectId === p.id)) root.append(chatRow(c, depth + 1));
+      walk(p.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  const loose = m.chats.filter(c => !c.projectId);
+  if (loose.length) {
+    const h = document.createElement("div"); h.className = "proj-group"; h.textContent = "Ohne Projekt"; root.append(h);
+    for (const c of loose) root.append(chatRow(c, 1));
+  }
+  if (!m.projects.length && !m.chats.length) {
+    const empty = document.createElement("div"); empty.className = "proj-group"; empty.textContent = "Noch keine Projekte."; root.append(empty);
+  }
+}
+$("#openProjects").onclick = () => { send({ type: "projects" }); $("#projectsDialog").showModal(); };
+$("#closeProjects").onclick = () => $("#projectsDialog").close();
+$("#analyzeProjects").onclick = () => projectAction({ op: "analyze" });
+$("#projectForm").onsubmit = e => {
+  e.preventDefault();
+  const name = $("#projectName").value.trim();
+  if (!name) return;
+  projectAction({ op: "create", name, description: "", parent: $("#projectParent").value || null });
+  $("#projectName").value = "";
+};
+$("#assignForm").onsubmit = e => {
+  e.preventDefault();
+  const id = $("#assignChat").value;
+  if (!id) return;
+  projectAction({ op: "assign", id, projectId: $("#assignProject").value || null, by: "manual" });
+};
 
 // ---------- Live-Ansicht des Tabs ----------
 const viewer = $("#viewer");

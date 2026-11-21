@@ -10,6 +10,8 @@ import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
 import { correct } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
+import { Projects } from "./projects";
+import { classificationPrompt, parseClassification } from "./classify";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -42,6 +44,11 @@ writeFileSync(join(workspace, "opencode.json"), JSON.stringify({
 const brain = new OpenCode(4096, workspace);
 const desktop = new Desktop();
 const browser = new Browser();
+const projects = new Projects();
+try { projects.load(); } catch (error) {
+  recordError({ category: "daemon", source: "jarvisd/projects-load", message: "Projekte konnten nicht gelesen werden", error });
+}
+const broadcastProjects = () => broadcast({ type: "projects", ...projects.data() });
 let models: ModelInfo[] = [];
 let session: string | undefined;
 let busy = false;
@@ -166,7 +173,10 @@ async function history() {
     const isEmpty = (t: string) => !t || t === "Jarvis" || /^New session/i.test(t) || /^Child session/i.test(t);
     return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
-      .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title), folder: chatMeta[s.id]?.folder || "", active: s.id === session }));
+      .map(s => ({ id: s.id, title: chatMeta[s.id]?.title || (isEmpty(s.title) ? "Neuer Chat" : s.title),
+                   folder: chatMeta[s.id]?.folder || "", active: s.id === session,
+                   updated: s.time?.updated ?? 0, projectId: projects.chat(s.id)?.projectId ?? null,
+                   project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
   } catch (error) {
     recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
     return [];
@@ -177,6 +187,72 @@ async function openSession(id: string) {
   const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
   return msgs.map(m => ({ id: m.info?.id, role: m.info?.role, text: (m.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join("") }))
     .filter(m => m.text);
+}
+
+// ---------- Projekte: Sitzungen übernehmen, Zuordnung durch das Modell ----------
+const CLASSIFY_MODEL = "opencode/deepseek-v4.1-flash-free";
+let analysisRunning = false;
+async function syncProjects() {
+  try {
+    const sessions = await history();
+    let changed = false;
+    for (const s of sessions) if (projects.upsertChat({ id: s.id, title: s.title, updated: s.updated })) changed = true;
+    if (changed) broadcastProjects();
+    void analyzeProjects();
+  } catch (error) {
+    recordError({ category: "daemon", source: "jarvisd/projects-sync", message: "Projekte konnten nicht aktualisiert werden", error });
+  }
+}
+async function firstExcerpt(id: string) {
+  try {
+    const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
+    const first = msgs.find(m => m.info?.role === "user");
+    return String((first?.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join(" "))
+      .replace(/\s+/g, " ").trim().slice(0, 500);
+  } catch { return ""; }
+}
+async function analyzeProjects() {
+  if (analysisRunning) return;
+  const data = projects.data();
+  const pending = data.chats.filter(c => !c.projectId && !c.analyzed && c.title !== "Neuer Chat").slice(0, 8);
+  if (!data.projects.length || !pending.length) return;
+  analysisRunning = true;
+  try {
+    for (const c of pending) {
+      const { system, text } = classificationPrompt(projects.data(), c, await firstExcerpt(c.id));
+      const parsed = parseClassification(await brain.ask(text, CLASSIFY_MODEL, system), projects.data().projects.map(p => p.id));
+      if (parsed?.projectId) projects.assign(c.id, parsed.projectId, "ki");
+      else projects.markAnalyzed(c.id);
+      broadcastProjects();
+    }
+  } catch (error) {
+    recordError({ category: "model", source: "jarvisd/project-analysis", message: "Projektzuordnung fehlgeschlagen", error });
+  } finally { analysisRunning = false; }
+}
+
+/** Gemeinsamer Weg für HTTP (MCP) und WebSocket (Oberfläche). */
+async function projectAction(action: Record<string, any>) {
+  const op = String(action.op ?? "");
+  if (op === "create") {
+    const p = projects.create(String(action.name ?? ""), String(action.description ?? ""), action.parent ? String(action.parent) : null);
+    projects.resetAnalysis(); broadcastProjects(); void analyzeProjects();
+    return { ok: true, project: p };
+  }
+  if (op === "update") {
+    const p = projects.update(String(action.id), (action.patch ?? {}) as { name?: string; description?: string; parentId?: string | null });
+    broadcastProjects(); return { ok: true, project: p };
+  }
+  if (op === "delete") {
+    const moved = projects.remove(String(action.id)); broadcastProjects(); return { ok: true, moved };
+  }
+  if (op === "assign") {
+    const by = ["manual", "ki", "auto"].includes(String(action.by)) ? action.by as "manual" | "ki" | "auto" : "manual";
+    const c = projects.assign(String(action.id), action.projectId ? String(action.projectId) : null, by);
+    broadcastProjects(); return { ok: true, chat: c };
+  }
+  if (op === "analyze") { projects.resetAnalysis(); broadcastProjects(); void analyzeProjects(); return { ok: true }; }
+  if (op === "sync") { await syncProjects(); broadcastProjects(); return { ok: true, ...projects.data() }; }
+  return { ok: false, error: `Unbekannte Projektaktion: ${op}` };
 }
 
 // Reihenfolge, in der ersatzweise andere Modelle probiert werden (Stand der Messung 2026-11-20).
@@ -304,6 +380,7 @@ async function setSessionTitle(id: string, title: string, automatic = false) {
   else if (!chatMeta[id].title) chatMeta[id].title = title;
   saveChatMeta();
   await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: chatMeta[id].title }) }).catch(() => {});
+  void syncProjects();
   broadcast({ type: "history", sessions: await history(), folders: chatFolders });
 }
 async function updateChat(msg: any) {
@@ -465,6 +542,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
         if (uis.size === 0 && !ws.data.fresh) session = undefined;
         uis.add(ws); ws.send(JSON.stringify(state())); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: chatFolders })));
+        ws.send(JSON.stringify({ type: "projects", ...projects.data() })); void syncProjects();
       }
     },
     close(ws) {
@@ -524,6 +602,11 @@ async function route(req: Request, srv: any) {
     }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
     if (u.pathname === "/models") return Response.json(models = await listModels());
+    if (u.pathname === "/projects" && req.method === "GET") return Response.json(projects.data());
+    if (u.pathname === "/projects" && req.method === "POST") {
+      const r = await projectAction(await req.json() as Record<string, any>);
+      return Response.json(r, { status: r.ok ? 200 : 400 });
+    }
     if (u.pathname === "/tool" && req.method === "POST") {
       const { target, cmd } = await req.json();
       return Response.json(await runTool(target, cmd));
@@ -552,13 +635,18 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "liveview") { settings.liveView = !!msg.on; save(); if (!settings.liveView) await stopStream(); broadcast(state()); }
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
-      else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: chatFolders }));
+      else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: chatFolders })); void syncProjects(); }
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
       else if (msg.type === "resend") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
       else if (msg.type === "replace") { await rewindMessage(String(msg.id), String(msg.messageID)); broadcast({ type: "user", text: String(msg.text) }); await chat(String(msg.text), settings.model); }
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
+      else if (msg.type === "projects") ws.send(JSON.stringify({ type: "projects", ...projects.data() }));
+      else if (msg.type === "project_action") {
+        const r = await projectAction(msg.action ?? msg);
+        if (!r.ok) ws.send(JSON.stringify({ type: "notice", text: r.error }));
+      }
 }
 
 // Abstürze und vergessene Promise-Fehler landen im Fehler-Log statt nur auf stderr.

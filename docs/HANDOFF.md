@@ -14,6 +14,7 @@ Ein lokaler KI-Assistent für den Desktop (Mac und Windows). Ersetzt den verbugg
 | Bildschirm-Werkzeug Mac | `tools/uimap-mac/` | Swift | `uimap serve`: nummerierte Bedienelemente als JSON/Text, Klick/Tippen/Lesen/Screenshot **nur bei Bedarf** |
 | Bildschirm-Werkzeug Windows | `tools/uimap-win/` | C# (.NET 8) | Gleicher Vertrag mit UI Automation; **auf echtem Windows noch ungetestet** |
 | Chrome-Erweiterung | `extension/` | JS (MV3) | Tab-Gruppe „Jarvis“ im Hintergrund, Seitenelemente scannen/klicken/tippen |
+| Projekte | `~/.jarvis3/projects/` | JSON in Ordnern | Projekte mit Chat-Unterordnern; KI ordnet neue Chats zu, Nutzer verwaltet per `project_*`-Werkzeugen und „Projekte“-Tab |
 
 Kernidee: Die KI bekommt Bedienelemente als **Textliste** (`12 Button „Senden“ @640,812`) und klickt per ID. Screenshots nur auf ausdrückliche Anfrage (`look`). Die Modelle laufen über **OpenCode** (kostenlose Free-Modelle, LM Studio lokal, NVIDIA).
 

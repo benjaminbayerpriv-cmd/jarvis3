@@ -87,6 +87,60 @@ server.tool("browser_read", "Liest Text der Seite: ohne id/rect den gesamten sic
 server.tool("browser_look", "Screenshot des Tabs, NUR wenn nötig.", { tab, rect: rect.optional(), marks: z.boolean().optional() },
   async a => image(await call("browser", { cmd: "shot", ...a })));
 
+// ---------- Projekte ----------
+async function projectCall(action: Record<string, unknown>) {
+  try {
+    const r = await fetch(`${JARVISD}/projects`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(action) });
+    return await r.json() as Record<string, any>;
+  } catch {
+    const e = recordError({ category: "daemon", source: "mcp/project", message: "jarvisd nicht erreichbar", context: { action } });
+    return { ok: false, error: `jarvisd nicht erreichbar${e ? ` (Fehler ${e.id})` : ""}` };
+  }
+}
+function projectTree(d: Record<string, any>) {
+  const projects = Array.isArray(d.projects) ? d.projects as Record<string, any>[] : [];
+  const chats = Array.isArray(d.chats) ? d.chats as Record<string, any>[] : [];
+  const lines: string[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    for (const p of projects.filter(x => (x.parentId ?? null) === parent)) {
+      lines.push(`${"  ".repeat(depth)}${p.name} [${p.id}]${p.description ? ` – ${p.description}` : ""}`);
+      for (const c of chats.filter(x => x.projectId === p.id))
+        lines.push(`${"  ".repeat(depth + 1)}- ${c.title} [${c.id}]${c.assignedBy ? ` (${c.assignedBy})` : ""}`);
+      walk(p.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  const loose = chats.filter(c => !c.projectId);
+  if (loose.length) { lines.push("Ohne Projekt:"); for (const c of loose) lines.push(`- ${c.title} [${c.id}]`); }
+  return lines.join("\n") || "Noch keine Projekte und Chats.";
+}
+server.tool("project_list", "Zeigt den Projektbaum mit allen Projekt- und Chat-IDs. Vor Änderungen immer aufrufen.",
+  {}, async () => {
+    try {
+      const r = await fetch(`${JARVISD}/projects`) as any;
+      const d = await r.json() as Record<string, any>;
+      return text(projectTree(d) + `\nSpeicher: ${d.root ?? "~/.jarvis3/projects"}`);
+    } catch { return { ...text("Fehler: Projekte nicht abrufbar"), isError: true }; }
+  });
+server.tool("project_create", "Legt ein Projekt an (parent = ID eines Oberprojekts, sonst leer).",
+  { name: z.string(), description: z.string().optional(), parent: z.string().optional() },
+  async a => result(await projectCall({ op: "create", ...a })));
+server.tool("project_update", "Benennt ein Projekt um, ändert die Beschreibung oder verschiebt es unter ein anderes Projekt (parentId=null für die oberste Ebene).",
+  { id: z.string(), name: z.string().optional(), description: z.string().optional(), parentId: z.string().nullable().optional() },
+  async a => {
+    const patch: Record<string, unknown> = {};
+    for (const k of ["name", "description", "parentId"]) if (a[k] !== undefined) patch[k] = a[k];
+    return result(await projectCall({ op: "update", id: a.id, patch }));
+  });
+server.tool("project_delete", "Löscht ein Projekt samt Unterprojekten; seine Chats bleiben ohne Projekt erhalten.",
+  { id: z.string() }, async a => result(await projectCall({ op: "delete", ...a })));
+server.tool("project_assign", "Legt einen Chat in ein Projekt (projectId=null löst ihn). Die ID kommt aus project_list.",
+  { chatId: z.string(), projectId: z.string().nullable(), by: z.enum(["manual", "ki", "auto"]).optional() },
+  async a => result(await projectCall({ op: "assign", id: a.chatId, projectId: a.projectId, by: a.by ?? "manual" })));
+server.tool("project_analyze", "Prüft die Zuordnung aller noch nicht zugeordneten Chats erneut mit dem Modell.",
+  {}, async () => result(await projectCall({ op: "analyze" })));
+
 // ---------- Fehler-Log (docs/errors.md) ----------
 server.tool("error_report", "Meldet einen Fehler ins zentrale Fehler-Log, wenn etwas nicht klappt und du es nicht selbst lösen kannst (Seite reagiert falsch, Element fehlt, Werkzeug liefert Unsinn). Bei Bildschirmbezug target angeben: es wird ein Screenshot gespeichert und die Stelle (id aus dem letzten scan oder rect) rot markiert.",
   { message: z.string().describe("Was ist schiefgegangen, was hast du erwartet?"),
