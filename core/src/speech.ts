@@ -7,7 +7,7 @@ export class Speech {
   connected = false;
   private sayId = 0;
 
-  constructor(private onEvent: (e: SpeechEvent) => void, private url = "ws://127.0.0.1:7778") {
+  constructor(private onEvent: (e: SpeechEvent) => void, private url = process.env.JARVIS_SPEECH_URL ?? "ws://127.0.0.1:7778") {
     this.connect();
   }
 

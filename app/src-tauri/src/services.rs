@@ -150,6 +150,7 @@ impl Services {
             thread::spawn(move || {
                 if let Err(error) = start_service(service, &endpoint, &owned) {
                     eprintln!("Jarvis3: {}: {error}", service.name());
+                    crate::errorlog::record("app", &format!("tauri/{}", service.name()), &error, serde_json::json!({ "service": service.name(), "port": service.port(&endpoint), "repo": env::var("JARVIS_REPO").ok() }));
                 }
             });
         }

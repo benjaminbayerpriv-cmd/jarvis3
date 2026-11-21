@@ -1,5 +1,6 @@
 // OpenCode als Gehirn: Modellliste, headless Server, Sitzungen und Token-Stream.
 import { join } from "node:path";
+import { recordError } from "./errorlog";
 
 export type ModelGroup = "free" | "lmstudio" | "nvidia" | "other";
 export interface ModelInfo { id: string; provider: string; model: string; group: ModelGroup; vision: boolean }
@@ -22,7 +23,7 @@ export async function listModels(): Promise<ModelInfo[]> {
 export type BrainEvent =
   | { kind: "text"; delta: string }
   | { kind: "reasoning"; delta: string }
-  | { kind: "tool"; id: string; name: string; status: string; title?: string; input?: Record<string, unknown> }
+  | { kind: "tool"; id: string; name: string; status: string; title?: string; input?: Record<string, unknown>; error?: string }
   | { kind: "done" }
   | { kind: "error"; message: string; retry?: boolean };
 
@@ -32,6 +33,7 @@ export class OpenCode {
   private partKinds = new Map<string, string>();
   private listeners = new Map<string, (e: BrainEvent) => void>();
   private started = new Set<string>(); // Sitzungen, in denen der aktuelle Lauf schon Ereignisse geliefert hat
+  private lastStreamError = 0;
 
   constructor(public port = 4096, public workspace = join(import.meta.dir, "../../workspace")) {
     this.url = `http://127.0.0.1:${port}`;
@@ -95,7 +97,12 @@ export class OpenCode {
             if (line.startsWith("data:")) this.dispatch(JSON.parse(line.slice(5)));
           }
         }
-      } catch { /* Server weg – kurz warten, neu verbinden */ }
+      } catch (error) { // Server weg – kurz warten, neu verbinden (höchstens einmal pro Minute ins Fehler-Log)
+        if (Date.now() - this.lastStreamError > 60_000) {
+          this.lastStreamError = Date.now();
+          recordError({ category: "model", source: "opencode/event-stream", message: "OpenCode-Ereignisstrom unterbrochen", error, context: { url: this.url } });
+        }
+      }
       await Bun.sleep(500);
     }
   }
@@ -110,7 +117,7 @@ export class OpenCode {
       case "message.part.updated": {
         const part = p.part;
         this.partKinds.set(part.id, part.type);
-        if (part.type === "tool") cb({ kind: "tool", id: part.id, name: part.tool, status: part.state?.status, title: part.state?.title, input: part.state?.input });
+        if (part.type === "tool") cb({ kind: "tool", id: part.id, name: part.tool, status: part.state?.status, title: part.state?.title, input: part.state?.input, error: part.state?.error });
         break;
       }
       case "message.part.delta": {

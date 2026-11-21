@@ -1,13 +1,14 @@
 // jarvisd – Kern-Daemon. UI (Tauri) und Chrome-Erweiterung verbinden sich hierher.
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import { OpenCode, listModels, type ModelInfo, type BrainEvent } from "./opencode";
 import { Desktop } from "./desktop";
 import { Browser } from "./browser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech, SentenceSplitter } from "./speech";
+import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
 const HOME = join(homedir(), ".jarvis3");
@@ -54,6 +55,8 @@ const speech = new Speech(e => {
   if (e.type !== "level" && e.type !== "partial") vlog(`speech ${e.type} ${JSON.stringify({ ...e, type: undefined }).slice(0, 300)} voice=${voice}`);
   if (e.type === "connected") { speech.send({ type: "config", lofi: settings.lofi }); speech.mode(voice); if (voice === "off") speech.stopSpeaking(); broadcast(state()); return; }
   if (e.type === "disconnected") { broadcast(state()); return; }
+  if (e.type === "error") recordError({ category: "speech", source: "speech/sidecar", message: String(e.message ?? "Sprachfehler"),
+    context: { voice, lofi: settings.lofi, voiceModel: settings.voiceModel, event: e } });
   broadcast({ ...e, type: "speech", event: e.type });
   // Der Nutzer redet: Ausgabe verstummen lassen, die laufende Antwort aber nicht abbrechen (Husten/Pausen mitten im Satz).
   if (e.type === "speech_start" && voice === "live") { clearHolds(); splitter = undefined; }
@@ -112,7 +115,10 @@ async function history() {
     return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .map(s => ({ id: s.id, title: isEmpty(s.title) ? "Neuer Chat" : s.title, active: s.id === session }));
-  } catch { return []; }
+  } catch (error) {
+    recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
+    return [];
+  }
 }
 async function openSession(id: string) {
   session = id;
@@ -189,6 +195,11 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       }
       e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
     }
+    if (e.kind === "error") recordError({ category: "model", source: "opencode/prompt", message: e.message,
+      context: { model, request: text, mode: settings.mode, spoken, voice, session: sid, retry: e.retry, tried } });
+    if (e.kind === "tool" && e.status === "error" && !e.name.startsWith("jarvis_")) // Jarvis-Werkzeuge protokolliert runTool selbst
+      recordError({ category: "tool", source: `opencode/${e.name}`, message: e.error ?? "Werkzeug fehlgeschlagen",
+        context: { tool: e.name, input: e.input, model, request: text, mode: settings.mode } });
     if (e.kind === "text") textSeen = true;
     // Modelle, die wortlos loslegen: eine passende Ankündigung ergänzen (wie bei einem guten Assistenten)
     if (e.kind === "tool" && !textSeen && !announced && e.status !== "pending") {
@@ -265,7 +276,51 @@ async function stop() {
   busy = false; broadcast({ type: "stopped" }); broadcast(state());
 }
 
+// Letzte scan-Ergebnisse je Ziel, damit ein Fehler-Screenshot das betroffene Element markieren kann.
+const lastTargets = new Map<string, { id: number; rect: number[] }[]>();
+const targetKey = (target: string, tab: unknown) => target === "browser" ? `browser:${tab}` : "desktop";
+
+/** Screenshot des Tabs bzw. Bildschirms, die Stellen in `boxes` (Seiten-/Bildschirmkoordinaten) rot umrandet. */
+async function errorShot(target: string, tab: unknown, boxes: number[][]): Promise<Uint8Array | undefined> {
+  try {
+    let png: Uint8Array, rect: number[];
+    if (target === "browser") {
+      if (!browser.connected || !Number.isInteger(tab)) return undefined;
+      const r = await browser.call({ cmd: "shot", tab }, 10_000);
+      if (!r.ok || typeof r.dataUrl !== "string" || !r.dataUrl.startsWith("data:image/png")) return undefined;
+      png = Buffer.from(r.dataUrl.split(",")[1], "base64"); rect = r.rect as number[];
+    } else {
+      const r = await desktop.call({ cmd: "shot" }, 10_000);
+      if (!r.ok || typeof r.path !== "string") return undefined;
+      png = new Uint8Array(readFileSync(r.path)); rect = r.rect as number[];
+      try { unlinkSync(r.path); } catch { /* temporäre Datei schon weg */ }
+    }
+    return markPng(png, boxes.map(b => toImageBox(png, rect ?? [0, 0, 0, 0], b)));
+  } catch (error) {
+    console.error("Fehler-Screenshot nicht möglich:", error);
+    return undefined;
+  }
+}
+
+// Fehler, bei denen ein Bild nichts zeigt (Verbindung, Modus, Nutzer-Stopp, Passwortsperre).
+const NO_SHOT = /nicht verbunden|Computer-Steuerung ist aus|vom Nutzer gestoppt|Passwort/i;
+/** Werkzeugfehler ins Fehler-Log, bei Bildschirmbezug mit Screenshot; markiert wird das Element (id) bzw. der Bereich (rect). */
+async function logToolError(target: string, cmd: Record<string, any>, message: string, opts: { category?: ErrorCategory; source?: string; context?: Record<string, unknown> } = {}) {
+  const el = Number.isInteger(cmd.id) ? lastTargets.get(targetKey(target, cmd.tab))?.find(t => t.id === cmd.id) : undefined;
+  const boxes = [el?.rect, Array.isArray(cmd.rect) && cmd.rect.length === 4 ? cmd.rect : undefined].filter(Boolean) as number[][];
+  const screenshot = NO_SHOT.test(message) || cmd.cmd === "shot" || cmd.screenshot === false ? undefined : await errorShot(target, cmd.tab, boxes);
+  return recordError({ category: opts.category ?? "tool", source: opts.source ?? `${target}/${cmd.cmd}`, message, screenshot,
+    context: { tool: `${target}_${cmd.cmd}`, args: cmd, element: el, mode: settings.mode, model: settings.model, voice, busy, ...opts.context } });
+}
+
 async function runTool(target: string, cmd: Record<string, any>) {
+  const r: Record<string, any> = await runToolInner(target, cmd).catch(error => ({ ok: false, error: String(error?.message ?? error) }));
+  if (r.ok && cmd.cmd === "scan" && Array.isArray(r.targets)) lastTargets.set(targetKey(target, cmd.tab), r.targets);
+  if (!r.ok && r.error !== "vom Nutzer gestoppt") void logToolError(target, cmd, String(r.error ?? "Werkzeug fehlgeschlagen"));
+  return r;
+}
+
+async function runToolInner(target: string, cmd: Record<string, any>) {
   if (Date.now() < stoppedUntil) return { ok: false, error: "vom Nutzer gestoppt" };
   broadcast({ type: "action", target, cmd: cmd.cmd, detail: cmd.url ?? cmd.id ?? cmd.name ?? "" });
   if (target === "browser") {
@@ -278,7 +333,8 @@ async function runTool(target: string, cmd: Record<string, any>) {
     return { ok: false, error: "Computer-Steuerung ist aus (Modus: nur Browser). Nutzer bitten, sie einzuschalten." };
   if (cmd.cmd === "open_app") {
     const p = process.platform === "win32" ? Bun.spawn(["cmd", "/c", "start", "", cmd.name]) : Bun.spawn(["open", "-a", cmd.name]);
-    return { ok: (await p.exited) === 0 };
+    const code = await p.exited;
+    return code === 0 ? { ok: true } : { ok: false, error: `Programm „${cmd.name}“ nicht geöffnet (Exit-Code ${code})` };
   }
   return desktop.call(cmd);
 }
@@ -286,26 +342,11 @@ async function runTool(target: string, cmd: Record<string, any>) {
 Bun.serve<{ kind: string; fresh?: boolean }, {}>({
   port: PORT, hostname: "127.0.0.1",
   async fetch(req, srv) {
-    const u = new URL(req.url);
-    if (u.pathname === "/browser" || u.pathname === "/ui")
-      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
-    if (u.pathname === "/" || u.pathname.startsWith("/app")) { // Oberfläche zum Testen im Browser
-      const rel = u.pathname.replace(/^\/app\/?/, "").replace(/^\/$/, "") || "index.html";
-      const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
-      if (u.pathname === "/") return Response.redirect("/app/", 302);
-      return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
+    try { return await route(req, srv); } catch (error) {
+      recordError({ category: "daemon", source: "jarvisd/http", message: String((error as Error)?.message ?? error), error,
+        context: { method: req.method, path: new URL(req.url).pathname } });
+      return Response.json({ ok: false, error: String(error) }, { status: 500 });
     }
-    if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
-    if (u.pathname === "/models") return Response.json(models = await listModels());
-    if (u.pathname === "/tool" && req.method === "POST") {
-      const { target, cmd } = await req.json();
-      return Response.json(await runTool(target, cmd));
-    }
-    if (u.pathname === "/stop" && req.method === "POST") { await stop(); return Response.json({ ok: true }); }
-    if (u.pathname === "/chat" && req.method === "POST") { // für Tests ohne UI
-      const { text, model } = await req.json(); await chat(text, model); return Response.json({ ok: true });
-    }
-    return new Response("jarvisd", { status: 404 });
   },
   websocket: {
     open(ws) {
@@ -326,9 +367,67 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       }
     },
     async message(ws, raw) {
-      if (ws.data.kind === "browser") return browser.receive(String(raw));
-      const msg = JSON.parse(String(raw));
+      try { await socketMessage(ws, String(raw)); } catch (error) {
+        recordError({ category: ws.data.kind === "browser" ? "extension" : "daemon", source: `jarvisd/ws-${ws.data.kind}`,
+          message: String((error as Error)?.message ?? error), error, context: { raw: String(raw).slice(0, 500) } });
+      }
+    },
+  },
+});
+
+// ---------- Fehler-Log-API (docs/errors.md) ----------
+async function errorsRoute(req: Request, u: URL): Promise<Response | undefined> {
+  if (u.pathname === "/errors" && req.method === "GET") return Response.json(listErrors(u.searchParams.get("category") ?? undefined));
+  if (u.pathname === "/errors" && req.method === "POST") { // Meldung von Oberfläche, Erweiterung, MCP (error_report) oder anderen Prozessen
+    const b = await req.json().catch(() => undefined) as Record<string, any> | undefined;
+    if (!b || typeof b !== "object") return Response.json({ ok: false, error: "JSON-Objekt erwartet" }, { status: 400 });
+    const category: ErrorCategory = CATEGORIES.includes(b.category) ? b.category : "tool";
+    const message = String(b.message ?? "").trim();
+    if (!message) return Response.json({ ok: false, error: "message fehlt" }, { status: 400 });
+    const source = String(b.source ?? "http/report");
+    const entry = b.screenshot === false || (b.target !== "browser" && b.target !== "desktop")
+      ? recordError({ category, source, message, context: { ...b.context, mode: settings.mode, model: settings.model } })
+      : await logToolError(b.target, { cmd: "report", tab: b.tab, id: b.id, rect: b.rect }, message, { category, source, context: b.context });
+    return Response.json(entry ? { ok: true, id: entry.id, screenshot: !!entry.screenshot } : { ok: false, error: "nicht geschrieben" });
+  }
+  const m = u.pathname.match(/^\/errors\/([0-9a-f]{12})(\/resolve)?$/);
+  if (m && (req.method === "DELETE" || (req.method === "POST" && m[2]))) {
+    const ok = resolveError(m[1]);
+    return Response.json(ok ? { ok } : { ok, error: "unbekannte Fehler-ID" }, { status: ok ? 200 : 404 });
+  }
+  return undefined;
+}
+
+async function route(req: Request, srv: any) {
+    const u = new URL(req.url);
+    if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
+    if (u.pathname === "/browser" || u.pathname === "/ui")
+      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
+    if (u.pathname === "/" || u.pathname.startsWith("/app")) { // Oberfläche zum Testen im Browser
+      const rel = u.pathname.replace(/^\/app\/?/, "").replace(/^\/$/, "") || "index.html";
+      const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
+      if (u.pathname === "/") return Response.redirect("/app/", 302);
+      return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
+    }
+    if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
+    if (u.pathname === "/models") return Response.json(models = await listModels());
+    if (u.pathname === "/tool" && req.method === "POST") {
+      const { target, cmd } = await req.json();
+      return Response.json(await runTool(target, cmd));
+    }
+    if (u.pathname === "/stop" && req.method === "POST") { await stop(); return Response.json({ ok: true }); }
+    if (u.pathname === "/chat" && req.method === "POST") { // für Tests ohne UI
+      const { text, model } = await req.json(); await chat(text, model); return Response.json({ ok: true });
+    }
+    return new Response("jarvisd", { status: 404 });
+}
+
+async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
+      if (ws.data.kind === "browser") return browser.receive(raw);
+      const msg = JSON.parse(raw);
       if (msg.type === "chat") await chat(msg.text, msg.model, false, [], ws.data.fresh);
+      else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
+        context: { where: msg.where, stack: String(msg.stack ?? "").slice(0, 2000), voice, mode: settings.mode } });
       else if (msg.type === "stop") await stop();
       else if (msg.type === "settings") {
         settings = { ...settings, ...msg.settings }; save();
@@ -340,11 +439,24 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       else if (msg.type === "history") ws.send(JSON.stringify({ type: "history", sessions: await history() }));
       else if (msg.type === "open") ws.send(JSON.stringify({ type: "messages", messages: await openSession(msg.id) }));
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
-    },
-  },
+}
+
+// Abstürze und vergessene Promise-Fehler landen im Fehler-Log statt nur auf stderr.
+process.on("unhandledRejection", error => {
+  recordError({ category: "daemon", source: "jarvisd/unhandledRejection", message: String((error as Error)?.message ?? error), error });
+  console.error(error);
+});
+process.on("uncaughtException", error => {
+  recordError({ category: "daemon", source: "jarvisd/crash", message: error.message, error, context: { mode: settings.mode, model: settings.model, voice, busy } });
+  console.error(error);
+  process.exit(1);
 });
 
-await brain.start();
+try { await brain.start(); } catch (error) {
+  recordError({ category: "model", source: "jarvisd/opencode-start", message: String((error as Error)?.message ?? error), error, context: { workspace } });
+  console.error(error);
+  process.exit(1);
+}
 models = await listModels();
 console.log(`jarvisd bereit: http://127.0.0.1:${PORT} · ${models.length} Modelle · Standard ${settings.model}`);
 for (const sig of ["SIGINT", "SIGTERM"] as const)
