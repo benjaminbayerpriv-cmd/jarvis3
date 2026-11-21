@@ -7,7 +7,7 @@ import { BlurText } from "./blurtext.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
 
 const $ = s => document.querySelector(s);
-const DAEMON = (location.protocol.startsWith("http") && location.port === "7777") ? location.host : "127.0.0.1:7777";
+const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
 
 // ---------- Icons ----------
 export function icon(name, cls = "ic") {
@@ -57,7 +57,7 @@ function setOffline(off) {
 
 // Mehrere Chats laufen gleichzeitig: Ereignisse tragen die Chat-ID und gelten nur für den Chat, den diese Oberfläche gerade zeigt.
 // "Läuft" und der Stopp-Knopf beziehen sich auf den gezeigten Chat; die übrigen laufenden Chats stehen in der Seitenleiste.
-const CHAT_EVENTS = new Set(["delta", "reasoning", "tool", "latency", "error", "stopped", "done", "notice", "messages"]);
+const CHAT_EVENTS = new Set(["delta", "reasoning", "tool", "latency", "error", "stopped", "done", "notice", "messages", "visual"]);
 const syncBusy = () => { state.busy = !!currentSession && (state.busySessions || []).includes(currentSession); };
 const openChat = id => { currentSession = id; renderState(); send({ type: "open", id }); };
 let runningKey = "";
@@ -696,8 +696,10 @@ function renderMessages(msgs = []) {
     else {
       const n = $("#tplJarvis").content.firstElementChild.cloneNode(true);
       n.classList.add("done");
-      for (const v of m.visuals || []) { n.querySelector(".blocks").append(visualCard(v)); rememberVisual(v); }
-      if (m.text) { const md = document.createElement("div"); md.className = "md"; md.innerHTML = renderMarkdown(m.text); n.querySelector(".blocks").append(md); }
+      const blocks = n.querySelector(".blocks");
+      const addText = t => { if (!t.trim()) return; const md = document.createElement("div"); md.className = "md"; md.innerHTML = renderMarkdown(t); blocks.append(md); };
+      if (m.order) { let t = ""; for (const o of m.order) { if (o.visual) { addText(t); t = ""; blocks.append(visualCard(o.visual)); rememberVisual(o.visual); } else t += o.text; } addText(t); }
+      else addText(m.text);
       turns.append(n);
     }
   }
@@ -939,6 +941,10 @@ function renderViewerTabs() {
     const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick; box.append(b);
   };
   mk("Automatisch", viewerPinned === null, () => chooseViewer(null), icon("sparkles"), "Dem Tab oder Fenster folgen, in dem Jarvis gerade arbeitet");
+  for (const v of viewerVisuals) {
+    const key = `vis:${v.id}`;
+    mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
+  }
   for (const t of viewerTabs) {
     const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
     mk(t.title || t.url || "Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, t.url || t.title);
@@ -948,10 +954,6 @@ function renderViewerTabs() {
     const key = `win:${w.id}`;
     mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
       icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
-  }
-  for (const v of viewerVisuals) {
-    const key = `vis:${v.id}`;
-    mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
   }
   const empty = $("#viewerEmpty");
   if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
@@ -1064,7 +1066,7 @@ function showFrame(m) {
 function viewerTabsMessage(m) {
   viewerTabs = m.tabs || [];
   viewerWindows = m.windows || [];
-  if (Object.hasOwn(m, "pinned")) viewerPinned = m.pinned;
+  if (Object.hasOwn(m, "pinned") && !String(viewerPinned).startsWith("vis:")) viewerPinned = m.pinned;
   if (!viewer.hidden) renderViewerTabs();
 }
 const closeViewer = () => { state.liveView = false; send({ type: "liveview", on: false }); hideViewer(); };
@@ -1108,7 +1110,7 @@ function visualMedia(v, f, big = false) {
   if (isHtml(f)) {
     const fr = document.createElement("iframe");
     fr.src = visualUrl(v, f); fr.title = v.title; fr.loading = "lazy";
-    fr.setAttribute("sandbox", "allow-scripts allow-popups");
+    // abgeschottet wird über den CSP-Header "sandbox" von jarvisd; ein sandbox-Attribut zusätzlich ließ die Seite leer
     if (!big) fr.className = "visual-frame";
     return fr;
   }
@@ -1448,7 +1450,7 @@ function startWaves() { if (!rafId) { micRaw = outRaw = 0; lastT = 0; rafId = re
 function stopWaves() { cancelAnimationFrame(rafId); rafId = 0; micLvl = outLvl = micRaw = outRaw = 0; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); }
 
 function speechEvent(m) {
-  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillAudioDevices(); }
+  if (m.event === "ready" && m.devices) { state.devices = m.devices; fillDeviceSelect($("#setMic"), state.devices?.input, state.micDevice); fillDeviceSelect($("#setSpeaker"), state.devices?.output, state.speakerDevice); }
   switch (m.event) {
     case "level": {
       micRaw = Math.max(micRaw, m.mic ?? 0); outRaw = Math.max(outRaw, m.out ?? 0);

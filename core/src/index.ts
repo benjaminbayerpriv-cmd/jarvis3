@@ -55,7 +55,7 @@ const BASE_OPENCODE_CONFIG = {
 };
 writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
-const brain = new OpenCode(4096, workspace);
+const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
 const projects = new Projects();
@@ -347,6 +347,7 @@ function readChatMessage(message: any) {
   const parts = message.parts ?? [];
   const role = message.info?.role;
   const blocks: string[] = [], names: string[] = [], images: PromptImage[] = [], text: string[] = [], visuals: Visual[] = [];
+  const order: ({ text: string } | { visual: Visual })[] = []; // Reihenfolge von Text und Grafiken in einer Antwort
   for (const part of parts) {
     if (part.type === "text" && !part.synthetic && typeof part.text === "string") {
       if (role === "user" && part.text.startsWith(ATTACHMENT_HEADER) && part.text.includes("\n")) {
@@ -360,14 +361,15 @@ function readChatMessage(message: any) {
         } catch { /* normaler Nachrichtentext */ }
       }
       text.push(part.text);
+      if (role === "assistant") order.push({ text: part.text });
     } else if (part.type === "tool" && typeof part.state?.output === "string") {
-      for (const id of markers(part.state.output)) { const v = getVisual(id); if (v) visuals.push(v); }
+      for (const id of markers(part.state.output)) { const v = getVisual(id); if (v) { visuals.push(v); order.push({ visual: v }); } }
     } else if (role === "user" && part.type === "file" && /^data:image\/(png|jpe?g|gif|webp);base64,/.test(part.url)) {
       images.push({ mime: part.mime, url: part.url, filename: part.filename });
     }
   }
   if (!names.length) names.push(...images.map(image => image.filename || "Bild"));
-  const view = { id: message.info?.id, role, text: text.join(""), files: names.map(name => ({ name })), visuals };
+  const view = { id: message.info?.id, role, text: text.join(""), files: names.map(name => ({ name })), visuals, ...(visuals.length ? { order } : {}) };
   return { view, saved: { text: blocks.join("\n\n"), images, names } };
 }
 
@@ -927,7 +929,12 @@ async function visualize(b: Record<string, any>) {
     recordError({ category: "tool", source: "jarvisd/visualize", message: "Visualisierung fehlgeschlagen", error, context: { kind: b.kind, title } });
     return { ok: false, error: String((error as Error)?.message ?? error) };
   }
-  if (v.files.length) broadcast({ type: "visual", ...v });
+  if (v.files.length) { // dem Chat zuordnen, der das Werkzeug gerade benutzt
+    const sid = activeTurn?.sid && busySessions.has(activeTurn.sid) ? activeTurn.sid : busySessions.size === 1 ? [...busySessions][0] : undefined;
+    const m = { type: "visual", ...v, ...(sid ? { session: sid } : {}) };
+    if (sid) runBuffer.add(sid, m as any);
+    broadcast(m);
+  }
   if (v.error && !v.files.length) return { ok: false, error: v.error, stdout: v.stdout };
   return { ok: true, ...v, marker: MARKER(v.id), url: `http://127.0.0.1:${PORT}/visual/${v.id}/` };
 }
