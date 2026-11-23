@@ -14,6 +14,7 @@ import { correct, recognitionPrompt } from "./lexicon";
 import { recordError, listErrors, resolveError, markPng, toImageBox, CATEGORIES, type ErrorCategory } from "./errorlog";
 import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
+import { DEAD_LEVEL, nextMicStep } from "./mic-heal";
 import { Capture } from "./capture";
 import { applyImport, expandTemplate, loadStore, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
 import { Preview, type PreviewTarget } from "./preview";
@@ -116,24 +117,35 @@ let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean }> | undefined;
 let speechEpoch = 0;
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { if (!settings.voiceLog) return; try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
-let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0, micRestarted = false;
+let micPeak = 0, micWatch: ReturnType<typeof setTimeout> | undefined, lastLevelAt = 0, lastRestart = 0;
 const speaking = new Set<number>();
 const speechStarted = new Map<number, () => void>();
-// Mikrofon-Wächter: kommt nach dem Start des Zuhörens 7 s lang kein Pegel, ist das Gerät stumm oder der Sidecar hat die Audiogeräte
-// veraltet. Einmal pro Gespräch wird der Sidecar dann automatisch neu gestartet (liest die Geräte frisch ein), danach folgt ein Hinweis.
+// Mikrofon-Wächter mit Selbstheilung (mic-heal.ts): kommt nach dem Start des Zuhörens 7 s lang kein Pegel (exakt 0), ist das Gerät
+// stumm, der Sidecar hat die Audiogeräte veraltet oder macOS verweigert das Mikrofon. Der Wächter probiert selbst nacheinander:
+// Sidecar neu starten, dann andere echte Mikrofone; erst danach folgt ein Hinweis. Kommt irgendwann Signal, beginnt alles von vorn.
+let micRestarted = false; const micTried = new Set<number | null>();
+function micHealthy() { micRestarted = false; micTried.clear(); }
 function armMicWatch() {
   clearTimeout(micWatch); micPeak = 0;
-  if (voice !== "live" && voice !== "dictate") { micRestarted = false; return; }
+  if (voice !== "live" && voice !== "dictate") { micHealthy(); return; }
   micWatch = setTimeout(() => {
-    if ((voice !== "live" && voice !== "dictate") || micPeak >= 0.004) return;
-    if (!micRestarted && speech.connected) {
-      micRestarted = true;
-      restartSidecar(`Mikrofon „${micLabel()}“ lieferte kein Signal`);
-    } else broadcast({ type: "notice", text: `Das Mikrofon „${micLabel()}“ liefert kein Signal. Wähle in den Einstellungen ein anderes Mikrofon oder den Systemstandard.` });
+    if (voice !== "live" && voice !== "dictate") return;
+    if (micPeak >= DEAD_LEVEL) { micHealthy(); return; }
+    if (!speech.connected) { armMicWatch(); return; }          // Sidecar startet gerade: danach neu prüfen
+    micTried.add(settings.micDevice ?? audioDevices?.input.find(d => d.default)?.id ?? null);
+    const step = nextMicStep(micRestarted, audioDevices?.input ?? [], micTried);
+    if (step.action === "restart") { micRestarted = true; restartSidecar(`Mikrofon „${micLabel()}“ lieferte kein Signal`, true); armMicWatch(); }
+    else if (step.action === "device") {
+      settings = { ...settings, micDevice: step.id, micName: step.name }; save();
+      micTried.add(step.id);
+      vlog(`Mikrofon ohne Signal -> versuche „${step.name}“`);
+      broadcast({ type: "notice", text: `Das Mikrofon lieferte kein Signal – ich versuche „${step.name}“.` });
+      configureSpeech(true); broadcast(state()); armMicWatch();
+    } else broadcast({ type: "notice", text: `Kein Mikrofon liefert ein Signal. Prüfe in den macOS-Einstellungen unter Datenschutz & Sicherheit → Mikrofon, ob das Programm, das Jarvis startet, erlaubt ist, und die Eingangslautstärke.` });
   }, 7000);
 }
-function restartSidecar(reason: string) {
-  if (!sidecar || Date.now() - lastRestart < 30_000) return;
+function restartSidecar(reason: string, force = false) {
+  if (!sidecar || (!force && Date.now() - lastRestart < 30_000)) return;
   lastRestart = Date.now();
   vlog(`Sprach-Sidecar wird neu gestartet: ${reason}`);
   broadcast({ type: "notice", text: `${reason} – das Sprachmodul startet neu (ca. 30 s).` });
