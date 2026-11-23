@@ -5,6 +5,7 @@ export const defaults = {
   mode: "browser" as "browser" | "computer",
   lofi: false,
   liveView: true,
+  lanAccess: false,
   micDevice: null as number | null,
   micName: null as string | null,
   speakerDevice: null as number | null,
@@ -31,7 +32,7 @@ export function parseSettings(input: unknown, stored = false): Patch {
   if (!input || typeof input !== "object" || Array.isArray(input)) return {};
   const value = input as Record<string, unknown>;
   const patch: Patch = {};
-  const switches = ["lofi", "liveView", "spokenReplies", "actionAnnouncements", "previewAuto", "autoChatTitles",
+  const switches = ["lofi", "liveView", "lanAccess", "spokenReplies", "actionAnnouncements", "previewAuto", "autoChatTitles",
     "autoProjects", "errorScreenshots", "voiceLog"] as const;
   for (const key of switches) if (typeof value[key] === "boolean") patch[key] = value[key];
   if (nonempty(value.model)) patch.model = value.model;

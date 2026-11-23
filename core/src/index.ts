@@ -16,6 +16,7 @@ import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
 import { Capture } from "./capture";
 import { applyImport, expandTemplate, loadStore, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
+import { MobileHttp, mobileAdminOrigin, mobileMessage, type UiSocket } from "./mobile-http";
 import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
 import { parseRange, readUsage, summarize } from "./usage";
@@ -26,7 +27,7 @@ import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, type Visu
 import { needsChatTitle, parseChatTitle, provisionalChatTitle, titleExcerpt, visibleChatTitle, type ChatMeta } from "./chat-title";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
-const HOME = join(homedir(), ".jarvis3");
+const HOME = process.env.JARVIS_DATA_DIR ?? join(homedir(), ".jarvis3");
 const SETTINGS = join(HOME, "settings.json");
 const CHAT_META = join(HOME, "chat-meta.json");
 const CHAT_FOLDERS = join(HOME, "chat-folders.json");
@@ -58,7 +59,7 @@ writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, 
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
-const projects = new Projects();
+const projects = new Projects(process.env.JARVIS_DATA_DIR ? join(HOME, "projects") : undefined);
 try { projects.load(); } catch (error) {
   recordError({ category: "daemon", source: "jarvisd/projects-load", message: "Projekte konnten nicht gelesen werden", error });
 }
@@ -93,10 +94,10 @@ const runBuffer = new RunBuffer();
 const isBusy = () => !!session && busySessions.has(session);
 let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 
-const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
-const uiIds = new WeakMap<ServerWebSocket<{ kind: string; fresh?: boolean }>, number>();
+const uis = new Set<ServerWebSocket<UiSocket>>();
+const uiIds = new WeakMap<ServerWebSocket<UiSocket>, number>();
 let uiSeq = 0;
-const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean }>) => {
+const uiId = (ws: ServerWebSocket<UiSocket>) => {
   let id = uiIds.get(ws);
   if (!id) { id = ++uiSeq; uiIds.set(ws, id); }
   return id;
@@ -112,7 +113,7 @@ const state = () => ({ type: "state", ...settings, extStale: extensionStale, bus
 let voice: "off" | "live" | "dictate" | "muted" = "off";
 // Nur die Oberfläche, die Live gestartet hat, darf es auch beenden. Andere UIs (z. B. eine vergessene
 // Registerkarte oder ein zweiter Client) schickten sonst sofort voice:off, sobald sie "live" im State sahen.
-let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean }> | undefined;
+let voiceOwner: ServerWebSocket<UiSocket> | undefined;
 let speechEpoch = 0;
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { if (!settings.voiceLog) return; try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
@@ -313,7 +314,7 @@ function setVoice(mode: typeof voice) {
   broadcast(state());
 }
 let lastIgnoredOffLog = 0;
-function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, mode: typeof voice) {
+function requestVoice(ws: ServerWebSocket<UiSocket>, mode: typeof voice) {
   vlog(`voice von ui #${uiId(ws)} ${ws.remoteAddress ?? "?"}: ${mode}`);
   if (mode === "off" && voiceOwner && voiceOwner !== ws) {
     // Kein broadcast(state()): alte Clients antworten auf jeden live-State mit off -> sonst Dauerschleife.
@@ -551,7 +552,7 @@ async function announceToolAction(target: "browser" | "desktop", cmd: Record<str
 }
 
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments,
-                    target?: string | null, replaces?: string) {
+                    target?: string | null, replaces?: string, requester?: ServerWebSocket<UiSocket>) {
   // target: der Chat, an den die Nachricht geht (Standard: der gezeigte); null = neuen Chat anlegen; replaces: der verlorene Chat, den er ersetzt
   const existing = fresh || target === null ? undefined : (target ?? session);
   const runId = ++runSeq;
@@ -581,12 +582,17 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   // Ein Modell, das gerade am Limit ist, gar nicht erst anfragen
   if ((limited.get(model) ?? 0) > Date.now()) {
     const alt = nextModel([...tried, model], !!click?.corner);
-    if (alt) { if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, target, replaces); }
+    if (alt) { if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` }); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, target, replaces, requester); }
   }
   const isNew = !fresh && !existing;
-  const sid = fresh ? await brain.createSession("Test") : (existing ?? (session = await brain.createSession()));
+  const sid = fresh ? await brain.createSession("Test") : (existing ?? await brain.createSession());
+  if (isNew && !requester) session = sid;
   turn.sid = sid; latestRun.set(sid, runId);
-  if (isNew) broadcast({ type: "session", id: sid, replaces });
+  if (isNew) {
+    const event = { type: "session", id: sid, replaces };
+    if (requester) requester.send(JSON.stringify(event));
+    else for (const ui of uis) if (!ui.data.device) ui.send(JSON.stringify(event));
+  }
   if (click && !fresh) recentClick = { session: sid, intent: click, text: clickContext ?? text, at: Date.now() };
   // Erste Titelfassung nach der ersten Nachricht; nach der Antwort wird ein thematischer Titel gesetzt.
   if (isNew) {
@@ -637,7 +643,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       if (alt) {
         switching = true; clearTimeout(ackTimer);
         if (!spoken) broadcast({ type: "notice", text: `${model.split("/").pop()} ist am Limit – wechsle zu ${alt.split("/").pop()}` });
-        brain.abort(sid).then(() => { busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid); });
+        brain.abort(sid).then(() => { busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid, undefined, requester); });
         return;
       }
       e = { kind: "error", message: "Alle Gratis-Modelle sind am Limit. Wähle ein lokales Modell (LM Studio) oder warte etwas." };
@@ -661,7 +667,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (e.kind === "error" && /Session not found|NotFoundError/i.test(e.message) && !turn.clickSent && !tried.includes("__session")) {
       switching = true; clearTimeout(ackTimer);
       if (!fresh && session === sid) session = undefined;
-      brain.abort(sid).catch(() => {}).then(() => { busySessions.delete(sid); return chat(text, model, spoken, [...tried, "__session"], fresh, atts, saved, null, sid); });
+      brain.abort(sid).catch(() => {}).then(() => { busySessions.delete(sid); return chat(text, model, spoken, [...tried, "__session"], fresh, atts, saved, null, sid, requester); });
       return;
     }
     // Lauf ist zu Ende, aber es kam weder Text noch ein Werkzeugaufruf an: bis zu zweimal automatisch neu versuchen
@@ -680,7 +686,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
             const last = (await sessionMessages(sid)).filter(m => m.info?.role === "user").pop();
             if (last?.info?.id) await fetch(`${brain.url}/session/${sid}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID: last.info.id }) });
           } catch { /* dann eben doppelt */ }
-          busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid);
+          busySessions.delete(sid); return chat(text, alt, spoken, [...tried, model], fresh, atts, saved, sid, undefined, requester);
         });
         return;
       }
@@ -828,11 +834,11 @@ async function updateChat(msg: any) {
   }
   broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
-async function rewindMessage(id: string, messageID: string) {
+async function rewindMessage(id: string, messageID: string, select = true) {
   if (busySessions.has(id)) await brain.abort(id);
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
   if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
-  session = id;
+  if (select) session = id;
   broadcast({ type: "messages", session: id, messages: chatHistory(await sessionMessages(id)) });
 }
 
@@ -1245,23 +1251,14 @@ async function previewWindows() {
     .slice(0, 12).map((w: any) => ({ id: w.id, app: w.app, title: w.title, onScreen: w.onScreen }));
 }
 
-Bun.serve<{ kind: string; fresh?: boolean }, {}>({
-  port: PORT, hostname: "127.0.0.1",
-  async fetch(req, srv) {
-    try { return await route(req, srv); } catch (error) {
-      recordError({ category: "daemon", source: "jarvisd/http", message: String((error as Error)?.message ?? error), error,
-        context: { method: req.method, path: new URL(req.url).pathname } });
-      return Response.json({ ok: false, error: String(error) }, { status: 500 });
-    }
-  },
-  websocket: {
+const uiWebsocket: import("bun").WebSocketHandler<UiSocket> = {
     maxPayloadLength: 48 * 1024 * 1024, // Anhänge kommen Base64-kodiert (bis ~25 MB Dateien)
     open(ws) {
       if (ws.data.kind === "browser") { browser.attach(ws); broadcast(state()); }
       else {
         vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
         // Erste Oberfläche nach Start/Neuladen: neuer Chat (die Oberfläche zeigt ohnehin einen leeren Chat)
-        if (uis.size === 0 && !ws.data.fresh) session = undefined;
+        if (uis.size === 0 && !ws.data.fresh && !ws.data.device) session = undefined;
         uis.add(ws); ws.send(JSON.stringify(state())); ws.send(JSON.stringify({ type: "projects", ...projects.data() })); history().then(s => ws.send(JSON.stringify({ type: "history", sessions: s, folders: folderLabels() })));
         ws.send(JSON.stringify({ type: "projects", ...projects.data() })); void syncProjects();
       }
@@ -1288,7 +1285,23 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
           message: String((error as Error)?.message ?? error), error, context: { bytes: String(raw).length } });
       }
     },
+  };
+const mobile = new MobileHttp(HOME, join(ROOT, "app/mobile"), PORT, uiWebsocket, serveVisual, () => stop(true), uis);
+try { mobile.setEnabled(settings.lanAccess); } catch (error) {
+  settings.lanAccess = false;
+  recordError({ category: "daemon", source: "jarvisd/mobil", message: "Handy-Zugriff konnte nicht starten", error });
+}
+
+Bun.serve<UiSocket>({
+  port: PORT, hostname: "127.0.0.1",
+  async fetch(req, srv) {
+    try { return await route(req, srv); } catch (error) {
+      recordError({ category: "daemon", source: "jarvisd/http", message: String((error as Error)?.message ?? error), error,
+        context: { method: req.method, path: new URL(req.url).pathname } });
+      return Response.json({ ok: false, error: String(error) }, { status: 500 });
+    }
   },
+  websocket: uiWebsocket,
 });
 
 // ---------- Fehler-Log-API (docs/errors.md) ----------
@@ -1316,9 +1329,11 @@ async function errorsRoute(req: Request, u: URL): Promise<Response | undefined> 
 
 async function route(req: Request, srv: any) {
     const u = new URL(req.url);
+    const admin = await mobile.admin(req, u, srv.requestIP(req)?.address ?? "");
+    if (admin) return admin;
     if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
     if (u.pathname === "/browser" || u.pathname === "/ui")
-      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
+      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh"), mobileAdmin: mobileAdminOrigin(req, u) } }) ? undefined : new Response("upgrade", { status: 400 });
     // "/app" ohne Schrägstrich würde die relativen Pfade (styles.css, app.js) auf "/styles.css" auflösen: ungestylte Seite. Darum umleiten.
     if (u.pathname === "/" || u.pathname === "/app") return Response.redirect(new URL("/app/", u), 302);
     if (u.pathname.startsWith("/app/")) { // Oberfläche zum Testen im Browser
@@ -1347,11 +1362,15 @@ async function route(req: Request, srv: any) {
     return new Response("jarvisd", { status: 404 });
 }
 
-async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
+async function socketMessage(ws: ServerWebSocket<UiSocket>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
-      const msg = JSON.parse(raw);
+      let msg = JSON.parse(raw);
+      if (ws.data.device) {
+        msg = mobileMessage(msg);
+        if (!msg) { ws.send(JSON.stringify({ type: "error", message: "Diese Aktion ist auf dem Handy nicht verfügbar." })); return; }
+      }
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
-      if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
+      if (!ws.data.device && (msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
       if (msg.type === "chat" || msg.type === "resend" || msg.type === "replace") {
         const atts: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : [];
         const bad = validate(atts);
@@ -1362,17 +1381,17 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         }
         const text = String(msg.text ?? "");
         if (msg.type === "chat") {
-          if (text.trim() || atts.length) await chat(text, msg.model, false, [], ws.data.fresh, atts);
+          if (text.trim() || atts.length) await chat(text, msg.model, false, [], ws.data.fresh, atts, undefined, ws.data.device ? msg.session ?? null : undefined, undefined, ws.data.device ? ws : undefined);
         } else {
           const id = String(msg.id), messageID = String(msg.messageID);
           const original = (await sessionMessages(id)).find(message => message.info?.id === messageID && message.info.role === "user");
           if (!original) throw new Error("Nachricht nicht gefunden");
           const { view, saved } = readChatMessage(original);
           const nextText = msg.type === "resend" ? view.text : text;
-          await rewindMessage(id, messageID);
+          await rewindMessage(id, messageID, !ws.data.device);
           const files = [...view.files, ...atts.map(file => ({ name: file.name }))];
-          broadcast({ type: "user", text: nextText, files });
-          await chat(nextText, settings.model, false, [], false, atts, saved);
+          if (!ws.data.device) broadcast({ type: "user", text: nextText, files });
+          await chat(nextText, settings.model, false, [], false, atts, saved, id);
         }
       }
       else if (msg.type === "client_error") recordError({ category: "ui", source: "app/ui", message: String(msg.message ?? "Fehler in der Oberfläche"),
@@ -1385,6 +1404,14 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           const selected = audioDevices?.[side].find(d => d.id === patch[key]);
           if (patch[key] !== null && !selected) { delete patch[key]; continue; }
           patch[nameKey] = selected?.name ?? null;
+        }
+        if (!ws.data.mobileAdmin) delete patch.lanAccess;
+        if (patch.lanAccess !== undefined && patch.lanAccess !== settings.lanAccess) {
+          try { mobile.setEnabled(patch.lanAccess); } catch (error) {
+            delete patch.lanAccess;
+            ws.send(JSON.stringify({ type: "notice", text: "Handy-Zugriff konnte nicht gestartet werden." }));
+            recordError({ category: "daemon", source: "jarvisd/mobil", message: "Handy-Zugriff konnte nicht gestartet werden", error });
+          }
         }
         const previous = settings;
         settings = { ...settings, ...patch };
@@ -1418,7 +1445,9 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") {
         const id = String(msg.id);
-        const opened = await openSession(id);
+        const opened = ws.data.device
+          ? { messages: chatHistory(await sessionMessages(id), busySessions.has(id)), running: busySessions.has(id) }
+          : await openSession(id);
         ws.send(JSON.stringify({ type: "messages", session: id, messages: opened.messages, running: opened.running }));
         if (opened.running) for (const event of runBuffer.get(id)) ws.send(JSON.stringify(event)); // halbfertige Antwort nachreichen
       }
@@ -1456,7 +1485,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
-      else if (msg.type === "new") { session = undefined; broadcast(state()); }
+      else if (msg.type === "new" && !ws.data.device) { session = undefined; broadcast(state()); }
       else if (msg.type === "usage") ws.send(JSON.stringify({ type: "usage", ...summarize(readUsage(), parseRange(msg.range)) }));
       else if (msg.type === "projects") ws.send(JSON.stringify({ type: "projects", ...projects.data() }));
       else if (msg.type === "project_action") {
@@ -1486,4 +1515,4 @@ void repairChatTitles();
 setInterval(() => void repairChatTitles(), TITLE_RETRY_MS);
 console.log(`jarvisd bereit: http://127.0.0.1:${PORT} · ${models.length} Modelle · Standard ${settings.model}`);
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { brain.stop(); desktop.stop(); process.exit(0); });
+  process.on(sig, () => { mobile.setEnabled(false); brain.stop(); desktop.stop(); process.exit(0); });

@@ -187,6 +187,15 @@
           <div class="setting"><div><label for="setChatModel" id="setChatModel-label">Chatmodell</label><p id="setChatModel-desc">Für normale Chatnachrichten.</p></div><select id="setChatModel" aria-describedby="setChatModel-desc" data-daemon="model"></select></div>
           <div class="setting"><div><label for="set-autoChatTitles" id="set-autoChatTitles-label">KI-Titel für Chats</label><p id="set-autoChatTitles-desc">Erstellt nach der ersten Antwort einen Titel zum Thema. Ist die Option aus, verwendet Jarvis Stichwörter.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoChatTitles-label" aria-describedby="set-autoChatTitles-desc" id="set-autoChatTitles" data-daemon="autoChatTitles"></button></div>
           <div class="setting"><div><label for="set-autoProjects" id="set-autoProjects-label">Chats automatisch zuordnen</label><p id="set-autoProjects-desc">Jarvis prüft, ob neue Chats zu einem vorhandenen Projekt passen.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoProjects-label" aria-describedby="set-autoProjects-desc" id="set-autoProjects" data-daemon="autoProjects"></button></div>
+          <div class="setting"><div><label for="set-lanAccess" id="set-lanAccess-label">Handy-Zugriff</label><p>Verbindet ein Handy im privaten Netzwerk mit Jarvis.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-lanAccess-label" id="set-lanAccess" data-daemon="lanAccess"></button></div>
+          <div class="setting" id="mobilePairing" hidden>
+            <div><button type="button" class="chip" id="mobilePairStart">Gerät koppeln</button>
+              <p id="mobileStatus" role="status"></p><div id="mobileAddresses"></div>
+              <output id="mobilePin"></output><p id="mobileFingerprint"></p>
+              <img id="mobileQr" width="200" height="200" alt="Kopplungs-QR-Code" hidden>
+              <ul id="mobileDevices"></ul>
+            </div>
+          </div>
           <div class="setting" id="setAutostartRow" hidden><div><label id="setAutostartLabel" for="setAutostart">Beim Anmelden starten</label><p id="setAutostartStatus" role="status">Startet Jarvis im Hintergrund.</p></div><button type="button" class="toggle-lg" role="switch" id="setAutostart" aria-labelledby="setAutostartLabel" aria-describedby="setAutostartStatus" aria-checked="false"></button></div>
         </section>
         <section class="set-pane" data-pane="voice" hidden>

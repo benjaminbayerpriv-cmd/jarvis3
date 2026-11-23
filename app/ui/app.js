@@ -91,6 +91,7 @@ function handle(m) {
     case "tabs": viewerTabsMessage(m); break;
     case "commands": slashItems = m.items || []; renderSlash(); break;
     case "extensions": renderExtensions(m); break;
+    case "mobile_devices": clearMobileCode(); void refreshMobileDevices(); break;
     case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
@@ -1623,7 +1624,7 @@ function showSettingsPane(name) {
   });
   document.querySelectorAll(".set-pane").forEach(p => { p.hidden = p.dataset.pane !== name; });
   $("#setTitle").textContent = PANES[name] || "";
-  if (name === "general") void refreshAutostart();
+  if (name === "general") { void refreshAutostart(); if (state.lanAccess) void refreshMobileDevices(); }
   if (name === "usage") requestUsage();
   if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
 }
@@ -1752,7 +1753,71 @@ const paintSetting = (control, value) => {
 };
 
 const numeric = new Set(["micDevice", "speakerDevice", "voiceSpeed", "previewIdleSeconds"]);
+let mobileEnabled = false;
+let mobileExpiry;
+const mobileAdmin = async (path, method = "GET") => {
+  const response = await fetch(`http://${DAEMON}${path}`, { method });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "Anfrage fehlgeschlagen.");
+  return data;
+};
+function mobileAddresses(addresses) {
+  $("#mobileAddresses").replaceChildren(...addresses.map(url => {
+    const row = document.createElement("p");
+    const link = document.createElement("a");
+    link.href = url;
+    link.textContent = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    row.append(link);
+    return row;
+  }));
+}
+function clearMobileCode() {
+  clearTimeout(mobileExpiry);
+  $("#mobileQr").hidden = true;
+  $("#mobileQr").removeAttribute("src");
+  $("#mobilePin").textContent = "";
+  $("#mobileFingerprint").textContent = "";
+}
+async function refreshMobileDevices() {
+  try {
+    const { devices, addresses } = await mobileAdmin("/devices");
+    mobileAddresses(addresses);
+    $("#mobileDevices").replaceChildren(...devices.map(device => {
+      const row = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Widerrufen";
+      button.onclick = async () => {
+        try { await mobileAdmin(`/devices/${device.id}`, "DELETE"); await refreshMobileDevices(); }
+        catch (error) { $("#mobileStatus").textContent = error.message; }
+      };
+      row.append(document.createTextNode(device.name + " "), button);
+      return row;
+    }));
+  } catch (error) { $("#mobileStatus").textContent = error.message; }
+}
+$("#mobilePairStart").onclick = async () => {
+  try {
+    clearMobileCode();
+    const data = await mobileAdmin("/pair/start", "POST");
+    mobileAddresses(data.addresses);
+    $("#mobileQr").src = data.qr;
+    $("#mobileQr").hidden = false;
+    $("#mobilePin").textContent = `PIN ${data.pin}`;
+    $("#mobileFingerprint").textContent = `Zertifikat ${data.fingerprint}`;
+    $("#mobileStatus").textContent = "Der Code gilt zwei Minuten.";
+    mobileExpiry = setTimeout(() => { clearMobileCode(); void refreshMobileDevices(); }, Math.max(0, data.expires - Date.now()));
+  } catch (error) { $("#mobileStatus").textContent = error.message; }
+};
 function renderSettingsState() {
+  $("#mobilePairing").hidden = !state.lanAccess;
+  if (mobileEnabled !== !!state.lanAccess) {
+    mobileEnabled = !!state.lanAccess;
+    if (mobileEnabled) void refreshMobileDevices();
+    else clearMobileCode();
+  }
   fillModelSelect($("#setChatModel"), state.model);
   fillModelSelect($("#setVoiceModel"), state.voiceModel);
   fillDeviceSelect($("#setMic"), state.devices?.input, state.micDevice);
