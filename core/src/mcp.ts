@@ -206,6 +206,23 @@ server.tool("visualize_html",
   { html: z.string().max(200_000).describe("HTML-Inhalt (ganzes Dokument oder nur der Body) oder ein <svg>"), title: vtitle },
   async a => visualize({ kind: "html", html: a.html, title: a.title }));
 
+// ---------- Skills bei Bedarf (stehen nicht im Systemprompt) ----------
+server.tool("skill_list", "Listet die vom Nutzer aktivierten Skills (Anleitungen für bestimmte Aufgaben) mit kurzer Beschreibung. Rufe das auf, wenn eine Aufgabe nach einer Fachanleitung klingt (Design, Dokumente, Programmieren, Recherche …) – nicht bei jeder Frage. Danach den passenden Skill mit skill_read laden.",
+  {}, async () => {
+    try {
+      const list = await (await fetch(`${JARVISD}/skills`)).json() as { name: string; description: string }[];
+      return text(list.length ? list.map(s => `${s.name} – ${s.description || "(keine Beschreibung)"}`).join("\n") : "Keine Skills aktiviert (Einstellungen → Skills).");
+    } catch { return { ...text("Fehler: Skills nicht abrufbar"), isError: true }; }
+  });
+server.tool("skill_read", "Liest einen aktivierten Skill (SKILL.md) und nennt weitere Dateien des Skills, die du bei Bedarf mit dem Datei-Werkzeug (read) nachlesen kannst. Befolge den Skill danach für die Aufgabe.",
+  { name: z.string().describe("Name aus skill_list") }, async a => {
+    try {
+      const r = await (await fetch(`${JARVISD}/skills/${encodeURIComponent(a.name)}`)).json() as Record<string, any>;
+      if (!r.ok) return { ...text(`Fehler: ${r.error}`), isError: true };
+      return text(`${r.text}${r.files?.length ? `\n\n---\nWeitere Dateien in ${r.path}:\n${r.files.join("\n")}` : ""}`);
+    } catch { return { ...text("Fehler: Skill nicht abrufbar"), isError: true }; }
+  });
+
 // ---------- Fehler-Log (docs/errors.md) ----------
 server.tool("error_report", "Meldet einen Fehler ins zentrale Fehler-Log, wenn etwas nicht klappt und du es nicht selbst lösen kannst (Seite reagiert falsch, Element fehlt, Werkzeug liefert Unsinn). Bei Bildschirmbezug target angeben: es wird ein Screenshot gespeichert und die Stelle (id aus dem letzten scan oder rect) rot markiert.",
   { message: z.string().describe("Was ist schiefgegangen, was hast du erwartet?"),

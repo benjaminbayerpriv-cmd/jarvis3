@@ -28,3 +28,10 @@ MCP-Formate werden umgerechnet (stdio → `local` mit `command` + `args`, URL �
 
 ## WebSocket (UI ↔ jarvisd)
 `commands` → `{type:"commands", items:[{name, description, source: builtin|command|skill}]}` · `ext_list` → `{type:"extensions", mcp, skills, commands, plugins}` · `ext_scan {from}` → `{type:"ext_scan", items}` · `ext_import {from, ids}` · `ext_mcp {op: add|remove|toggle, name, entry|enabled}` · `ext_skill {name, enabled|remove}` · `ext_command {op: add|remove, name, description, template}` · `ext_plugin {op: add|remove, name}` (Antwort jeweils `extensions`) · `run_command {name, args}`.
+
+
+## Skills bei Bedarf und Funktions-Befehle
+- **Skills stehen nie im Systemprompt.** OpenCodes eigenes Skill-Werkzeug bekommt keinen Skill (`permission.skill: {"*": "deny"}`). Stattdessen hat Jarvis zwei Werkzeuge (`core/src/mcp.ts`): `skill_list` (aktivierte Skills mit Beschreibung) und `skill_read` (SKILL.md plus Liste weiterer Dateien zum Nachlesen). Er lädt nur den Skill, den er gerade braucht. Beliebig viele aktivierte Skills kosten damit keinen Kontext. Daten: `GET /skills`, `GET /skills/<name>`.
+- Importierte Skills starten aus; aktivieren geht in den Einstellungen → Skills. `/<skill> Aufgabe` lädt und befolgt den Skill.
+- **Funktions-Befehle** (`core/src/functions.ts`): `/computer`, `/browser`, `/chrome`, `/recherche`, `/diagramm`, `/projekt`, `/bildschirm`, `/tabs`, `/skills`. Jede Vorlage sagt dem Modell genau, welche Werkzeuge es in welcher Reihenfolge benutzen soll. `/computer` schaltet die Computer-Steuerung ein.
+- Achtung: Die Werkzeuge von **MCP-Servern** stehen weiter im Prompt. Ein Server mit Hunderten Werkzeugen (z. B. `rea`) allein kostet 60 000+ Tokens und sprengt das Limit kleiner Modelle.

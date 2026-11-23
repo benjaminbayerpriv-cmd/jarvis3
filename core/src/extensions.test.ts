@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyImport, expandTemplate, loadStore, parseMarkdown, saveStore, scanImport, writeWorkspace } from "./extensions";
+import { applyImport, enabledSkills, expandTemplate, loadStore, parseMarkdown, readSkill, saveStore, scanImport, skillCatalog, writeWorkspace } from "./extensions";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "jarvis-ext-"));
@@ -38,18 +38,25 @@ test("Claude/Codex-MCP-Formate werden zu OpenCode-Einträgen", () => {
   expect(readFileSync(join(ws, ".opencode", "command", "zusammenfassen.md"), "utf8")).toContain("description: Fasst zusammen");
 });
 
-test("Skills werden verknüpft, gesperrte Skills in der Konfiguration verweigert", () => {
+test("Skills stehen nicht im Systemprompt, werden aber bei Bedarf gelesen", () => {
   const dir = setup();
   const skill = join(dir, "quelle", "mein-skill"); mkdirSync(skill, { recursive: true });
   writeFileSync(join(skill, "SKILL.md"), "---\nname: mein-skill\ndescription: Testet\n---\nAnleitung");
   const store = loadStore();
   applyImport([{ id: "s", kind: "skill", name: "mein-skill", from: "claude", detail: "", status: "neu", data: { path: skill } }], store);
   expect(store.disabledSkills).toEqual(["mein-skill"]); // Import startet aus
-  store.disabledSkills = ["alt-skill"];
+  writeFileSync(join(skill, "referenz.md"), "mehr");
+  expect(skillCatalog(store)[0]).toMatchObject({ name: "mein-skill", description: "Testet", enabled: false });
+  expect(readSkill("mein-skill", store)).toMatchObject({ ok: false });             // importiert = aus
+  store.disabledSkills = [];                                                         // aktiviert
+  expect(enabledSkills(store).map(x => x.name)).toEqual(["mein-skill"]);
+  const read = readSkill("Mein-Skill", store);
+  expect(read.ok && read.text.includes("Anleitung") && read.files).toEqual(["referenz.md"]);
+  expect(readSkill("gibtsnicht", store)).toMatchObject({ ok: false });
   const ws = join(dir, "ws"); mkdirSync(ws);
   writeWorkspace(ws, {}, store);
-  expect(lstatSync(join(ws, ".opencode", "skills", "mein-skill")).isSymbolicLink()).toBe(true);
-  expect(JSON.parse(readFileSync(join(ws, "opencode.json"), "utf8")).permission.skill).toEqual({ "alt-skill": "deny" });
+  expect(existsSync(join(ws, ".opencode", "skills", "mein-skill"))).toBe(false);   // nicht mehr in OpenCode geladen
+  expect(JSON.parse(readFileSync(join(ws, "opencode.json"), "utf8")).permission.skill).toEqual({ "*": "deny" });  // nie im Systemprompt
 });
 
 test("Importsuche liefert nur Bekanntes ohne Absturz", () => {
