@@ -106,6 +106,9 @@ function handle(m) {
     case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
+    case "dt_open": dtOpen(m.id, m.url); break;
+    case "dt_close": dtClose(m.id); break;
+    case "dt_nav": dtNavigate(m.id, m.url); break;
     case "ib_clipboard": if (m.text) navigator.clipboard?.writeText(m.text).catch(() => {}); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
@@ -983,9 +986,10 @@ const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
 function renderViewerTabs() {
   const box = $("#viewerTabs"); box.replaceChildren();
-  const internalTabs = viewerTabs.filter(t => t.internal);
+  const directTabs = dtabs.map(t => ({ tab: t.id, title: t.title || hostOf(t.url) || "Neuer Tab", url: t.url, direct: true }));
+  const internalTabs = [...directTabs, ...viewerTabs.filter(t => t.internal)];
   // Browser-Ansicht: eigener Browser mit Tabs wie im Browser; Bildschirm-Quellen (Fenster, Chrome, Automatisch) liegen im Menü „Quellen“
-  const browserMode = state.internalBrowser !== false && (viewerInternal !== null || (internalTabs.length > 0 && (viewerPinned === null || internalTabs.some(t => t.tab === viewerPinned))));
+  const browserMode = state.internalBrowser !== false && (dActive !== null || viewerInternal !== null || (internalTabs.length > 0 && (viewerPinned === null || internalTabs.some(t => t.tab === viewerPinned))));
   viewer.toggleAttribute("data-browser", browserMode);
   $("#viewerSources").hidden = true;
   const mk = (label, sel, onclick, iconHtml = "", title = "", onclose = null, extra = "", into = box) => {
@@ -1008,9 +1012,10 @@ function renderViewerTabs() {
     const key = `vis:${v.id}`;
     mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title, null, extra, sources);
   }
+  for (const t of directTabs) mk(t.title, t.tab === dActive, () => selectDirect(t.tab), icon("world"), t.url || t.title, () => dtClose(t.tab));
   for (const t of viewerTabs) {
     if (browserMode && !t.internal) mk(t.title || t.url || "Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), tabFav(t), tabTitle(t), null, extra, sources);
-    else mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), tabFav(t), tabTitle(t), t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
+    else mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned && dActive === null, () => chooseViewer(t.tab), tabFav(t), tabTitle(t), t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
   }
   // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
   for (const w of viewerWindows) {
@@ -1026,7 +1031,7 @@ function renderViewerTabs() {
     box.append(b);
   }
   const empty = $("#viewerEmpty");
-  if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
+  if (String(viewerPinned).startsWith("vis:") || dActive !== null) empty.textContent = "";
   else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch kein Tab offen. Mit „Neuer Tab“ öffnest du selbst eine Seite, oder bitte Jarvis darum.";
   else empty.textContent = "";
 }
@@ -1039,6 +1044,7 @@ function openViewer(picker = false) {
   }
   viewer.hidden = false;
   syncViewerButtons();
+  if (dActive !== null) selectDirect(dActive);
   send({ type: "tabs" });
   clearInterval(viewerPoll); viewerPoll = setInterval(() => send({ type: "tabs" }), 3000);
   renderViewerTabs();
@@ -1069,7 +1075,7 @@ function viewerIdle() {
   viewer.dataset.idle = "1";
 }
 function chooseViewer(target) {
-  clearVisual(); setInternal(null);
+  clearVisual(); setInternal(null); leaveDirect();
   viewerPinned = target;
   if (target !== null) viewerPicker = false;
   resetViewerFrame();
@@ -1174,6 +1180,95 @@ function resetViewerWidth() {
 }
 viewerGrip.addEventListener("dblclick", resetViewerWidth);
 
+// ---------- Direkter Browser: echte Seiten im Rahmen (über den Proxy von jarvisd) ----------
+// Die Seite läuft als normales HTML in einem iframe (scharf, mit eigenem Scrollen und markierbarem Text). Jarvis steuert sie über einen
+// Agenten in der Seite; die Tabs gehören dieser Oberfläche und werden jarvisd gemeldet (dt_tabs).
+const dtabs = []; let dActive = null, dTimer = 0, dCursorTimer = 0;
+const hostOf = url => { try { return new URL(url).host.replace(/^www\./, ""); } catch { return ""; } };
+const openProxyUrl = url => `http://${DAEMON}/__jarvis__/open?u=${encodeURIComponent(url)}`;
+function normalizeUrl(input) {
+  const text = String(input || "").trim();
+  if (!text) return "about:blank";
+  if (/^(https?|file|about|data|chrome|blob):/i.test(text)) return text;
+  if (/^localhost(:\d+)?(\/|$)/i.test(text) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(text)) return "http://" + text;
+  if (/^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(text)) return "https://" + text;
+  return "https://www.google.com/search?q=" + encodeURIComponent(text);
+}
+function syncDirectTabs() {
+  clearTimeout(dTimer);
+  dTimer = setTimeout(() => send({ type: "dt_tabs", tabs: dtabs.map(t => ({ id: t.id, url: t.url, title: t.title })) }), 200);
+}
+function dtOpen(id, url) {
+  if (dtabs.some(t => t.id === id)) return;
+  const frame = document.createElement("iframe");
+  frame.className = "dframe"; frame.hidden = true; frame.title = "Seite";
+  frame.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen; autoplay; encrypted-media");
+  const real = url && url !== "about:blank" ? url : "";
+  if (real) frame.src = openProxyUrl(real);
+  dtabs.push({ id, url: real, title: "", frame });
+  $("#viewerDirect").append(frame);
+  if (viewer.hidden) openViewer();
+  selectDirect(id);
+  syncDirectTabs();
+}
+function selectDirect(id) {
+  const tab = dtabs.find(t => t.id === id); if (!tab) return;
+  clearVisual(); setInternal(null);
+  dActive = id;
+  if (viewerPinned !== null || viewerStreaming !== null) { viewerPinned = null; resetViewerFrame(); send({ type: "viewer_tab" }); } // laufenden Bildstrom beenden
+  viewer.dataset.direct = "1"; $("#viewerDirect").hidden = false; $("#viewerNav").hidden = false;
+  for (const t of dtabs) t.frame.hidden = t.id !== id;
+  if (document.activeElement !== urlInput) urlInput.value = tab.url;
+  $("#viewerEmpty").textContent = "";
+  renderViewerTabs();
+  if (!tab.url) setTimeout(() => urlInput.focus(), 50);
+}
+function leaveDirect() {
+  dActive = null; delete viewer.dataset.direct; $("#viewerDirect").hidden = true;
+  for (const t of dtabs) t.frame.hidden = true;
+}
+function dtClose(id) {
+  const i = dtabs.findIndex(t => t.id === id); if (i < 0) return;
+  dtabs[i].frame.remove(); dtabs.splice(i, 1);
+  if (dActive === id) {
+    leaveDirect();
+    const next = dtabs[i] || dtabs[i - 1];
+    if (next) selectDirect(next.id); else { $("#viewerNav").hidden = true; renderViewerTabs(); }
+  } else renderViewerTabs();
+  syncDirectTabs();
+}
+function dtNavigate(id, input) {
+  const tab = dtabs.find(t => t.id === id); if (!tab) return;
+  const url = normalizeUrl(input);
+  tab.url = url === "about:blank" ? "" : url;
+  tab.frame.src = url === "about:blank" ? "about:blank" : openProxyUrl(url);
+  urlInput.value = tab.url; tab.frame.focus();
+  syncDirectTabs();
+}
+const dtCommand = (id, cmd) => { const t = dtabs.find(x => x.id === id); try { t?.frame.contentWindow?.postMessage({ jv: "cmd", cmd }, "*"); } catch {} };
+function dtCursor(tab, x, y) { // Jarvis' Zeiger über der Seite
+  if (dActive !== tab.id) return;
+  let c = $("#viewerDirect .dcursor");
+  if (!c) { c = document.createElement("div"); c.className = "dcursor"; c.innerHTML = '<svg viewBox="0 0 24 30" width="22" height="28"><path d="M1 1v21l5.5-5 4 9.5 3.4-1.5-4-9H19z" fill="#a78bfa" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>'; $("#viewerDirect").append(c); }
+  c.style.transform = `translate(${x}px, ${y}px)`; c.classList.add("on");
+  clearTimeout(dCursorTimer); dCursorTimer = setTimeout(() => c.classList.remove("on"), 2500);
+}
+addEventListener("message", e => { // Meldungen der Agenten in den Seiten
+  const d = e.data;
+  if (!d || d.jv !== true) return;
+  const tab = dtabs.find(t => { try { return t.frame.contentWindow === e.source; } catch { return false; } });
+  if (!tab) return;
+  switch (d.kind) {
+    case "hello": e.source.postMessage({ jv: "tab", id: tab.id }, "*"); break;
+    case "nav":
+      tab.url = String(d.url || ""); tab.title = String(d.title || "");
+      if (dActive === tab.id && document.activeElement !== urlInput) urlInput.value = tab.url;
+      renderViewerTabs(); syncDirectTabs(); break;
+    case "open": send({ type: "dt_new", url: String(d.url || "") }); break;
+    case "cursor": dtCursor(tab, Number(d.x) || 0, Number(d.y) || 0); break;
+  }
+});
+
 // ---------- Eingebauter Browser: Adressleiste, Größe, Maus und Tastatur ----------
 let viewerInternal = null, viewerInfo = { w: 0, h: 0, dpr: 1 }, viewerSent = "", resizeTimer = 0;
 const urlInput = $("#viewerUrl");
@@ -1181,7 +1276,7 @@ function setInternal(tab, frame) {
   const changed = viewerInternal !== tab;
   viewerInternal = tab;
   if (changed) renderViewerTabs();
-  $("#viewerNav").hidden = tab === null;
+  $("#viewerNav").hidden = tab === null && dActive === null;
   if (tab === null) { delete viewer.dataset.internal; return; }
   viewer.dataset.internal = "1";
   if (frame) {
@@ -1207,11 +1302,21 @@ new ResizeObserver(() => fitInternal()).observe(viewerFrame);
 $("#vSources").onclick = e => { e.stopPropagation(); const m = $("#viewerSources"); m.hidden = !m.hidden; };
 $("#vNew").onclick = () => newBrowserTab();
 $("#vClose").onclick = () => closeViewer();
-const newBrowserTab = () => { send({ type: "ib", op: "new", url: "about:blank" }); setTimeout(() => urlInput.focus(), 400); };
-$("#viewerNav").onsubmit = e => { e.preventDefault(); const url = urlInput.value.trim(); if (viewerInternal !== null && url) { send({ type: "ib", op: "navigate", tab: viewerInternal, url }); vcanvas.focus(); } };
-$("#vBack").onclick = () => viewerInternal !== null && send({ type: "ib", op: "back", tab: viewerInternal });
-$("#vFwd").onclick = () => viewerInternal !== null && send({ type: "ib", op: "forward", tab: viewerInternal });
-$("#vReload").onclick = () => viewerInternal !== null && send({ type: "ib", op: "reload", tab: viewerInternal });
+const newBrowserTab = () => { send({ type: "dt_new", url: "about:blank" }); setTimeout(() => urlInput.focus(), 300); };
+$("#viewerNav").onsubmit = e => {
+  e.preventDefault();
+  const url = urlInput.value.trim(); if (!url) return;
+  if (dActive !== null) { dtNavigate(dActive, url); return; }
+  if (viewerInternal !== null) { send({ type: "ib", op: "navigate", tab: viewerInternal, url }); vcanvas.focus(); }
+};
+const navOp = op => { if (dActive !== null) dtCommand(dActive, op); else if (viewerInternal !== null) send({ type: "ib", op, tab: viewerInternal }); };
+$("#vBack").onclick = () => navOp("back");
+$("#vFwd").onclick = () => navOp("forward");
+$("#vReload").onclick = () => navOp("reload");
+$("#vVideo").onclick = () => { // Seite funktioniert im direkten Browser nicht: als Videostrom eines echten Chrome öffnen
+  const t = dtabs.find(x => x.id === dActive); if (!t || !t.url) return;
+  const url = t.url; dtClose(t.id); send({ type: "ib", op: "new", url });
+};
 urlInput.addEventListener("focus", () => urlInput.select());
 document.addEventListener("click", e => { const m = $("#viewerSources"); if (m && !m.hidden && !m.contains(e.target)) m.hidden = true; });
 document.addEventListener("keydown", e => { // Cmd/Strg+L: Adressleiste

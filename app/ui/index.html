@@ -92,6 +92,7 @@
         <button type="button" class="icon-btn small" id="vFwd" aria-label="Vorwärts" title="Vorwärts"><span data-icon="arrow-right"></span></button>
         <button type="button" class="icon-btn small" id="vReload" aria-label="Neu laden" title="Neu laden"><span data-icon="refresh"></span></button>
         <input id="viewerUrl" class="viewer-url" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Adresse oder Suchbegriff" placeholder="Adresse oder Suchbegriff">
+        <button type="button" class="icon-btn small" id="vVideo" aria-label="Als Videostrom öffnen" title="Seite funktioniert nicht? Als Videostrom eines echten Chrome öffnen"><span data-icon="eye"></span></button>
         <button type="button" class="icon-btn small" id="vNew" aria-label="Neuer Tab" title="Neuer Tab"><span data-icon="plus"></span></button>
         <button type="button" class="icon-btn small" id="vSources" aria-label="Quellen" title="Bildschirm, Fenster und Chrome-Tabs ansehen" aria-haspopup="true"><span data-icon="device-desktop"></span></button>
         <button type="button" class="icon-btn small" id="vClose" aria-label="Vorschau schließen" title="Schließen"><span data-icon="x"></span></button>
@@ -99,6 +100,7 @@
       <div class="viewer-frame">
         <canvas id="viewerCanvas" tabindex="0" aria-label="Live-Bild des Tabs oder Fensters"></canvas>
         <div class="viewer-visual" id="viewerVisual" hidden></div>
+        <div class="viewer-direct" id="viewerDirect" hidden></div>
         <div class="viewer-empty" id="viewerEmpty"></div>
       </div>
     </aside>
