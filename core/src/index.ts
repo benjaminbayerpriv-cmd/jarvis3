@@ -6,7 +6,10 @@ import type { ServerWebSocket } from "bun";
 import { OpenCode, listModels, type ModelInfo, type BrainEvent, type PromptImage } from "./opencode";
 import { Desktop } from "./desktop";
 import { Browser } from "./browser";
-import { InternalBrowser } from "./ibrowser";
+import { InternalBrowser, urlFor } from "./ibrowser";
+import { DirectBrowser, type PageSocket } from "./dbrowser";
+import { WebProxy } from "./proxy";
+import { agentSource } from "./proxy-agent";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech } from "./speech";
 import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
@@ -61,6 +64,8 @@ writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, 
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
+const dbrowser = new DirectBrowser();         // direkter Browser: echte Seiten im Rahmen der Vorschau (Proxy), Jarvis steuert sie über einen Agenten in der Seite
+const webProxy = new WebProxy(PORT, agentSource);
 const ibrowser = new InternalBrowser();   // eigener, eingebauter Browser (Vorschau); Chrome-Erweiterung bleibt für echtes Chrome
 const projects = new Projects();
 try { projects.load(); } catch (error) {
@@ -908,6 +913,7 @@ ibrowser.onFrame = m => {
   for (const ui of uis) ui.send(out);
 };
 ibrowser.onClosed = tab => preview.ended(tab);
+dbrowser.tell = m => broadcast(m);
 ibrowser.onNotice = text => broadcast({ type: "notice", text });
 ibrowser.onOpened = tab => { if (preview.pinned !== undefined || uis.size > 0) preview.pin(tab); };        // Popup der Seite: gleich zeigen
 let tabsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1075,16 +1081,27 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
   broadcast({ type: "action", target, cmd: cmd.cmd, detail: cmd.url ?? cmd.id ?? cmd.name ?? "" });
   if (target === "browser") {
     if (!await announceToolAction("browser", cmd)) return { ok: false, error: "vom Nutzer gestoppt" };
-    if (Number.isInteger(cmd.tab) && !["tab_close", "tab_release"].includes(cmd.cmd)) follow(cmd.tab);
-    // Der eigene Browser hat Vorrang; echtes Chrome nur auf ausdrücklichen Wunsch (in: "chrome") oder wenn er nicht verfügbar ist
-    const own = ibrowser.owns(cmd.tab) || (cmd.cmd === "tab_open" && cmd.in !== "chrome" && settings.internalBrowser && ibrowser.available());
+    if (Number.isInteger(cmd.tab) && !["tab_close", "tab_release"].includes(cmd.cmd) && !dbrowser.owns(cmd.tab)) follow(cmd.tab);
+    // Reihenfolge: direkter Browser (echte Seite im Rahmen der Vorschau) > Video-Browser (unsichtbares Chrome als Bildstrom) > echtes Chrome.
+    // Chrome nur auf ausdrücklichen Wunsch (in: "chrome") oder wenn nichts anderes geht; in: "video" erzwingt den Video-Browser.
     if (cmd.cmd === "tab_list") {
-      const [mine, chrome] = await Promise.all([ibrowser.running ? ibrowser.call({ cmd: "tab_list" }) : { ok: true, tabs: [] },
+      const [video, chrome] = await Promise.all([ibrowser.running ? ibrowser.call({ cmd: "tab_list" }) : { ok: true, tabs: [] },
         browser.connected ? browser.call(cmd) : { ok: true, tabs: [] }]);
       const chromeTabs = ((chrome as any).tabs ?? []).map((t: any) => ({ ...t, chrome: true }));
-      return { ok: true, tabs: [...((mine as any).tabs ?? []), ...chromeTabs], ...(chrome.ok ? {} : { chromeError: chrome.error }) };
+      return { ok: true, tabs: [...dbrowser.list(), ...((video as any).tabs ?? []), ...chromeTabs], ...(chrome.ok ? {} : { chromeError: chrome.error }) };
     }
-    const r = own ? await ibrowser.call(cmd) : await browser.call(cmd);
+    if (dbrowser.owns(cmd.tab)) return dbrowser.call(cmd);
+    if (ibrowser.owns(cmd.tab)) { const r = await ibrowser.call(cmd); return r; }
+    if (cmd.cmd === "tab_open" && cmd.in !== "chrome" && settings.internalBrowser) {
+      if (cmd.in !== "video") {
+        const r = await dbrowser.open(urlFor(cmd.url ?? "about:blank"), uis.size);
+        if (r.ok) return r;
+        if (typeof r.tab === "number") { dbrowser.tell({ type: "dt_close", id: r.tab }); dbrowser.setTabs(dbrowser.list().filter(t => t.tab !== r.tab).map(t => ({ id: t.tab, url: t.url, title: t.title }))); }
+        vlog(`direkter Browser: ${r.error} – weiche auf den Video-Browser aus`);
+      }
+      if (ibrowser.available()) { const r = await ibrowser.call(cmd); if (r.ok && Number.isInteger(r.tab)) follow(r.tab as number); return r; }
+    }
+    const r = await browser.call(cmd);
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) follow(r.tab as number);
     return r;
   }
@@ -1315,6 +1332,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
   websocket: {
     maxPayloadLength: 48 * 1024 * 1024, // Anhänge kommen Base64-kodiert (bis ~25 MB Dateien)
     open(ws) {
+      if ((ws.data.kind as string) === "page") return;
       if (ws.data.kind === "browser") { browser.attach(ws); broadcast(state()); }
       else {
         vlog(`ui #${uiId(ws)} open ${ws.remoteAddress ?? "?"} fresh=${!!ws.data.fresh}`);
@@ -1325,6 +1343,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       }
     },
     close(ws) {
+      if ((ws.data.kind as string) === "page") { dbrowser.detach(ws as unknown as PageSocket); return; }
       if (ws.data.kind === "browser") {
         browser.detach(ws);
         if (!browser.connected && typeof preview.active === "number") preview.ended(preview.active);
@@ -1341,6 +1360,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       }
     },
     async message(ws, raw) {
+      if ((ws.data.kind as string) === "page") { dbrowser.receive(ws as unknown as PageSocket, String(raw)); return; }
       try { await socketMessage(ws, String(raw)); } catch (error) {
         recordError({ category: ws.data.kind === "browser" ? "extension" : "daemon", source: `jarvisd/ws-${ws.data.kind}`,
           message: String((error as Error)?.message ?? error), error, context: { bytes: String(raw).length } });
@@ -1374,6 +1394,19 @@ async function errorsRoute(req: Request, u: URL): Promise<Response | undefined> 
 
 async function route(req: Request, srv: any) {
     const u = new URL(req.url);
+    // Seiten des direkten Browsers: Unterdomain p<hex>.localhost -> fremde Seite über den Proxy
+    const hostLabel = webProxy.labelOf(req.headers.get("host") ?? "");
+    if (hostLabel) return webProxy.handle(req, hostLabel);
+    if (u.pathname === "/page") { // Agent in einer Seite des direkten Browsers
+      const origin = req.headers.get("origin");
+      let host = ""; try { host = origin ? new URL(origin).host : ""; } catch { /* kein Ursprung */ }
+      if (!webProxy.isProxyHost(host)) return new Response("verboten", { status: 403 });
+      return srv.upgrade(req, { data: { kind: "page" } }) ? undefined : new Response("upgrade", { status: 400 });
+    }
+    if (u.pathname === "/__jarvis__/open") { // Navigation zu einer echten Adresse: in den Proxy umleiten
+      const target = webProxy.proxify(u.searchParams.get("u") ?? "");
+      return target ? Response.redirect(target, 302) : new Response("ungültige Adresse", { status: 400 });
+    }
     if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
     if (u.pathname === "/browser" || u.pathname === "/ui")
       return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
@@ -1466,7 +1499,9 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         const [tabs, windows] = await Promise.all([jarvisTabs(), previewWindows()]);
         ws.send(JSON.stringify({ type: "tabs", tabs, windows, pinned: preview.pinned ?? null }));
       }
-      else if (msg.type === "ib") { // Bedienung des eingebauten Browsers aus der Vorschau
+      else if (msg.type === "dt_new") dbrowser.tell({ type: "dt_open", id: dbrowser.allocate(), url: urlFor(msg.url ?? "about:blank") });      // „Neuer Tab“ in der Vorschau
+      else if (msg.type === "dt_tabs" && Array.isArray(msg.tabs)) dbrowser.setTabs(msg.tabs.filter((t: any) => dbrowser.owns(t?.id)).map((t: any) => ({ id: t.id, url: String(t.url ?? ""), title: String(t.title ?? "") })));
+      else if (msg.type === "ib") { // Bedienung des Video-Browsers aus der Vorschau
         const op = String(msg.op ?? "");
         if (!["new", "navigate", "back", "forward", "reload", "close", "resize", "input", "copy"].includes(op)) return;
         const r = await ibrowser.call(op === "new" ? { cmd: "tab_open", url: msg.url ?? "about:blank" } : { cmd: op, tab: msg.tab, url: msg.url, w: msg.w, h: msg.h, dpr: msg.dpr, event: msg.event });

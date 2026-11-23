@@ -15,7 +15,9 @@ interface Tab {
   cursor?: [number, number]; cursorAt: number;
 }
 
+/** Tab-Nummern: 100 001–199 999 = Video-Browser (dieses Modul), 300 001–399 999 = direkter Browser (dbrowser.ts); Chrome-Tabs haben Nummern in Millionenhöhe */
 export const FIRST_ID = 100_000;
+export const LAST_ID = 199_999;
 const SCREENCAST_MIN_MS = 25;
 const QUALITY = 76;               // Bildqualität des Streams: sichtbar scharf, aber nur etwa halb so groß wie 90
 const MAX_PIXELS = 2_000_000;      // Obergrenze je Bild (etwa 1600×1250)
@@ -68,9 +70,9 @@ export class InternalBrowser {
   constructor(private port = Number(process.env.JARVIS_BROWSER_PORT ?? 9333),
               private profile = process.env.JARVIS_BROWSER_PROFILE ?? join(homedir(), ".jarvis3", "browser-profile")) {}
 
-  isTab(id: unknown): id is number { return Number.isInteger(id) && (id as number) > FIRST_ID && this.tabs.has(id as number); }
+  isTab(id: unknown): id is number { return Number.isInteger(id) && (id as number) > FIRST_ID && (id as number) <= LAST_ID && this.tabs.has(id as number); }
   /** Gehört die Nummer zum eingebauten Browser (auch wenn der Tab inzwischen weg ist)? */
-  owns(id: unknown): boolean { return Number.isInteger(id) && (id as number) > FIRST_ID; }
+  owns(id: unknown): boolean { return Number.isInteger(id) && (id as number) > FIRST_ID && (id as number) <= LAST_ID; }
   available() { return !!findChrome(); }
   get running() { return !!this.root && !this.root.closed; }
   /** Prozess des eigenen Chrome (macOS legt für ihn ein verdecktes Fenster an, das in der Fensterliste nichts zu suchen hat) */
