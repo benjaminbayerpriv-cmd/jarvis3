@@ -6,7 +6,7 @@ test("Adressleiste: Adresse, localhost, Domain oder Suche", () => {
   expect(urlFor("localhost:3000/app")).toBe("http://localhost:3000/app");
   expect(urlFor("127.0.0.1:7777")).toBe("http://127.0.0.1:7777");
   expect(urlFor("wetter.de")).toBe("https://wetter.de");
-  expect(urlFor("wetter in berlin")).toBe("https://www.google.com/search?q=wetter%20in%20berlin");
+  expect(urlFor("wetter in berlin")).toBe("https://html.duckduckgo.com/html/?q=wetter%20in%20berlin");
   expect(urlFor("")).toBe("about:blank");
 });
 

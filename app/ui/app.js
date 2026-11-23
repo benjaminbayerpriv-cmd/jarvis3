@@ -1195,7 +1195,7 @@ function normalizeUrl(input) {
   if (/^(https?|file|about|data|chrome|blob):/i.test(text)) return text;
   if (/^localhost(:\d+)?(\/|$)/i.test(text) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(text)) return "http://" + text;
   if (/^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(text)) return "https://" + text;
-  return "https://www.google.com/search?q=" + encodeURIComponent(text);
+  return "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(text);
 }
 function syncDirectTabs() {
   clearTimeout(dTimer);
@@ -1269,6 +1269,12 @@ addEventListener("message", e => { // Meldungen der Agenten in den Seiten
       if (dActive === tab.id && document.activeElement !== urlInput) urlInput.value = tab.url;
       renderViewerTabs(); syncDirectTabs(); break;
     case "open": send({ type: "dt_new", url: String(d.url || "") }); break;
+    case "blocked": { // die Seite lässt den direkten Browser nicht zu (z. B. Googles Bot-Sperre): als Videostrom eines echten Chrome öffnen
+      const url = String(d.url || tab.url || ""), id = tab.id;
+      dtClose(id); send({ type: "dt_blocked", id });
+      if (url) { send({ type: "ib", op: "new", url }); showNotice("Die Seite lässt den direkten Browser nicht zu. Ich habe sie als Videostrom geöffnet."); }
+      break;
+    }
     case "cursor": dtCursor(tab, Number(d.x) || 0, Number(d.y) || 0); break;
   }
 });

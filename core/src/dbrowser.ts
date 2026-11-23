@@ -13,7 +13,7 @@ interface Tab { id: number; url: string; title: string; ws?: PageSocket }
 export class DirectBrowser {
   private tabs = new Map<number, Tab>();
   private pending = new Map<number, { resolve: (r: Reply) => void; tab: number }>();
-  private waiting = new Map<number, Set<() => void>>();
+  private waiting = new Map<number, Set<(ok?: boolean) => void>>();
   private rid = 0;
   private next = DIRECT_FIRST + 1;
   /** Oberflächen anweisen (dt_open, dt_close, dt_nav) */
@@ -47,7 +47,7 @@ export class DirectBrowser {
     tab.ws = ws; tab.url = hello.url ?? tab.url; tab.title = hello.title ?? tab.title;
     this.tabs.set(tab.id, tab);
     (ws as any).tabId = tab.id;
-    for (const fn of this.waiting.get(tab.id) ?? []) fn();
+    for (const fn of this.waiting.get(tab.id) ?? []) fn(true);
     this.waiting.delete(tab.id);
     this.onTabs?.();
   }
@@ -68,10 +68,17 @@ export class DirectBrowser {
     if (p) { this.pending.delete(m.rid); p.resolve(m); }
   }
 
+  /** Die Seite lässt den direkten Browser nicht zu: wartende open()-Aufrufe sofort beenden (Ausweichen auf den Video-Browser) */
+  blocked(id: number) {
+    this.tabs.delete(id);
+    const set = this.waiting.get(id); this.waiting.delete(id);
+    for (const fn of set ?? []) fn(false);
+  }
+
   private waitFor(id: number, ms: number): Promise<boolean> {
     if (this.tabs.get(id)?.ws) return Promise.resolve(true);
     return new Promise(resolve => {
-      const done = () => { clearTimeout(timer); resolve(true); };
+      const done = (ok = true) => { clearTimeout(timer); resolve(ok); };
       const timer = setTimeout(() => { this.waiting.get(id)?.delete(done); resolve(false); }, ms);
       let set = this.waiting.get(id);
       if (!set) this.waiting.set(id, set = new Set());
