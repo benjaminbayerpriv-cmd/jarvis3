@@ -17,6 +17,8 @@ interface Tab {
 
 export const FIRST_ID = 100_000;
 const SCREENCAST_MIN_MS = 25;
+const QUALITY = 76;               // Bildqualität des Streams: sichtbar scharf, aber nur etwa halb so groß wie 90
+const MAX_PIXELS = 2_000_000;      // Obergrenze je Bild (etwa 1600×1250)
 
 /** Eingabe der Adressleiste: vollständige Adresse oder Suchbegriff */
 export function urlFor(input: string): string {
@@ -184,15 +186,16 @@ export class InternalBrowser {
   }
 
   private async startCast(tab: Tab) {
-    await tab.cdp.send("Page.stopScreencast").catch(() => {});
-    await tab.cdp.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: Math.round(tab.w * tab.dpr), maxHeight: Math.round(tab.h * tab.dpr), everyNthFrame: 1 });
+    // Pixelbudget: sehr große Vorschaufenster mit doppelter Dichte erzeugen sonst Bilder, die weder Chrome noch der Browser flüssig schaffen
+    const scale = Math.min(1, Math.sqrt(MAX_PIXELS / (tab.w * tab.dpr * tab.h * tab.dpr)));
+    await tab.cdp.send("Page.startScreencast", { format: "jpeg", quality: QUALITY, maxWidth: Math.round(tab.w * tab.dpr * scale), maxHeight: Math.round(tab.h * tab.dpr * scale), everyNthFrame: 1 });
     // Stehende Seiten liefern keine Bilder: nach Start/Größenänderung ein Einzelbild nachreichen
     setTimeout(() => void this.snapshot(tab), 120);
   }
 
   private async snapshot(tab: Tab) {
     if (!tab.streaming || Date.now() - tab.lastFrame < 400) return;
-    const shot = await tab.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true }).catch(() => undefined);
+    const shot = await tab.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: QUALITY, fromSurface: true }).catch(() => undefined);
     if (shot?.data && tab.streaming) this.emitFrame(tab, shot.data);
   }
 

@@ -51,7 +51,15 @@ function connect() {
   // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
   // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
   ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
-  ws.onmessage = ev => handle(JSON.parse(ev.data));
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = ev => {
+    if (typeof ev.data !== "string") { // Bild des eigenen Browsers: [Länge des Kopfs][JSON-Kopf][JPEG]
+      const bytes = new Uint8Array(ev.data), headLength = new DataView(ev.data).getUint32(0);
+      const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headLength)));
+      return handle({ ...header, blob: new Blob([bytes.subarray(4 + headLength)], { type: "image/jpeg" }) });
+    }
+    handle(JSON.parse(ev.data));
+  };
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
 // Fokus melden: der Daemon vibriert nur, wenn Jarvis (App oder Webseite) im Vordergrund ist
@@ -1055,10 +1063,10 @@ function hideViewer() {
   syncViewerButtons();
 }
 function viewerIdle() {
-  if (String(viewerPinned).startsWith("vis:")) return; // eine Visualisierung bleibt stehen, bis der Nutzer umschaltet
-  viewerPinned = null;
-  if (!viewerPicker) hideViewer();
-  else { resetViewerFrame(); renderViewerTabs(); }
+  // Die Vorschau blendet sich nie von selbst aus, nur der Nutzer schließt sie. Läuft gerade ein eigener Browser-Tab, bleibt sein Bild live (der Daemon beendet sonst den Bildstrom).
+  if (viewerInternal !== null) { send({ type: "viewer_tab", tab: viewerInternal }); return; }
+  if (String(viewerPinned).startsWith("vis:")) return;
+  viewer.dataset.idle = "1";
 }
 function chooseViewer(target) {
   clearVisual(); setInternal(null);
@@ -1095,9 +1103,13 @@ function drawFrame(m) {
   if (viewerBusy) { viewerNext = m; return; }
   viewerBusy = true;
   const epoch = viewerEpoch;
-  const bin = atob(m.data), bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
+  let blob = m.blob;
+  if (!blob) { // Chrome-Erweiterung und Fensterbilder kommen als Base64
+    const bin = atob(m.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    blob = new Blob([bytes], { type: "image/jpeg" });
+  }
+  createImageBitmap(blob).then(bmp => {
     if (viewer.hidden || epoch !== viewerEpoch || viewerStreaming !== m.tab) { bmp.close(); return; }
     if (vcanvas.width !== bmp.width || vcanvas.height !== bmp.height) { vcanvas.width = bmp.width; vcanvas.height = bmp.height; }
     vctx.drawImage(bmp, 0, 0); bmp.close();
@@ -1122,10 +1134,7 @@ function showFrame(m) {
   delete viewer.dataset.idle;
   if (!viewerGotFrame || changed) { viewerGotFrame = true; renderViewerTabs(); }
   clearTimeout(viewerTimer);
-  viewerTimer = setTimeout(() => {
-    if (viewerPinned === null) viewerIdle();
-    else viewer.dataset.idle = "1";
-  }, Math.max(12000, (Number(state.previewIdleSeconds) || 8) * 1000 + 4000)); // Rückfall bei Verbindungsabbruch
+  viewerTimer = setTimeout(() => { viewer.dataset.idle = "1"; }, 12000); // keine Bilder mehr: nur die Anzeige „ruhig“ schalten, nie ausblenden
 }
 function viewerTabsMessage(m) {
   viewerTabs = m.tabs || [];
@@ -1192,7 +1201,7 @@ function fitInternal(now = false) {
     if (key === viewerSent) return;
     viewerSent = key;
     send({ type: "ib", op: "resize", tab: viewerInternal, w, h, dpr });
-  }, now ? 0 : 120);
+  }, now ? 0 : 220);
 }
 new ResizeObserver(() => fitInternal()).observe(viewerFrame);
 $("#vSources").onclick = e => { e.stopPropagation(); const m = $("#viewerSources"); m.hidden = !m.hidden; };
