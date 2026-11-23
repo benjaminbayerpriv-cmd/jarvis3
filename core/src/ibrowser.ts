@@ -16,7 +16,7 @@ interface Tab {
 }
 
 export const FIRST_ID = 100_000;
-const SCREENCAST_MIN_MS = 33;
+const SCREENCAST_MIN_MS = 25;
 
 /** Eingabe der Adressleiste: vollständige Adresse oder Suchbegriff */
 export function urlFor(input: string): string {
@@ -185,14 +185,14 @@ export class InternalBrowser {
 
   private async startCast(tab: Tab) {
     await tab.cdp.send("Page.stopScreencast").catch(() => {});
-    await tab.cdp.send("Page.startScreencast", { format: "jpeg", quality: 78, maxWidth: Math.round(tab.w * tab.dpr), maxHeight: Math.round(tab.h * tab.dpr), everyNthFrame: 1 });
+    await tab.cdp.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: Math.round(tab.w * tab.dpr), maxHeight: Math.round(tab.h * tab.dpr), everyNthFrame: 1 });
     // Stehende Seiten liefern keine Bilder: nach Start/Größenänderung ein Einzelbild nachreichen
     setTimeout(() => void this.snapshot(tab), 120);
   }
 
   private async snapshot(tab: Tab) {
     if (!tab.streaming || Date.now() - tab.lastFrame < 400) return;
-    const shot = await tab.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 78, fromSurface: true }).catch(() => undefined);
+    const shot = await tab.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true }).catch(() => undefined);
     if (shot?.data && tab.streaming) this.emitFrame(tab, shot.data);
   }
 
