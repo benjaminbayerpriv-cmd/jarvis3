@@ -701,6 +701,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
     if (e.kind === "done" || e.kind === "error") {
       finished = true;
+      haptics.finish();
       clearTimeout(ackTimer);
       const aborted = e.kind === "done" && e.aborted;
       if (!aborted) {
@@ -878,6 +879,7 @@ browser.onEvent = m => {
 
 /** Stoppt den gezeigten Chat; mit all=true (Not-Aus) alle laufenden Chats. Die anderen Chats laufen sonst ungestört weiter. */
 async function stop(all = false, chat = session) {
+  haptics.finish();
   const targets = all ? [...busySessions] : chat && busySessions.has(chat) ? [chat] : [];
   if (all || targets.length >= busySessions.size) stoppedUntil = Date.now() + 1500; // Werkzeuge nur sperren, wenn kein anderer Chat sie braucht
   preview.clear();

@@ -1,7 +1,7 @@
 // Haptisches Feedback am Trackpad (nur macOS mit Force-Touch-Trackpad), über `uimap haptic-serve` (tools/uimap-mac).
 //  - click: Jarvis klickt (Webseite oder Computer)
 //  - think: sanfter Takt, solange Jarvis nachdenkt
-//  - tick:  winziger Impuls je Buchstabe im Antwort-Stream (nur Textmodus)
+//  - tick:  schnelles, gleichmäßiges Flirren, solange Text im Antwort-Stream hereinkommt (nur Textmodus)
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,11 +15,13 @@ export interface HapticsOptions {
   sink?: Sink;
   bin?: string;
   thinkEveryMs?: number;
+  streamEveryMs?: number;
+  streamQuietMs?: number;
 }
 
 export class Haptics {
   private proc?: ReturnType<typeof Bun.spawn>;
-  private lastTick = 0;
+  private stream?: ReturnType<typeof setInterval>;
   private lastText = 0;
   private timer?: ReturnType<typeof setInterval>;
   private failed = false;
@@ -43,16 +45,23 @@ export class Haptics {
     this.send(pulse);
   }
 
-  /** Jarvis hat Text ausgegeben: je Buchstabe ein winziger Impuls (höchstens 4 je Textstück, mind. 20 ms Abstand). */
-  text(chars: number) {
+  /**
+   * Jarvis schreibt: ein gleichmäßiges, schnelles Flirren (alle 45 ms), solange Text hereinkommt. Die Menge spielt keine Rolle
+   * (große Textstücke ergeben nicht mehr Impulse) und es endet innerhalb von ~120 ms nach dem letzten Text, also nie nachlaufend.
+   */
+  text(_chars = 1) {
     this.lastText = Date.now();
-    if (!this.o.enabled() || !this.available() || chars <= 0) return;
-    const now = Date.now();
-    if (now - this.lastTick < 20) return;
-    this.lastTick = now;
-    const n = Math.min(4, chars);
-    for (let i = 0; i < n; i++) setTimeout(() => this.send("tick"), i * 22);
+    if (!this.o.enabled() || !this.available() || this.stream) return;
+    const every = this.o.streamEveryMs ?? 45, quiet = this.o.streamQuietMs ?? 120;
+    this.send("tick");
+    this.stream = setInterval(() => {
+      if (!this.o.enabled() || Date.now() - this.lastText > quiet) return this.finish();
+      this.send("tick");
+    }, every);
   }
+
+  /** Antwort fertig, gestoppt oder abgebrochen: sofort Ruhe. */
+  finish() { clearInterval(this.stream); this.stream = undefined; }
 
   /** Denk-Takt: solange `waiting()` gilt und kein Text kommt. Mehrfaches Starten ist harmlos. */
   start() {
@@ -65,5 +74,5 @@ export class Haptics {
     }, every);
   }
 
-  stop() { clearInterval(this.timer); this.timer = undefined; this.proc?.kill(); this.proc = undefined; }
+  stop() { this.finish(); clearInterval(this.timer); this.timer = undefined; this.proc?.kill(); this.proc = undefined; }
 }

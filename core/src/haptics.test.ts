@@ -7,12 +7,18 @@ test("Klick, Text und Denken lösen die richtigen Impulse aus, aus = still", asy
   const h = new Haptics({ enabled: () => on, waiting: () => waiting, sink: p => got.push(p), thinkEveryMs: 40 });
   h.pulse("click");
   expect(got).toEqual(["click"]);
-  h.text(10);                           // höchstens 4 Buchstaben-Impulse
-  await Bun.sleep(120);
-  expect(got.filter(p => p === "tick").length).toBe(4);
-  h.text(1); h.text(1);                 // zweiter Aufruf innerhalb von 20 ms wird verschluckt
-  await Bun.sleep(60);
-  expect(got.filter(p => p === "tick").length).toBe(5);
+  const h2 = new Haptics({ enabled: () => on, waiting: () => false, sink: p => got.push(p), streamEveryMs: 30, streamQuietMs: 60 });
+  h2.text(5000);                        // riesiges Textstück: trotzdem nur der gleichmäßige Takt, kein Stau
+  await Bun.sleep(130);
+  const ticks = got.filter(p => p === "tick").length;
+  expect(ticks).toBeGreaterThanOrEqual(2); expect(ticks).toBeLessThanOrEqual(6);
+  await Bun.sleep(150);                 // kein Text mehr: nach spätestens ~quiet ist Schluss
+  const after = got.filter(p => p === "tick").length;
+  await Bun.sleep(150);
+  expect(got.filter(p => p === "tick").length).toBe(after);
+  h2.text(1); h2.finish();              // fertig/gestoppt: sofort Ruhe
+  const stopped = got.length; await Bun.sleep(150);
+  expect(got.length).toBe(stopped);
   got.length = 0;
   h.start(); h.start();                 // doppelter Start: nur ein Takt
   await Bun.sleep(200);
