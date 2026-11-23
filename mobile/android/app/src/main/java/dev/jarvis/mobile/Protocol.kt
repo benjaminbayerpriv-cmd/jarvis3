@@ -1,7 +1,6 @@
 package dev.jarvis.mobile
 
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import org.json.JSONArray
 import org.json.JSONObject
 
 data class Rechner(val name: String, val host: String, val port: Int)
@@ -41,25 +40,3 @@ fun message(type: String, vararg fields: Pair<String, Any?>) = JSONObject().put(
 }
 
 fun JSONObject.string(key: String): String? = optString(key).takeUnless { it.isBlank() || isNull(key) }
-fun JSONObject.objects(key: String): List<JSONObject> = optJSONArray(key)?.objects().orEmpty()
-fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull(::optJSONObject)
-data class Chat(val id: String, val title: String, val folder: String?, val running: Boolean) {
-    companion object {
-        fun read(json: JSONObject) = Chat(json.getString("id"), json.optString("title", "Chat"), json.string("folder"), json.optBoolean("running"))
-    }
-}
-data class Modell(val id: String, val name: String)
-data class Quelle(val id: String, val name: String)
-data class Bild(val path: String, val title: String) {
-    companion object {
-        fun read(json: JSONObject): List<Bild> {
-            val id = json.optString("id")
-            if (!id.matches(Regex("v[a-z0-9]{6,20}"))) return emptyList()
-            val files = json.optJSONArray("files") ?: return emptyList()
-            return (0 until files.length()).map(files::getString).filter {
-                it.matches(Regex("[a-zA-Z0-9_.-]+\\.(png|jpg|jpeg|webp)", RegexOption.IGNORE_CASE))
-            }.map { Bild("/visual/$id/$it", json.optString("title", "Visualisierung")) }
-        }
-    }
-}
-data class Beitrag(val id: String?, val role: String, val text: String, val bilder: List<Bild> = emptyList())

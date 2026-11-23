@@ -11,7 +11,7 @@
 <body>
   <main>
     <section id="welcome" class="welcome" aria-labelledby="app-title">
-      <span class="logo" aria-hidden="true"></span>
+      <img class="logo" src="/app/icons/jarvis-512.png" width="64" height="64" alt="">
       <h1 id="app-title">Jarvis</h1>
       <p>Dein Assistent im lokalen Netz.</p>
       <a id="download" class="primary" href="/download/Jarvis.apk" download hidden>Android-App herunterladen</a>
@@ -30,46 +30,6 @@
       <p id="pairStatus" role="status"></p>
     </section>
 
-    <section id="app" hidden>
-      <header>
-        <div><h1>Jarvis</h1><p id="connection" role="status">Verbindung wird aufgebaut …</p></div>
-        <button id="emergency" class="danger">Not-Aus</button>
-      </header>
-      <nav aria-label="Ansichten">
-        <button data-page="chats" aria-current="page">Chats</button>
-        <button data-page="preview">Vorschau</button>
-        <button data-page="settings">Einstellungen</button>
-      </nav>
-      <section id="chats" class="page">
-        <div class="actions"><button id="history">Chatliste</button><button id="newChat">Neuer Chat</button></div>
-        <ol id="messages" aria-label="Nachrichten"></ol>
-        <form id="composer">
-          <label class="sr" for="message">Nachricht</label>
-          <textarea id="message" rows="2" placeholder="Frag Jarvis"></textarea>
-          <button id="cancelEdit" type="button" hidden>Abbrechen</button>
-          <button class="primary" id="send">Senden</button>
-          <button id="stop" type="button" hidden>Stopp</button>
-        </form>
-      </section>
-      <section id="preview" class="page" hidden>
-        <label for="tabs">Vorschauquelle</label>
-        <select id="tabs"><option value="">Automatisch</option></select>
-        <p id="frameStatus">Hier erscheint das Bild, sobald Jarvis einen Tab oder ein Fenster verwendet.</p>
-        <img id="frame" alt="Live-Vorschau von Jarvis" hidden>
-      </section>
-      <section id="settings" class="page" hidden>
-        <label for="model">Chatmodell</label><select id="model"></select>
-        <label class="switch"><input type="checkbox" id="computer"> Computer-Steuerung</label>
-        <label class="switch"><input type="checkbox" id="autoTitles"> Automatische Chattitel</label>
-        <label class="switch"><input type="checkbox" id="liveView"> Live-Vorschau</label>
-      </section>
-      <p id="notice" role="status"></p>
-    </section>
   </main>
-  <dialog id="chatPicker">
-    <form method="dialog"><button aria-label="Chatliste schließen">Schließen</button></form>
-    <h2>Chats und Projekte</h2>
-    <ul id="chatList"></ul>
-  </dialog>
 </body>
 </html>

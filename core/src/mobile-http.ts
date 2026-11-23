@@ -9,12 +9,14 @@ const cookieName = "__Host-jarvis-device";
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const denied = () => json({ error: "Kopplung erforderlich." }, 401);
 const mobilePages = new Map([
-  ["/", "index.html"], ["/app", "index.html"], ["/app/", "index.html"],
-  ["/mobile.css", "mobile.css"], ["/mobile.js", "mobile.js"], ["/markdown.js", "markdown.js"],
+  ["/", "index.html"], ["/mobile.css", "mobile.css"], ["/mobile.js", "mobile.js"],
 ]);
 const mobileMethods = new Set(["chat", "open", "new", "history", "message_ids", "stop", "replace", "resend", "tabs",
-  "viewer_tab", "viewer_window", "settings"]);
-const mobileSettings = new Set(["model", "voiceModel", "mode", "liveView", "autoChatTitles", "autoProjects", "actionAnnouncements"]);
+  "viewer_tab", "viewer_window", "settings", "liveview", "projects", "project_action", "chat_action", "usage", "client_error"]);
+const mobileSettings = new Set(["model", "voiceModel", "mode", "liveView", "autoChatTitles", "autoProjects", "actionAnnouncements",
+  "previewAuto", "previewIdleSeconds"]);
+const mobileCsp = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const webAsset = /^(?:[a-z-]+\.(?:js|css)|(?:icons|fonts)\/[\w.-]+\.(?:svg|png|ico|woff2))$/;
 
 export function mobileAdminOrigin(request: Request, url: URL) {
   const origin = request.headers.get("origin");
@@ -64,7 +66,7 @@ export class MobileHttp {
       hostname: "::", ipv6Only: false, port: this.port, tls: { cert, key },
       maxRequestBodySize: 2 * 1024 * 1024,
       fetch: (request, server) => this.route(request, server),
-      websocket: { ...this.websocket, maxPayloadLength: 2 * 1024 * 1024 },
+      websocket: this.websocket,
     });
     this.fingerprint = fingerprint;
     if (!process.env.JARVIS_NO_MDNS) {
@@ -150,11 +152,21 @@ export class MobileHttp {
           }
           return json({ error: "Installationspaket noch nicht bereitgestellt." }, 404);
         }
-        const page = mobilePages.get(path);
-        if (page) return new Response(Bun.file(page === "markdown.js" ? join(this.webRoot, "../ui", page) : join(this.webRoot, page)), { headers: {
+        if (path === "/app") return Response.redirect(new URL("/app/", url), 302);
+        const headers = {
           "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
-          "content-security-policy": "default-src 'self'; connect-src 'self' wss:; img-src 'self' data: blob:; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-        } });
+          "content-security-policy": mobileCsp,
+        };
+        const page = mobilePages.get(path);
+        if (page) return new Response(Bun.file(join(this.webRoot, page)), { headers });
+        if (path.startsWith("/app/")) {
+          const asset = path.slice("/app/".length);
+          if (!asset && !device) return Response.redirect(new URL("/?pair=1", url), 302);
+          if (!asset || webAsset.test(asset)) {
+            const file = Bun.file(join(this.webRoot, "../ui", asset || "index.html"));
+            if (await file.exists()) return new Response(file, { headers });
+          }
+        }
         if (path === "/mobile/session") return device ? json({ ok: true }) : denied();
         if (path === "/ui") {
           if (!device) return denied();

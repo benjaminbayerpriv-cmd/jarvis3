@@ -4,10 +4,20 @@ import { CUSTOM } from "./icons-custom.js";
 const TABLER = { ...BASE, ...CUSTOM };
 import { renderMarkdown } from "./markdown.js";
 import { BlurText } from "./blurtext.js";
+import { httpOrigin, isAndroid, isMobileRemote, nativeSend, nativeRequest, smallScreen, uiSocket } from "./mobile-bridge.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
 
 const $ = s => document.querySelector(s);
-const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
+document.documentElement.classList.toggle("tauri", Boolean(window.__TAURI__));
+document.documentElement.classList.toggle("jarvis-handy", isMobileRemote);
+document.documentElement.classList.toggle("jarvis-android", isAndroid);
+function sizeHandy() {
+  if (!smallScreen() || (visualViewport && visualViewport.scale !== 1)) return;
+  document.documentElement.style.setProperty("--handy-height", `${Math.round(visualViewport?.height || innerHeight)}px`);
+}
+sizeHandy();
+addEventListener("resize", sizeHandy);
+visualViewport?.addEventListener("resize", sizeHandy);
 
 // ---------- Icons ----------
 export function icon(name, cls = "ic") {
@@ -39,7 +49,7 @@ let projectData = { projects: [], chats: [], root: "" };
 // ---------- Verbindung ----------
 let ws, retry = 0, hadSocket = false;
 function connect() {
-  ws = new WebSocket(`ws://${DAEMON}/ui`);
+  ws = uiSocket();
   ws.onopen = () => {
     retry = 0; setOffline(false);
     // Nach einem Verbindungsabbruch (z. B. Neustart von jarvisd) sind Ereignisse verloren gegangen: den gezeigten Chat neu laden,
@@ -50,12 +60,16 @@ function connect() {
   };
   // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
   // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
-  ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
+  ws.onclose = () => { state.busy = false; state.busySessions = []; renderState(); setOffline(true);
+    if (isMobileRemote && !isAndroid && (retry === 0 || retry % 5 === 0)) {
+      fetch("/mobile/session").then(r => { if (r.status === 401) location.replace("/?pair=1"); }).catch(() => {});
+    }
+    setTimeout(connect, Math.min(4000, 300 * 2 ** retry++)); };
   ws.onmessage = ev => handle(JSON.parse(ev.data));
 }
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
 // Fokus melden: der Daemon vibriert nur, wenn Jarvis (App oder Webseite) im Vordergrund ist
-const reportFocus = () => send({ type: "focus", focused: document.hasFocus() && !document.hidden });
+const reportFocus = () => !isMobileRemote && send({ type: "focus", focused: document.hasFocus() && !document.hidden });
 addEventListener("focus", reportFocus); addEventListener("blur", reportFocus); document.addEventListener("visibilitychange", reportFocus);
 // Fehler der Oberfläche ins zentrale Fehler-Log des Daemons (docs/errors.md)
 const reportError = (where, error) => send({ type: "client_error", where, message: String(error?.message ?? error), stack: error?.stack });
@@ -69,10 +83,12 @@ function setOffline(off) {
 // "Läuft" und der Stopp-Knopf beziehen sich auf den gezeigten Chat; die übrigen laufenden Chats stehen in der Seitenleiste.
 const CHAT_EVENTS = new Set(["delta", "reasoning", "tool", "latency", "error", "stopped", "done", "notice", "messages", "visual"]);
 const syncBusy = () => { state.busy = !!currentSession && (state.busySessions || []).includes(currentSession); };
-const openChat = id => { currentSession = id; renderState(); send({ type: "open", id }); };
+const openChat = id => { if (smallScreen()) setRail(false); if (isAndroid) nativeSend("haptic", { event: "reset" }); currentSession = id; renderState(); send({ type: "open", id }); };
 let runningKey = "";
 function handle(m) {
   if (CHAT_EVENTS.has(m.type) && m.session !== undefined && m.session !== currentSession) return;
+  if (isAndroid && ["delta", "reasoning", "tool", "action", "done", "stopped", "error"].includes(m.type))
+    nativeSend("haptic", { event: m.type, status: m.status, tool: m.id, action: m.cmd });
   switch (m.type) {
     case "state":
       Object.assign(state, m); renderState(); renderSettingsState();
@@ -95,7 +111,7 @@ function handle(m) {
     case "tabs": viewerTabsMessage(m); break;
     case "commands": slashItems = m.items || []; renderSlash(); break;
     case "extensions": renderExtensions(m); break;
-    case "mobile_devices": clearMobileCode(); void refreshMobileDevices(); break;
+    case "mobile_devices": if (!isMobileRemote) { clearMobileCode(); void refreshMobileDevices(); } break;
     case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
@@ -418,8 +434,15 @@ $("#composer").addEventListener("submit", e => {
     updateSend();
   });
 });
-$("#stop").onclick = () => send({ type: "stop" });
-$("#emergencyStop").onclick = () => send({ type: "stop", all: true });
+$("#stop").onclick = () => send({ type: "stop", session: currentSession });
+async function mobileStop() {
+  try {
+    const ok = isAndroid ? await nativeRequest("stop") : (await fetch("/stop", { method: "POST" })).ok;
+    toast(ok ? "Jarvis gestoppt." : "Jarvis ist gerade nicht erreichbar.");
+  } catch { toast("Jarvis ist gerade nicht erreichbar."); }
+}
+$("#handyStop").onclick = mobileStop;
+$("#emergencyStop").onclick = () => isMobileRemote ? mobileStop() : send({ type: "stop", all: true });
 
 // ---------- Anhänge (Fotos und Dateien) ----------
 // Grenzen wie im Daemon (core/src/attachments.ts); der Daemon prüft nochmals.
@@ -468,6 +491,7 @@ function addFiles(list) {
   }
 }
 function toast(text) {
+  if (isAndroid) return nativeSend("toast", { text });
   const t = $("#attachNote");
   t.textContent = text; t.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 6000);
@@ -511,7 +535,13 @@ function dictShow(t, partial = false) {
   input.value = dictJoin(t); autosize(); updateSend();
   taMirror.set(input.value); syncMirrorScroll();
 }
-$("#dictate").onclick = () => {
+$("#dictate").onclick = async () => {
+  if (isAndroid) {
+    const text = await nativeRequest("dictate");
+    if (text) { dictBase = input.value; dictShow(text); }
+    return;
+  }
+  if (isMobileRemote) return;
   dictating = !dictating;
   if (dictating && state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Diktieren geht, sobald es bereit ist.");
   if (dictating) { dictBase = input.value; taMirror.set(input.value, { animate: false }); }
@@ -531,11 +561,16 @@ const setRail = open => {
   railBtn.setAttribute("aria-label", open ? "Seitenleiste schließen" : "Seitenleiste öffnen");
   railBtn.title = open ? "Seitenleiste schließen" : "Seitenleiste öffnen";
   railBtn.querySelector("span").innerHTML = icon(open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand");
-  try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
+  $("#handyMenu").setAttribute("aria-expanded", String(open));
+  $("#handyScrim").hidden = !open;
+  if (!smallScreen()) try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
 };
 railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
-try { if (localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
+$("#handyMenu").onclick = railBtn.onclick;
+$("#handyScrim").onclick = () => setRail(false);
+try { if (!smallScreen() && localStorage.getItem("jarvis.rail") === "open") setRail(true); } catch {}
 $("#newChat").onclick = () => {
+  if (smallScreen()) setRail(false);
   send({ type: "new" }); currentSession = null; renderState(); editingMessage = null; turns.innerHTML = ""; current = null; setZero(true); input.focus();
 };
 
@@ -681,7 +716,20 @@ function renderHistory(list = []) {
     button(s.archived ? "Wiederherstellen" : "Archivieren", icon("archive"), () => send({ type: "chat_action", action: "archive", id: s.id, value: !s.archived }));
     if (!s.archived) button("Verschieben", icon("folder"), () => showChatAction("move", s.id, s.title, s.folder || ""));
     button("Löschen", icon("trash"), () => showChatAction("delete", s.id, s.title));
-    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menuToggle.onclick = async e => {
+      e.stopPropagation();
+      if (isAndroid) {
+        const buttons = [...actions.querySelectorAll("button")];
+        const index = await nativeRequest("choice", { title: menuToggle.title, options: buttons.map(b => b.textContent) });
+        if (index !== null) buttons[index]?.click();
+        return;
+      }
+      const open = actions.hidden;
+      document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+      document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+      actions.hidden = !open;
+      menuToggle.setAttribute("aria-expanded", String(open));
+    };
     menu.append(menuToggle, actions); li.append(title, menu); parent.append(li);
   };
   const matches = s => !q || s.title.toLocaleLowerCase("de-DE").includes(q) || (s.folder || "").toLocaleLowerCase("de-DE").includes(q);
@@ -705,7 +753,20 @@ function renderHistory(list = []) {
     action("Umbenennen", icon("edit"), () => showChatAction("rename-folder", "", name, name));
     action("Verschieben", icon("folder"), () => showChatAction("move-folder", "", name));
     action("Löschen", icon("trash"), () => showChatAction("delete-folder", "", name));
-    menuToggle.onclick = e => { e.stopPropagation(); const open = actions.hidden; document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; }); document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false")); actions.hidden = !open; menuToggle.setAttribute("aria-expanded", String(open)); };
+    menuToggle.onclick = async e => {
+      e.stopPropagation();
+      if (isAndroid) {
+        const buttons = [...actions.querySelectorAll("button")];
+        const index = await nativeRequest("choice", { title: menuToggle.title, options: buttons.map(b => b.textContent) });
+        if (index !== null) buttons[index]?.click();
+        return;
+      }
+      const open = actions.hidden;
+      document.querySelectorAll(".history-actions").forEach(el => { el.hidden = true; });
+      document.querySelectorAll(".history-menu-toggle").forEach(el => el.setAttribute("aria-expanded", "false"));
+      actions.hidden = !open;
+      menuToggle.setAttribute("aria-expanded", String(open));
+    };
     menu.append(menuToggle, actions);
     const head = document.createElement("div"); head.className = "folder-head"; head.append(toggle, menu); row.append(head);
     if (!isFolderCollapsed) {
@@ -931,7 +992,12 @@ function renderProjectGrid() {
     grid.append(e);
   }
 }
-function pgNew() {
+async function pgNew() {
+  if (isAndroid) {
+    const name = (await nativeRequest("prompt", { title: "Neues Projekt", hint: "Projektname" }))?.trim();
+    if (name) { pgTab = "active"; projectAction({ op: "create", name, description: "", parent: null }); }
+    return;
+  }
   // neue Kachel mit Namensfeld; Enter legt an, Esc oder leer bricht ab
   if (pgTab !== "active") { pgTab = "active"; renderProjectGrid(); }
   const grid = $("#pgGrid"); grid.querySelector(".pg-empty")?.remove();
@@ -957,7 +1023,7 @@ function pgSortMenu() {
   const off = ev => { if (!menu.contains(ev.target) && !btn.contains(ev.target)) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); document.removeEventListener("pointerdown", off, true); } };
   setTimeout(() => document.addEventListener("pointerdown", off, true));
 }
-$("#openProjects").onclick = () => { send({ type: "projects" }); exSel = null; renderProjects(); $("#projectsDialog").showModal(); };
+$("#openProjects").onclick = () => { if (smallScreen()) setRail(false); send({ type: "projects" }); exSel = null; renderProjects(); $("#projectsDialog").showModal(); };
 $("#closeProjects").onclick = () => $("#projectsDialog").close();
 $("#closeProjectsGrid").onclick = () => $("#projectsDialog").close();
 $("#exBack").onclick = () => { exSel = null; renderProjects(); };
@@ -992,7 +1058,7 @@ function renderViewerTabs() {
     mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
   }
   for (const t of viewerTabs) {
-    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon(t.chrome ? "brand-chrome" : "world");
+    const fav = !isMobileRemote && t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon(t.chrome ? "brand-chrome" : "world");
     mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, `${t.chrome ? "Chrome · " : ""}${t.url || t.title || ""}`,
       t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
   }
@@ -1002,7 +1068,7 @@ function renderViewerTabs() {
     mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
       icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
   }
-  if (state.internalBrowser !== false) mk("Neuer Tab", false, newBrowserTab, icon("plus"), "Neuen Tab im eingebauten Browser öffnen", null, "vtab-new");
+  if (!isMobileRemote && state.internalBrowser !== false) mk("Neuer Tab", false, newBrowserTab, icon("plus"), "Neuen Tab im eingebauten Browser öffnen", null, "vtab-new");
   const empty = $("#viewerEmpty");
   if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
   else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch kein Tab offen. Mit „Neuer Tab“ öffnest du selbst eine Seite, oder bitte Jarvis darum.";
@@ -1092,11 +1158,12 @@ function drawFrame(m) {
 }
 function showFrame(m) {
   if (state.liveView === false || (viewerPinned !== null && viewerPinned !== m.tab)) return;
+  if (viewer.hidden && smallScreen()) return;
   if (viewer.hidden) openViewer();
   viewerPicker = false;
   const changed = viewerStreaming !== m.tab;
   viewerStreaming = m.tab;
-  if (m.internal) { // eigener Browser: Größe richtet sich nach dem Vorschaufenster, nicht umgekehrt
+  if (m.internal && !isMobileRemote) { // eigener Browser: Größe richtet sich nach dem Vorschaufenster, nicht umgekehrt
     setInternal(m.tab, m);
   } else if (m.w > 0 && m.h > 0 && m.w / m.h !== viewerAspect) {
     viewerAspect = m.w / m.h;
@@ -1119,7 +1186,14 @@ function viewerTabsMessage(m) {
   if (Object.hasOwn(m, "pinned") && !String(viewerPinned).startsWith("vis:")) viewerPinned = m.pinned;
   if (!viewer.hidden) renderViewerTabs();
 }
-const closeViewer = () => { state.liveView = false; send({ type: "liveview", on: false }); hideViewer(); };
+const closeViewer = () => { if (!isMobileRemote) { state.liveView = false; send({ type: "liveview", on: false }); } hideViewer(); };
+document.addEventListener("jarvis-back", () => {
+  const dialog = Array.from(document.querySelectorAll("dialog[open]")).at(-1);
+  if (dialog) dialog.close();
+  else if (!viewer.hidden) closeViewer();
+  else if ($("#app").dataset.rail === "open") setRail(false);
+  else nativeSend("back");
+});
 $("#viewerClose").onclick = closeViewer;
 const toggleViewer = () => viewer.hidden ? openViewer(true) : closeViewer();
 $("#viewToggle").onclick = toggleViewer;
@@ -1253,7 +1327,7 @@ vcanvas.addEventListener("paste", e => { if (viewerInternal === null) return; e.
 // ---------- Visualisierungen (Werkzeuge visualize_python / visualize_html) ----------
 // Bilder und HTML-Seiten liefert jarvisd unter /visual/<id>/<datei>; HTML läuft in einer abgeschotteten Sandbox.
 let viewerVisuals = [];
-const visualUrl = (v, f) => `http://${DAEMON}/visual/${v.id}/${encodeURIComponent(f)}`;
+const visualUrl = (v, f) => `${httpOrigin}/visual/${v.id}/${encodeURIComponent(f)}`;
 const isHtml = f => /\.html$/i.test(f);
 function visualMedia(v, f, big = false) {
   if (isHtml(f)) {
@@ -1313,6 +1387,7 @@ function showVisual(v, file) {
   renderViewerTabs();
 }
 function visualEvent(v) {
+  if (isMobileRemote) v = { ...v, files: v.files?.filter(f => !isHtml(f)) };
   if (!v.files?.length) return;
   if (!current) startJarvis();
   current.el.classList.remove("empty");
@@ -1320,7 +1395,7 @@ function visualEvent(v) {
   blocksOf().append(card);
   current.blocks.push({ kind: "visual", el: card });
   stickToBottom();
-  if (state.liveView !== false || live.on) showVisual(v);
+  if ((!smallScreen() && state.liveView !== false) || live.on) showVisual(v);
   else rememberVisual(v);
 }
 
@@ -1366,14 +1441,27 @@ function showChatAction(action, id = "", title = "", value = "") {
   $("#chatActionValue").placeholder = action === "rename" ? "Chatname" : action === "rename-folder" ? "Neuer Projektname" : action === "move-folder" ? "Überprojekt (leer = oberste Ebene)" : "Projektname";
   $("#chatActionValue").setAttribute("list", "chatFolderOptions");
   $("#chatFolderOptions").replaceChildren(...chatFolderNames.map(name => { const option = document.createElement("option"); option.value = name; return option; }));
+  if (isAndroid) {
+    const field = $("#chatActionValue");
+    nativeRequest(action.startsWith("delete") ? "confirm" : "prompt", {
+      title: labels[action], text: desc[action] ?? "", value, hint: field.placeholder,
+      options: action.startsWith("move") ? chatFolderNames : [],
+    }).then(result => {
+      const pending = pendingChatAction;
+      pendingChatAction = null;
+      if (pending && result !== null) applyChatAction(pending, String(result === true ? "" : result).trim());
+    });
+    return;
+  }
   $("#chatActionDialog").showModal();
   if (!action.startsWith("delete")) requestAnimationFrame(() => $("#chatActionValue").focus());
 }
 $("#chatActionDialog").addEventListener("close", () => {
   const action = pendingChatAction, result = $("#chatActionDialog").returnValue;
   pendingChatAction = null;
-  if (!action || result !== "apply") return;
-  const value = $("#chatActionValue").value.trim();
+  if (action && result === "apply") applyChatAction(action, $("#chatActionValue").value.trim());
+});
+function applyChatAction(action, value) {
   if (action.action === "folder" && value) {
     if (!chatFolderNames.includes(value)) chatFolderNames.push(value);
     renderHistory(historySessions);
@@ -1393,11 +1481,20 @@ $("#chatActionDialog").addEventListener("close", () => {
       projectAction({ op: "update", id: p.id, patch: { parentId: parent?.id ?? null } });
     }
   }
-});
+}
 $("#chatActionValue").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); $("#chatActionDialog").close("apply"); }
 });
-$("#modelChip").onclick = () => { renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus(); };
+$("#modelChip").onclick = async () => {
+  if (isAndroid) {
+    const models = state.models ?? [];
+    if (!models.length) return toast("Die Modellliste wird geladen.");
+    const index = await nativeRequest("choice", { title: "Modell wählen", options: models.map(m => m.model || m.id) });
+    if (index !== null && models[index]) send({ type: "settings", settings: { model: models[index].id } });
+    return;
+  }
+  renderModels(); $("#modelSearch").value = ""; $("#modelDialog").showModal(); $("#modelSearch").focus();
+};
 $("#modelSearch").addEventListener("input", e => renderModels(e.target.value));
 
 let usageRange = "7d";
@@ -1519,6 +1616,7 @@ function liveUnspoken(text) {
 }
 function flushSpoken() { if (revealQ) { spokenText += revealQ; revealQ = ""; showSpoken(); } }  // Satz ist zu Ende gesprochen: Rest sofort zeigen
 function openLive() {
+  if (isMobileRemote) return toast("Auf dem Handy steht das Diktat über die Mikrofon-Taste der App zur Verfügung.");
   if (live.on) return;
   if (state.speech === false) showNotice("Das Sprachmodul startet gerade (ca. 30 s). Live beginnt, sobald es bereit ist.");
   if (dictating) $("#dictate").click();
@@ -1634,7 +1732,7 @@ document.addEventListener("keydown", e => {
 
 connect();
 setInterval(() => send({ type: "history" }), 60000);
-input.focus();
+if (!smallScreen()) input.focus();
 
 // Test-Zugang (nur Entwicklung): window.__jarvisDebug.handle({...}) spielt Daemon-Nachrichten ein
 window.__jarvisDebug = { handle };
@@ -1671,7 +1769,7 @@ function pickSlash(it) {
   if (it.source === "builtin" && !it.hint) $("#composer").requestSubmit();   // Befehle ohne Argument sofort ausführen
 }
 input.addEventListener("input", () => {
-  if (slashQuery() !== null && !slashAsked) { slashAsked = true; send({ type: "commands" }); }
+  if (!isMobileRemote && slashQuery() !== null && !slashAsked) { slashAsked = true; send({ type: "commands" }); }
   slashIndex = 0; renderSlash();
 });
 input.addEventListener("keydown", e => {
@@ -1708,12 +1806,14 @@ async function runSlash(text) {
       return done();
     }
     case "hilfe": {
+      if (isMobileRemote) { toast("/neu · /stop · /diktat · /vorschau · /projekte · /einstellungen · /modell"); return done(); }
       if (!slashItems.length) send({ type: "commands" });
       const lines = slashItems.filter(i => i.source === "builtin").map(i => `/${i.name} – ${i.description}`);
       showNotice("Befehle: " + (lines.join(" · ") || "gleich verfügbar") + ". Eigene Befehle und Skills erscheinen, sobald du / tippst.");
       return done();
     }
   }
+  if (isMobileRemote) { toast("Dieser Kurzbefehl steht am Computer zur Verfügung."); return done(); }
   const known = slashItems.find(i => i.name.toLowerCase() === name);
   if (!known && !slashItems.length) { send({ type: "commands" }); showNotice("Befehle werden geladen … bitte gleich noch einmal."); return false; }
   if (!known) { showNotice(`Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.`); return false; }
@@ -1737,7 +1837,7 @@ function showSettingsPane(name) {
   });
   document.querySelectorAll(".set-pane").forEach(p => { p.hidden = p.dataset.pane !== name; });
   $("#setTitle").textContent = PANES[name] || "";
-  if (name === "general") { void refreshAutostart(); if (state.lanAccess) void refreshMobileDevices(); }
+  if (name === "general" && !isMobileRemote) { void refreshAutostart(); if (state.lanAccess) void refreshMobileDevices(); }
   if (name === "usage") requestUsage();
   if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
 }
@@ -1869,7 +1969,7 @@ const numeric = new Set(["micDevice", "speakerDevice", "voiceSpeed", "previewIdl
 let mobileEnabled = false;
 let mobileExpiry;
 const mobileAdmin = async (path, method = "GET") => {
-  const response = await fetch(`http://${DAEMON}${path}`, { method });
+  const response = await fetch(`${httpOrigin}${path}`, { method });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? "Anfrage fehlgeschlagen.");
   return data;
@@ -1924,9 +2024,22 @@ $("#mobilePairStart").onclick = async () => {
     mobileExpiry = setTimeout(() => { clearMobileCode(); void refreshMobileDevices(); }, Math.max(0, data.expires - Date.now()));
   } catch (error) { $("#mobileStatus").textContent = error.message; }
 };
+const mobileSettings = new Set(["model", "mode", "autoChatTitles", "autoProjects", "liveView", "previewAuto", "previewIdleSeconds"]);
+let nativeHaptics = {};
+if (isAndroid) {
+  $("#set-haptics-label").textContent = "Haptisches Feedback (Handy)";
+  $("#set-haptics-desc").textContent = "Vibriert, solange Jarvis auf dem Handy im Vordergrund ist.";
+  $("#handyDisconnect").hidden = false;
+  $("#handyNotifications").onclick = () => nativeSend("notifications");
+  $("#handyForget").onclick = async () => {
+    if (await nativeRequest("confirm", { title: "Computer trennen?", text: "Zum Wiederverbinden brauchst du einen neuen Kopplungscode." }))
+      nativeSend("forget");
+  };
+  nativeRequest("hapticSettings").then(settings => { nativeHaptics = settings ?? {}; renderSettingsState(); });
+}
 function renderSettingsState() {
-  $("#mobilePairing").hidden = !state.lanAccess;
-  if (mobileEnabled !== !!state.lanAccess) {
+  $("#mobilePairing").hidden = isMobileRemote || !state.lanAccess;
+  if (!isMobileRemote && mobileEnabled !== !!state.lanAccess) {
     mobileEnabled = !!state.lanAccess;
     if (mobileEnabled) void refreshMobileDevices();
     else clearMobileCode();
@@ -1937,21 +2050,30 @@ function renderSettingsState() {
   fillDeviceSelect($("#setSpeaker"), state.devices?.output, state.speakerDevice);
   for (const control of daemonControls) {
     const key = control.dataset.daemon;
+    if (isAndroid && key.startsWith("haptics")) {
+      paintSetting(control, nativeHaptics[key]);
+      control.disabled = nativeHaptics[key] === undefined;
+      continue;
+    }
     paintSetting(control, state[key]);
     const audioDevice = key === "micDevice" || key === "speakerDevice";
-    control.disabled = state[key] === undefined || (audioDevice && (!state.speech || !state.devices));
+    control.disabled = (isMobileRemote && !mobileSettings.has(key)) || state[key] === undefined || (audioDevice && (!state.speech || !state.devices));
   }
   $("#set-actionAnnouncements").disabled ||= state.spokenReplies === false;
   $("#set-previewAuto").disabled ||= state.liveView === false;
   $("#set-previewIdleSeconds").disabled ||= state.liveView === false || state.previewAuto === false;
-  $("#voiceSample").disabled = !state.speech || state.busy || state.voice !== "off";
+  $("#voiceSample").disabled = isMobileRemote || !state.speech || state.busy || state.voice !== "off";
 }
 
 for (const control of daemonControls) {
   control.disabled = true;
   const name = control.dataset.daemon;
   const value = () => numeric.has(name) ? (control.value === "" ? null : Number(control.value)) : control.value;
-  if (switchRole(control)) {
+  if (isAndroid && name.startsWith("haptics")) {
+    const apply = value => { nativeHaptics[name] = value; nativeSend("hapticSetting", { name, value }); paintSetting(control, value); };
+    if (switchRole(control)) control.onclick = () => apply(!nativeHaptics[name]);
+    else control.onchange = () => apply(value());
+  } else if (switchRole(control)) {
     control.onclick = () => send({ type: "settings", settings: { [name]: !state[name] } });
   } else {
     control.onchange = () => send({ type: "settings", settings: { [name]: value() } });
@@ -1968,7 +2090,7 @@ for (const control of localControls) {
 }
 $("#voiceSample").onclick = () => send({ type: "voice_sample" });
 $("#resetViewerWidth").onclick = resetViewerWidth;
-$("#openSettings").onclick = () => openSettings();
+$("#openSettings").onclick = () => { if (smallScreen()) setRail(false); openSettings(); };
 
 const autostartControl = $("#setAutostart");
 const autostartStatus = $("#setAutostartStatus");

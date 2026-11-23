@@ -2,14 +2,14 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>Jarvis</title>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <script>if (window.__TAURI__) document.documentElement.classList.add("tauri");</script>
   <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="handy.css">
 </head>
 <body>
   <div class="app" id="app" data-rail="collapsed">
@@ -26,14 +26,17 @@
       <button class="rail-item" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDialog"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
     </nav>
 
+    <button type="button" class="handy-scrim" id="handyScrim" aria-label="Seitenleiste schließen" hidden></button>
     <main class="main">
       <header class="topbar" data-tauri-drag-region>
+        <button class="icon-btn handy-menu" id="handyMenu" data-icon="menu-2" aria-label="Seitenleiste öffnen" aria-expanded="false" aria-controls="history"></button>
         <button class="model-chip" id="modelChip" aria-haspopup="dialog">
           <span class="brand">Jarvis</span>
           <span class="model-name" id="modelName">…</span>
           <span data-icon="chevron-down" class="chev"></span>
         </button>
         <div class="topbar-right">
+          <button class="icon-btn handy-stop" id="handyStop" data-icon="hand-stop" aria-label="Not-Aus"></button>
           <button class="icon-btn view-toggle" id="viewToggle" data-icon="eye" aria-pressed="true" title="Live-Ansicht des Tabs"></button>
           <span class="status-pill" id="browserPill" title="Chrome-Erweiterung"><span data-icon="world"></span><span>Browser</span></span>
           <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" title="Computer übernehmen">
@@ -193,6 +196,7 @@
           <div class="setting"><div><label for="setChatModel" id="setChatModel-label">Chatmodell</label><p id="setChatModel-desc">Für normale Chatnachrichten.</p></div><select id="setChatModel" aria-describedby="setChatModel-desc" data-daemon="model"></select></div>
           <div class="setting"><div><label for="set-autoChatTitles" id="set-autoChatTitles-label">KI-Titel für Chats</label><p id="set-autoChatTitles-desc">Erstellt nach der ersten Antwort einen Titel zum Thema. Ist die Option aus, verwendet Jarvis Stichwörter.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoChatTitles-label" aria-describedby="set-autoChatTitles-desc" id="set-autoChatTitles" data-daemon="autoChatTitles"></button></div>
           <div class="setting"><div><label for="set-autoProjects" id="set-autoProjects-label">Chats automatisch zuordnen</label><p id="set-autoProjects-desc">Jarvis prüft, ob neue Chats zu einem vorhandenen Projekt passen.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoProjects-label" aria-describedby="set-autoProjects-desc" id="set-autoProjects" data-daemon="autoProjects"></button></div>
+          <div class="setting" id="handyDisconnect" hidden><div><b>Verbindung zum Computer</b><p>Bei Bedarf diesen Computer vom Handy trennen.</p></div><div><button type="button" class="chip" id="handyNotifications">Mitteilungen erlauben</button> <button type="button" class="chip" id="handyForget">Trennen</button></div></div>
           <div class="setting"><div><label for="set-lanAccess" id="set-lanAccess-label">Handy-Zugriff</label><p>Verbindet ein Handy im privaten Netzwerk mit Jarvis.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-lanAccess-label" id="set-lanAccess" data-daemon="lanAccess"></button></div>
           <div class="setting" id="mobilePairing" hidden>
             <div><button type="button" class="chip" id="mobilePairStart">Gerät koppeln</button>

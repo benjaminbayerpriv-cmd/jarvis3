@@ -89,10 +89,13 @@ class LanClient(private val kopplung: Kopplung, private val token: String? = nul
     }
 
     fun socket(listener: WebSocketListener): WebSocket = client.newWebSocket(request("/ui").build(), listener)
-    fun bild(path: String): ByteArray? {
-        require(path.startsWith("/visual/") && ".." !in path)
+    fun visual(path: String): Pair<String, ByteArray>? {
+        if (!path.matches(Regex("/visual/v[a-z0-9]{6,20}/[\\w.-]+\\.(png|jpg|jpeg|webp)", RegexOption.IGNORE_CASE))) return null
         return client.newCall(request(path).build()).execute().use {
-            if (it.isSuccessful) it.body?.bytes() else null
+            val body = it.body
+            val type = body?.contentType()?.let { value -> "${value.type}/${value.subtype}" }
+            if (it.isSuccessful && body != null && type?.startsWith("image/") == true) type to body.bytes()
+            else null
         }
     }
 }

@@ -1,6 +1,6 @@
 # Jarvis auf dem Pixel und im Handy-Browser
 
-Beide verbinden sich im selben privaten Netz mit Jarvis. Am Computer unter **Einstellungen → Allgemein → Handy-Zugriff** den Zugriff einschalten. „Gerät koppeln“ zeigt URL, QR-Code, PIN und Zertifikat-Fingerabdruck.
+Die Pixel-App und der Handy-Browser verwenden das HTML, CSS und JavaScript der Desktop-Oberfläche aus `app/ui`. Der APK-Build übernimmt diese Dateien direkt. Ein responsives Layout passt Seitenleiste, Einstellungen, Chat und Vorschau an kleine Bildschirme an. Android stellt Kopplung, Dialoge für Modellwahl und Chataktionen, Dateiauswahl, Diktat und Vibration über System-APIs bereit. Beide verbinden sich im selben privaten Netz mit Jarvis. Am Computer unter **Einstellungen → Allgemein → Handy-Zugriff** den Zugriff einschalten. „Gerät koppeln“ zeigt URL, QR-Code, PIN und Zertifikat-Fingerabdruck.
 
 ## Android-App bauen und installieren
 
