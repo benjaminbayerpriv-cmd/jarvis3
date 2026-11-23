@@ -1953,7 +1953,7 @@ function renderExtensions(m) {
   renderSkills();
   $("#extCommands").replaceChildren(...(m.commands.length ? m.commands.map(c => extRow("/" + c.name, c.description || "", { chip: c.source === "manual" ? "eigener" : c.source,
     onRemove: () => send({ type: "ext_command", op: "remove", name: c.name }) })) : [emptyRow("Noch keine eigenen Befehle. Unten anlegen oder im Import übernehmen.")]));
-  $("#extPlugins").replaceChildren(...(m.plugins.length ? m.plugins.map(p => extRow(p, "", { onRemove: () => send({ type: "ext_plugin", op: "remove", name: p }) })) : [emptyRow("Keine Plugins eingetragen.")]));
+  $("#extPlugins").replaceChildren(...(m.plugins.length ? m.plugins.map(p => extRow(p.name, "", { toggle: p.enabled, onToggle: on => send({ type: "ext_plugin", op: "toggle", name: p.name, enabled: on }), onRemove: () => send({ type: "ext_plugin", op: "remove", name: p.name }) })) : [emptyRow("Keine Plugins eingetragen.")]));
 }
 function renderSkills() {
   if (!extState) return;
@@ -2040,9 +2040,19 @@ for (const control of daemonControls) {
   const name = control.dataset.daemon;
   const value = () => numeric.has(name) ? (control.value === "" ? null : Number(control.value)) : control.value;
   if (switchRole(control)) {
-    control.onclick = () => send({ type: "settings", settings: { [name]: !state[name] } });
+    control.onclick = () => {
+      if (ws?.readyState !== WebSocket.OPEN) return showNotice("Jarvis ist gerade nicht verbunden.");
+      state[name] = !state[name];
+      renderState();
+      renderSettingsState();
+      send({ type: "settings", settings: { [name]: state[name] } });
+    };
   } else {
-    control.onchange = () => send({ type: "settings", settings: { [name]: value() } });
+    control.onchange = () => {
+      if (ws?.readyState !== WebSocket.OPEN) { renderSettingsState(); return showNotice("Jarvis ist gerade nicht verbunden."); }
+      state[name] = value();
+      send({ type: "settings", settings: { [name]: state[name] } });
+    };
   }
 }
 for (const control of localControls) {
