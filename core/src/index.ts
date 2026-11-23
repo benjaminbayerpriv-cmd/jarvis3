@@ -99,11 +99,9 @@ const anyUiFocused = () => [...uiFocus.values()].some(Boolean);
 const runningTools = new Set<string>();            // laufende Werkzeugaufrufe (kein Denk-Takt, solange eins läuft)
 const haptics = new Haptics({
   enabled: () => settings.haptics && anyUiFocused(),
-  allow: p => ({ click: settings.hapticsClick, tool: settings.hapticsTool, think: settings.hapticsThink, tick: settings.hapticsType })[p],
+  allow: p => ({ click: settings.hapticsClick, tool: settings.hapticsTool, tick: settings.hapticsType })[p],
   strength: () => settings.hapticsStrength,
-  waiting: () => busySessions.size > 0 && runningTools.size === 0,
 });
-haptics.start();
 const latestRun = new Map<string, number>();
 const runBuffer = new RunBuffer();
 const isBusy = () => !!session && busySessions.has(session);
@@ -900,7 +898,15 @@ browser.onHello = version => {
   }
   broadcast(state());
 };
-ibrowser.onFrame = m => { if (preview.shows(m.tab)) broadcast(m); };
+// Bilder des eigenen Browsers gehen binär (4 Byte Kopflänge, JSON-Kopf, JPEG): kein Base64, kein JSON-Zerlegen, schnelleres Dekodieren
+ibrowser.onFrame = m => {
+  if (!preview.shows(m.tab)) return;
+  const { data, ...header } = m;
+  const head = Buffer.from(JSON.stringify(header)), jpeg = Buffer.from(String(data), "base64");
+  const out = Buffer.allocUnsafe(4 + head.length + jpeg.length);
+  out.writeUInt32BE(head.length, 0); head.copy(out, 4); jpeg.copy(out, 4 + head.length);
+  for (const ui of uis) ui.send(out);
+};
 ibrowser.onClosed = tab => preview.ended(tab);
 ibrowser.onNotice = text => broadcast({ type: "notice", text });
 ibrowser.onOpened = tab => { if (preview.pinned !== undefined || uis.size > 0) preview.pin(tab); };        // Popup der Seite: gleich zeigen
