@@ -46,7 +46,7 @@ function connect() {
     // sonst bleibt eine laufende Antwort leer, bis der Nutzer die Seite aktualisiert.
     if (hadSocket && currentSession && !editingMessage) send({ type: "open", id: currentSession });
     hadSocket = true;
-    reportFocus();
+    reportFocus(); reportTheme();
   };
   // Ohne Verbindung weiß die Oberfläche nichts vom Lauf: nicht im alten „läuft“-Zustand (Stopp-Pille, Stopp-Knopf) hängen bleiben.
   // Nach dem Wiederverbinden schickt der Daemon den echten Zustand.
@@ -64,6 +64,9 @@ function connect() {
 const send = msg => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
 // Fokus melden: der Daemon vibriert nur, wenn Jarvis (App oder Webseite) im Vordergrund ist
 const reportFocus = () => send({ type: "focus", focused: document.hasFocus() && !document.hidden });
+// Hell oder dunkel (auch im Systemmodus): jarvisd richtet Diagramme und den Video-Browser danach aus
+const reportTheme = () => send({ type: "theme", dark: document.documentElement.dataset.theme !== "light" });
+new MutationObserver(reportTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 addEventListener("focus", reportFocus); addEventListener("blur", reportFocus); document.addEventListener("visibilitychange", reportFocus);
 // Fehler der Oberfläche ins zentrale Fehler-Log des Daemons (docs/errors.md)
 const reportError = (where, error) => send({ type: "client_error", where, message: String(error?.message ?? error), stack: error?.stack });
@@ -1202,6 +1205,7 @@ function dtOpen(id, url) {
   if (dtabs.some(t => t.id === id)) return;
   const frame = document.createElement("iframe");
   frame.className = "dframe"; frame.hidden = true; frame.title = "Seite";
+  frame.addEventListener("load", () => frame.classList.add("loaded"));
   frame.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen; autoplay; encrypted-media");
   const real = url && url !== "about:blank" ? url : "";
   if (real) frame.src = openProxyUrl(real);
