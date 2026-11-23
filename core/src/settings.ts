@@ -20,6 +20,7 @@ export const defaults = {
   autoProjects: true,
   errorScreenshots: true,
   voiceLog: true,
+  haptics: true,
 };
 
 export type Settings = typeof defaults;
@@ -32,7 +33,7 @@ export function parseSettings(input: unknown, stored = false): Patch {
   const value = input as Record<string, unknown>;
   const patch: Patch = {};
   const switches = ["lofi", "liveView", "spokenReplies", "actionAnnouncements", "previewAuto", "autoChatTitles",
-    "autoProjects", "errorScreenshots", "voiceLog"] as const;
+    "autoProjects", "errorScreenshots", "voiceLog", "haptics"] as const;
   for (const key of switches) if (typeof value[key] === "boolean") patch[key] = value[key];
   if (nonempty(value.model)) patch.model = value.model;
   if (nonempty(value.voiceModel)) patch.voiceModel = value.voiceModel;
