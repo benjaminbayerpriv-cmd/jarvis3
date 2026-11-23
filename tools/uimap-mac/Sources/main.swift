@@ -311,6 +311,8 @@ case "scan":
     if args.contains("--text") { print(reply["text"] as? String ?? "") } else { emit(reply) }
 case "displays":
     emit(session.handle(["cmd": "displays"]))
+case "haptic-serve":
+    hapticServe()
 case "serve":
     while let line = readLine() {
         guard let data = line.data(using: .utf8),
@@ -392,6 +394,6 @@ case "capture-serve":
     NSApplication.shared.run()
 
 default:
-    FileHandle.standardError.write(Data("uimap scan|serve|capture-serve|displays [--display N]\n".utf8))
+    FileHandle.standardError.write(Data("uimap scan|serve|capture-serve|haptic-serve|displays [--display N]\n".utf8))
     exit(2)
 }

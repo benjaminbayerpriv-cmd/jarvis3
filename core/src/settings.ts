@@ -21,6 +21,12 @@ export const defaults = {
   errorScreenshots: true,
   voiceLog: true,
   internalBrowser: true,
+  haptics: true,
+  hapticsClick: true,
+  hapticsTool: true,
+  hapticsThink: true,
+  hapticsType: true,
+  hapticsStrength: "normal" as "soft" | "normal" | "strong",
 };
 
 export type Settings = typeof defaults;
@@ -33,8 +39,9 @@ export function parseSettings(input: unknown, stored = false): Patch {
   const value = input as Record<string, unknown>;
   const patch: Patch = {};
   const switches = ["lofi", "liveView", "spokenReplies", "actionAnnouncements", "previewAuto", "autoChatTitles",
-    "autoProjects", "errorScreenshots", "voiceLog", "internalBrowser"] as const;
+    "autoProjects", "errorScreenshots", "voiceLog", "internalBrowser", "haptics", "hapticsClick", "hapticsTool", "hapticsThink", "hapticsType"] as const;
   for (const key of switches) if (typeof value[key] === "boolean") patch[key] = value[key];
+  if (value.hapticsStrength === "soft" || value.hapticsStrength === "normal" || value.hapticsStrength === "strong") patch.hapticsStrength = value.hapticsStrength;
   if (nonempty(value.model)) patch.model = value.model;
   if (nonempty(value.voiceModel)) patch.voiceModel = value.voiceModel;
   if (value.mode === "browser" || value.mode === "computer") patch.mode = value.mode;
