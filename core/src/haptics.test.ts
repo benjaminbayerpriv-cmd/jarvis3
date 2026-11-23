@@ -4,10 +4,10 @@ import { Haptics, type Pulse } from "./haptics";
 test("Klick, Text und Denken lösen die richtigen Impulse aus, aus = still", async () => {
   const got: Pulse[] = [];
   let on = true, waiting = true;
-  const h = new Haptics({ enabled: () => on, waiting: () => waiting, sink: p => got.push(p), thinkEveryMs: 40 });
+  const h = new Haptics({ enabled: () => on, waiting: () => waiting, sink: (p: Pulse) => got.push(p), thinkEveryMs: 40 });
   h.pulse("click");
   expect(got).toEqual(["click"]);
-  const h2 = new Haptics({ enabled: () => on, waiting: () => false, sink: p => got.push(p), streamEveryMs: 30, streamQuietMs: 60 });
+  const h2 = new Haptics({ enabled: () => on, waiting: () => false, sink: (p: Pulse) => got.push(p), streamEveryMs: 30, streamQuietMs: 60 });
   h2.text(5000);                        // riesiges Textstück: trotzdem nur der gleichmäßige Takt, kein Stau
   await Bun.sleep(130);
   const ticks = got.filter(p => p === "tick").length;
@@ -31,4 +31,15 @@ test("Klick, Text und Denken lösen die richtigen Impulse aus, aus = still", asy
   h.pulse("click"); await Bun.sleep(100);
   expect(got).toEqual([]);              // Einstellung aus: nichts
   h.stop();
+});
+
+test("Arten lassen sich einzeln abschalten, Stärke wird mitgegeben", () => {
+  const got: [Pulse, number][] = [];
+  const allowed: Record<Pulse, boolean> = { click: true, tool: false, think: true, tick: true };
+  let strength: "soft" | "normal" | "strong" = "strong";
+  const h = new Haptics({ enabled: () => true, allow: p => allowed[p], strength: () => strength, waiting: () => false, sink: (p, n) => got.push([p, n]) });
+  h.pulse("tool"); h.pulse("click");
+  expect(got).toEqual([["click", 15]]);
+  strength = "soft"; h.pulse("click");
+  expect(got.at(-1)).toEqual(["click", 3]);
 });

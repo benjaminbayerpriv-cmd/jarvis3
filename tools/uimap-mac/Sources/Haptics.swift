@@ -11,13 +11,14 @@ enum Pulse: String {
     case tick      // winzig: ein Buchstabe im Antwort-Stream
     case think     // weich: Denken (Zyklus)
     case click     // deutlich: Jarvis klickt
+    case tool      // mittel: ein Werkzeugaufruf beginnt oder endet
 
     /// Stärke-Nummern des Aktors (1–6 schwach bis stark, 15/16 kräftiger Klick)
     var actuation: Int32 {
-        switch self { case .tick: return 1; case .think: return 3; case .click: return 6 }
+        switch self { case .tick: return 1; case .think: return 3; case .click: return 6; case .tool: return 4 }
     }
     var fallback: NSHapticFeedbackManager.FeedbackPattern {
-        switch self { case .tick: return .alignment; case .think: return .levelChange; case .click: return .generic }
+        switch self { case .tick: return .alignment; case .think: return .levelChange; case .click, .tool: return .generic }
     }
 }
 
@@ -59,8 +60,8 @@ final class Haptics {
         mode = "nur-berührung"
     }
 
-    func fire(_ pulse: Pulse) {
-        if let actuator, let actuate, actuate(actuator, pulse.actuation, 0, 0, 0) == 0 { return }
+    func fire(_ pulse: Pulse, strength: Int32? = nil) {
+        if let actuator, let actuate, actuate(actuator, strength ?? pulse.actuation, 0, 0, 0) == 0 { return }
         NSHapticFeedbackManager.defaultPerformer.perform(pulse.fallback, performanceTime: .now)
     }
 }
@@ -70,8 +71,10 @@ func hapticServe() {
     let haptics = Haptics()
     FileHandle.standardError.write(Data("haptik: \(haptics.mode)\n".utf8))
     while let line = readLine() {
-        let name = line.trimmingCharacters(in: .whitespaces)
+        // "<impuls> [stärke]", z. B. "click 15"
+        let parts = line.split(separator: " ").map(String.init)
+        guard let name = parts.first else { continue }
         if name == "mode" { print(haptics.mode); fflush(stdout); continue }
-        if let pulse = Pulse(rawValue: name) { haptics.fire(pulse) }
+        if let pulse = Pulse(rawValue: name) { haptics.fire(pulse, strength: parts.count > 1 ? Int32(parts[1]) : nil) }
     }
 }
