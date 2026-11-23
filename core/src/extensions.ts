@@ -22,6 +22,7 @@ export interface Store {
   skillDirs: Record<string, { path: string; source: Source }>;   // Name -> Ordner mit SKILL.md
   disabledSkills: string[];
   mcpOverrides?: Record<string, boolean>;
+  disabledPlugins?: string[];
   plugins: string[];                                            // npm-Pakete oder Dateien für OpenCode
   version?: number;                                             // 2: Importiertes ist standardmäßig aus (jeder aktive MCP-Server und Skill kostet Kontext)
 }
@@ -209,7 +210,7 @@ export function writeWorkspace(workspace: string, base: Record<string, any>, sto
     if (Object.hasOwn(store.mcp, name) && !Object.hasOwn(base.mcp ?? {}, name)) continue;
     config.mcp[name] = { ...(Object.hasOwn(config.mcp, name) ? config.mcp[name] : {}), enabled };
   }
-  config.plugin = store.plugins;
+  config.plugin = store.plugins.filter(name => !store.disabledPlugins?.includes(name));
   // Skills stehen NIE im Systemprompt: OpenCodes eigenes Skill-Werkzeug bekommt keinen Skill (alle verweigert), stattdessen holt Jarvis sie
   // bei Bedarf mit skill_list und skill_read (mcp.ts). So sprengen auch viele aktivierte Skills das Kontextlimit nicht.
   config.permission = { ...(base.permission ?? {}), skill: { "*": "deny" } };

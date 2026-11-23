@@ -1171,7 +1171,7 @@ async function extensionState() {
   });
   const skills = skillCatalog(store).map(sk => ({ name: sk.name, description: sk.description.slice(0, 200), source: skillSource(sk.path), disabled: !sk.enabled }));
   const commands = Object.entries(store.commands).map(([name, c]) => ({ name, description: c.description, source: c.source, custom: true }));
-  return { type: "extensions", mcp, skills, commands, plugins: store.plugins };
+  return { type: "extensions", mcp, skills, commands, plugins: store.plugins.map(name => ({ name, enabled: !store.disabledPlugins?.includes(name) })) };
 }
 /** Konfiguration neu schreiben und OpenCode neu laden (Befehle, Skills, MCP, Plugins). */
 async function reloadExtensions() {
@@ -1239,8 +1239,13 @@ async function extensionMessage(msg: any): Promise<any> {
   }
   if (msg.type === "ext_plugin") {
     const name = String(msg.name ?? "").trim();
-    if (msg.op === "remove") store.plugins = store.plugins.filter(p => p !== name);
-    else if (msg.op === "add" && name && !store.plugins.includes(name)) store.plugins.push(name);
+    if (msg.op === "remove") {
+      store.plugins = store.plugins.filter(p => p !== name);
+      store.disabledPlugins = (store.disabledPlugins ?? []).filter(p => p !== name);
+    } else if (msg.op === "toggle" && store.plugins.includes(name) && typeof msg.enabled === "boolean") {
+      store.disabledPlugins = (store.disabledPlugins ?? []).filter(p => p !== name);
+      if (!msg.enabled) store.disabledPlugins.push(name);
+    } else if (msg.op === "add" && name && !store.plugins.includes(name)) store.plugins.push(name);
     saveStore(store); await reloadExtensions();
     return await extensionState();
   }
