@@ -90,7 +90,8 @@ export class WebProxy {
     // eigene Adresse nur in Tags, Skripten und Stilen umschreiben, nie im sichtbaren Text (dort soll die echte Adresse stehen)
     let out = html.split(/(<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>)/i).map((part, i) => i % 2 ? this.rewriteOrigin(part, o, label) : part).join("");
     // Navigationsziele zu anderen Herkünften über den Proxy führen (Bilder, Skripte und Stile laden direkt von dort)
-    out = out.replace(/(\s)(href|action)=("|')(https?:\/\/[^"'#\s>]+)(\3)/gi, (m, sp, attr, q, url) => {
+    out = out.replace(/(\s)(href|action)=("|')((?:https?:)?\/\/[^"'#\s>]+)(\3)/gi, (m, sp, attr, q, raw: string) => {
+      const url = raw.startsWith("//") ? `${o.scheme}:${raw}` : raw;                 // //host/pfad übernimmt das Schema der Seite
       const real = this.realOf(url) ?? url;                         // war die Adresse schon die eigene (umgeschrieben), gilt die echte
       const p = this.proxify(real);
       return p ? `${sp}${attr}=${q}${p}${q} data-jv-href=${q}${real}${q}` : m;
@@ -106,6 +107,13 @@ export class WebProxy {
     const safe = (s: string) => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
     return new Response(`<!doctype html><meta charset=utf-8><title>Seite nicht erreichbar</title><body style="font:15px/1.5 system-ui;background:#131314;color:#e3e3e3;display:grid;place-items:center;height:100vh;margin:0"><div style="max-width:420px;padding:24px"><h2 style="font-weight:500">Seite nicht erreichbar</h2><p>${safe(message)}</p><p style="color:#9a9b9c;word-break:break-all">${safe(url)}</p></div>`,
       { status: 502, headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  /** Seite, die der Oberfläche meldet, dass die Zielseite den direkten Browser nicht zulässt (Bot-Sperre, CAPTCHA an feste Domains) */
+  private blockedPage(url: string) {
+    const safe = (x: string) => x.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    return new Response(`<!doctype html><meta charset=utf-8><title>Seite lässt den direkten Browser nicht zu</title><body style="font:15px/1.5 system-ui;background:#131314;color:#e3e3e3;display:grid;place-items:center;height:100vh;margin:0"><div style="max-width:420px;padding:24px"><h2 style="font-weight:500">Diese Seite lässt den direkten Browser nicht zu</h2><p>Sie hat Jarvis als Roboter eingestuft. Sie wird als Videostrom geöffnet.</p><p style="color:#9a9b9c;word-break:break-all">${safe(url)}</p></div><script>try{parent.postMessage({jv:true,kind:"blocked",url:${JSON.stringify(url)}},"*")}catch(e){}</script>`,
+      { status: 403, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   }
 
   async handle(req: Request, label: string): Promise<Response> {
@@ -132,6 +140,11 @@ export class WebProxy {
     out.set("access-control-allow-origin", req.headers.get("origin") ?? "*");
     out.set("access-control-allow-credentials", "true");
     const location = upstream.headers.get("location");
+    const blockedAt = location ? new URL(location, real) : url.pathname.startsWith("/sorry/") ? new URL(real) : undefined;
+    if (upstream.status === 429 || (blockedAt && /^\/sorry(\/|$)/.test(blockedAt.pathname) && /google\./.test(blockedAt.hostname))) {
+      const wanted = blockedAt?.searchParams.get("continue") || real;                      // bei Google: die ursprünglich gewünschte Adresse
+      return this.blockedPage(wanted);
+    }
     if (location && upstream.status >= 300 && upstream.status < 400) {
       out.set("location", this.proxify(location, real) ?? location);
       return new Response(null, { status: upstream.status, headers: out });

@@ -29,7 +29,7 @@ export function urlFor(input: string): string {
   if (/^(https?|file|about|data|chrome|blob):/i.test(text)) return text;
   if (/^localhost(:\d+)?(\/|$)/i.test(text) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(text)) return "http://" + text;
   if (/^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(text)) return "https://" + text;
-  return "https://www.google.com/search?q=" + encodeURIComponent(text);
+  return "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(text);   // reine HTML-Suche: Google sperrt Anfragen über den Proxy oft, DuckDuckGos Haupt-Suche braucht Skripte mit fremder Herkunft
 }
 
 export function findChrome(): string | undefined {

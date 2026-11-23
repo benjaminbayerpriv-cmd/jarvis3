@@ -1503,6 +1503,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         ws.send(JSON.stringify({ type: "tabs", tabs, windows, pinned: preview.pinned ?? null }));
       }
       else if (msg.type === "dt_new") dbrowser.tell({ type: "dt_open", id: dbrowser.allocate(), url: urlFor(msg.url ?? "about:blank") });      // „Neuer Tab“ in der Vorschau
+      else if (msg.type === "dt_blocked" && Number.isInteger(msg.id)) dbrowser.blocked(msg.id);
       else if (msg.type === "dt_tabs" && Array.isArray(msg.tabs)) dbrowser.setTabs(msg.tabs.filter((t: any) => dbrowser.owns(t?.id)).map((t: any) => ({ id: t.id, url: String(t.url ?? ""), title: String(t.title ?? "") })));
       else if (msg.type === "ib") { // Bedienung des Video-Browsers aus der Vorschau
         const op = String(msg.op ?? "");

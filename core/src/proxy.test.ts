@@ -10,6 +10,7 @@ function setup() {
     if (u.pathname === "/redirect") return new Response(null, { status: 302, headers: { location: "/ziel" } });
     if (u.pathname === "/other") return new Response(null, { status: 301, headers: { location: "http://example.org/x" } });
     if (u.pathname === "/data.json") return new Response(`{"self":"http://127.0.0.1:${upstream.port}/api","esc":"http:\\/\\/127.0.0.1:${upstream.port}\\/x"}`, { headers: { "content-type": "application/json" } });
+    if (u.pathname === "/gesperrt") return new Response(null, { status: 302, headers: { location: `http://www.google.com/sorry/index?continue=${encodeURIComponent("https://www.google.com/search?q=x")}` } });
     if (u.pathname === "/bild.png") return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } });
     return new Response(`<!doctype html><html><head><title>T</title></head><body>
       <a href="http://127.0.0.1:${upstream.port}/seite">eigene</a> <a href="https://example.org/a">fremd</a> <a href="/rel">relativ</a>
@@ -57,6 +58,17 @@ test("Umleitungen, JSON, Binärdaten und Agent-Skript", async () => {
     expect(proxy.labelOf("pzzzzzzzzzz.localhost:7777")).toBeUndefined();            // unbekannte Namen werden abgewiesen
     expect(proxy.labelOf(`${label}.localhost:7777`)).toBe(label);
     expect((await get("/", { headers: { host: "x" } })).status).toBe(200);
+  } finally { upstream.stop(true); }
+});
+
+test("Bot-Sperre (Google /sorry) wird als Hinweis für die Oberfläche gemeldet", async () => {
+  const { upstream, get } = setup();
+  try {
+    const r = await get("/gesperrt");
+    expect(r.status).toBe(403);
+    const html = await r.text();
+    expect(html).toContain('kind:"blocked"');
+    expect(html).toContain("https://www.google.com/search?q=x");     // ursprünglich gewünschte Adresse
   } finally { upstream.stop(true); }
 });
 
