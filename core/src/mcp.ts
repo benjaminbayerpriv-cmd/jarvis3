@@ -83,10 +83,11 @@ server.tool("desktop_type_text", "Schreibt Text in das gerade fokussierte Feld b
 server.tool("desktop_open_app", "Öffnet ein Programm per Name.", { name: z.string() },
   async a => result(await call("desktop", { cmd: "open_app", ...a })));
 
-// ---------- Browser (Tab-Gruppe „Jarvis“, im Hintergrund) ----------
-server.tool("browser_tab_open", "Öffnet eine Seite im Hintergrund in der Tab-Gruppe Jarvis.", { url: z.string() },
-  async a => result(await call("browser", { cmd: "tab_open", ...a })));
-server.tool("browser_tab_list", "Listet die Tabs.", {}, async () => result(await call("browser", { cmd: "tab_list" })));
+// ---------- Browser: eigener Jarvis-Browser (Vorrang) und echtes Chrome (Tab-Gruppe „Jarvis“) ----------
+server.tool("browser_tab_open", "Öffnet eine Seite in einem neuen Tab. Standard ist der EIGENE Jarvis-Browser (in der Vorschau sichtbar, kein Login des Nutzers). Mit in=\"chrome\" stattdessen im echten Google Chrome des Nutzers (Tab-Gruppe Jarvis, im Hintergrund): nur wenn der Nutzer es ausdrücklich will oder die Seite seine Anmeldung in Chrome braucht. Die Tab-ID gilt für alle weiteren browser_*-Werkzeuge.",
+  { url: z.string(), in: z.enum(["jarvis", "chrome"]).optional().describe("jarvis (Standard) oder chrome") },
+  async a => result(await call("browser", { cmd: "tab_open", url: a.url, ...(a.in === "chrome" ? { in: "chrome" } : {}) })));
+server.tool("browser_tab_list", "Listet die Tabs: die des eigenen Jarvis-Browsers (internal=true) und die der Tab-Gruppe Jarvis im echten Chrome (chrome=true).", {}, async () => result(await call("browser", { cmd: "tab_list" })));
 server.tool("browser_tab_adopt", "Übernimmt einen bereits offenen Tab des Nutzers in die Gruppe Jarvis, damit du ihn bedienen kannst. NUR auf ausdrückliche Bitte des Nutzers. Tab-ID aus browser_tab_list. Ist der Tab gerade der aktive, kannst du ihn nur lesen/scannen, nicht klicken oder tippen (dann den Nutzer bitten, kurz einen anderen Tab zu öffnen).",
   { tab }, async a => result(await call("browser", { cmd: "tab_adopt", ...a })));
 server.tool("browser_tab_release", "Gibt einen übernommenen Tab wieder frei (aus der Gruppe Jarvis nehmen).", { tab },
