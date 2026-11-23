@@ -1135,7 +1135,7 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
 }
 
 // ---------- Erweiterungen: Schrägstrich-Befehle, Skills, MCP, Plugins, Import ----------
-const ocGet = async (path: string): Promise<any> => { try { return await (await fetch(`${brain.url}${path}`)).json(); } catch { return undefined; } };
+const ocGet = async (path: string): Promise<any> => { try { return await (await fetch(`${brain.url}${path}`, { signal: AbortSignal.timeout(4000) })).json(); } catch { return undefined; } };
 const skillSource = (loc: string) => /built-in/i.test(loc) ? "OpenCode" : loc.includes("/workspace/.opencode/") ? "Jarvis" : loc.includes("/.claude/") ? "Claude" : loc.includes("/.codex/") ? "Codex"
   : loc.includes("/.config/opencode/") ? "OpenCode" : loc.includes("/.agents/") ? "Agents" : "Sonstige";
 const BUILTIN_COMMANDS = [
@@ -1176,10 +1176,9 @@ async function extensionState() {
 /** Konfiguration neu schreiben und OpenCode neu laden (Befehle, Skills, MCP, Plugins). */
 async function reloadExtensions() {
   writeWorkspace(workspace, BASE_OPENCODE_CONFIG);
-  const response = await fetch(`${brain.url}/instance/dispose`, { method: "POST" });
+  const response = await fetch(`${brain.url}/instance/dispose`, { method: "POST", signal: AbortSignal.timeout(5000) });
   if (!response.ok) throw new Error(`OpenCode konnte Erweiterungen nicht neu laden (${response.status}).`);
-  await Bun.sleep(600);
-  for (let i = 0; i < 20 && !(await brain.healthy()); i++) await Bun.sleep(250);
+
 }
 async function extensionMessage(msg: any): Promise<any> {
   const store = loadStore();

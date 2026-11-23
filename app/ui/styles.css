@@ -832,7 +832,7 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .ext-row { display: flex; gap: 8px; }
 .toggle-lg.small { width: 44px; height: 26px; }
 .toggle-lg.small::after { top: 4px; left: 4px; width: 14px; height: 14px; }
-.toggle-lg.small[aria-checked="true"]::after { transform: translateX(18px); top: 2px; width: 20px; height: 20px; left: 4px; }
+.toggle-lg.small[aria-checked="true"]::after { transform: translateX(16px); top: 1px; width: 20px; height: 20px; left: 1px; }
 .import-sources { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 12px 12px; }
 .import-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px 8px; }
 .import-bar span { flex: 1; font-size: 14px; color: var(--on-surface-variant); }
