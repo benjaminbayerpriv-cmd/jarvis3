@@ -86,11 +86,15 @@
         <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
       </header>
         <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Vorschauquelle"></div>
+      <div class="viewer-sources" id="viewerSources" hidden></div>
       <form class="viewer-nav" id="viewerNav" hidden autocomplete="off">
         <button type="button" class="icon-btn small" id="vBack" aria-label="Zurück" title="Zurück"><span data-icon="arrow-left"></span></button>
         <button type="button" class="icon-btn small" id="vFwd" aria-label="Vorwärts" title="Vorwärts"><span data-icon="arrow-right"></span></button>
         <button type="button" class="icon-btn small" id="vReload" aria-label="Neu laden" title="Neu laden"><span data-icon="refresh"></span></button>
         <input id="viewerUrl" class="viewer-url" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Adresse oder Suchbegriff" placeholder="Adresse oder Suchbegriff">
+        <button type="button" class="icon-btn small" id="vNew" aria-label="Neuer Tab" title="Neuer Tab"><span data-icon="plus"></span></button>
+        <button type="button" class="icon-btn small" id="vSources" aria-label="Quellen" title="Bildschirm, Fenster und Chrome-Tabs ansehen" aria-haspopup="true"><span data-icon="device-desktop"></span></button>
+        <button type="button" class="icon-btn small" id="vClose" aria-label="Vorschau schließen" title="Schließen"><span data-icon="x"></span></button>
       </form>
       <div class="viewer-frame">
         <canvas id="viewerCanvas" tabindex="0" aria-label="Live-Bild des Tabs oder Fensters"></canvas>

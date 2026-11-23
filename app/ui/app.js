@@ -975,7 +975,12 @@ const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
 function renderViewerTabs() {
   const box = $("#viewerTabs"); box.replaceChildren();
-  const mk = (label, sel, onclick, iconHtml = "", title = "", onclose = null, extra = "") => {
+  const internalTabs = viewerTabs.filter(t => t.internal);
+  // Browser-Ansicht: eigener Browser mit Tabs wie im Browser; Bildschirm-Quellen (Fenster, Chrome, Automatisch) liegen im Menü „Quellen“
+  const browserMode = state.internalBrowser !== false && (viewerInternal !== null || (internalTabs.length > 0 && (viewerPinned === null || internalTabs.some(t => t.tab === viewerPinned))));
+  viewer.toggleAttribute("data-browser", browserMode);
+  $("#viewerSources").hidden = true;
+  const mk = (label, sel, onclick, iconHtml = "", title = "", onclose = null, extra = "", into = box) => {
     const b = document.createElement("button"); b.type = "button"; b.className = "vtab" + (extra ? " " + extra : ""); b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(sel));
     if (iconHtml) b.insertAdjacentHTML("beforeend", iconHtml);
     const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick;
@@ -983,25 +988,35 @@ function renderViewerTabs() {
       const x = document.createElement("span"); x.className = "vtab-x"; x.setAttribute("role", "button"); x.setAttribute("aria-label", "Tab schließen"); x.innerHTML = icon("x");
       x.onclick = e => { e.stopPropagation(); onclose(); }; b.append(x);
     }
-    box.append(b);
+    into.append(b);
   };
-  mk("Automatisch", viewerPinned === null, () => chooseViewer(null), icon("sparkles"), "Dem Tab oder Fenster folgen, in dem Jarvis gerade arbeitet");
+  const tabFav = t => t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon(t.chrome ? "brand-chrome" : "world");
+  const tabTitle = t => `${t.chrome ? "Chrome · " : ""}${t.url || t.title || ""}`;
+  const sources = browserMode ? $("#viewerSources") : box;   // Ziel für Quellen, die nicht zum Browser gehören
+  if (browserMode) sources.replaceChildren();
+  const extra = browserMode ? "vtab-src" : "";
+  mk("Automatisch", viewerPinned === null && !browserMode, () => chooseViewer(null), icon("sparkles"), "Dem Tab oder Fenster folgen, in dem Jarvis gerade arbeitet", null, extra, sources);
   for (const v of viewerVisuals) {
     const key = `vis:${v.id}`;
-    mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
+    mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title, null, extra, sources);
   }
   for (const t of viewerTabs) {
-    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon(t.chrome ? "brand-chrome" : "world");
-    mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, `${t.chrome ? "Chrome · " : ""}${t.url || t.title || ""}`,
-      t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
+    if (browserMode && !t.internal) mk(t.title || t.url || "Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), tabFav(t), tabTitle(t), null, extra, sources);
+    else mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), tabFav(t), tabTitle(t), t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
   }
   // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
   for (const w of viewerWindows) {
     const key = `win:${w.id}`;
     mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
-      icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
+      icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`, null, extra, sources);
   }
-  if (state.internalBrowser !== false) mk("Neuer Tab", false, newBrowserTab, icon("plus"), "Neuen Tab im eingebauten Browser öffnen", null, "vtab-new");
+  if (state.internalBrowser !== false && !browserMode) mk("Neuer Tab", false, newBrowserTab, icon("plus"), "Neuen Tab im eingebauten Browser öffnen", null, "vtab-new");
+  box.hidden = browserMode && internalTabs.length < 2;   // ein einzelner Tab braucht keine Tab-Leiste
+  if (false) { // Menü für Bildschirm-Quellen (jetzt in der Werkzeugleiste)
+    const b = document.createElement("button"); b.type = "button"; b.className = "vtab-menu"; b.title = "Bildschirm, Fenster und Chrome-Tabs ansehen"; b.setAttribute("aria-label", "Quellen"); b.setAttribute("aria-haspopup", "true");
+    b.innerHTML = icon("device-desktop"); b.onclick = e => { e.stopPropagation(); const m = $("#viewerSources"); m.hidden = !m.hidden; };
+    box.append(b);
+  }
   const empty = $("#viewerEmpty");
   if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
   else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch kein Tab offen. Mit „Neuer Tab“ öffnest du selbst eine Seite, oder bitte Jarvis darum.";
@@ -1156,6 +1171,7 @@ const urlInput = $("#viewerUrl");
 function setInternal(tab, frame) {
   const changed = viewerInternal !== tab;
   viewerInternal = tab;
+  if (changed) renderViewerTabs();
   $("#viewerNav").hidden = tab === null;
   if (tab === null) { delete viewer.dataset.internal; return; }
   viewer.dataset.internal = "1";
@@ -1179,12 +1195,16 @@ function fitInternal(now = false) {
   }, now ? 0 : 120);
 }
 new ResizeObserver(() => fitInternal()).observe(viewerFrame);
+$("#vSources").onclick = e => { e.stopPropagation(); const m = $("#viewerSources"); m.hidden = !m.hidden; };
+$("#vNew").onclick = () => newBrowserTab();
+$("#vClose").onclick = () => closeViewer();
 const newBrowserTab = () => { send({ type: "ib", op: "new", url: "about:blank" }); setTimeout(() => urlInput.focus(), 400); };
 $("#viewerNav").onsubmit = e => { e.preventDefault(); const url = urlInput.value.trim(); if (viewerInternal !== null && url) { send({ type: "ib", op: "navigate", tab: viewerInternal, url }); vcanvas.focus(); } };
 $("#vBack").onclick = () => viewerInternal !== null && send({ type: "ib", op: "back", tab: viewerInternal });
 $("#vFwd").onclick = () => viewerInternal !== null && send({ type: "ib", op: "forward", tab: viewerInternal });
 $("#vReload").onclick = () => viewerInternal !== null && send({ type: "ib", op: "reload", tab: viewerInternal });
 urlInput.addEventListener("focus", () => urlInput.select());
+document.addEventListener("click", e => { const m = $("#viewerSources"); if (m && !m.hidden && !m.contains(e.target)) m.hidden = true; });
 document.addEventListener("keydown", e => { // Cmd/Strg+L: Adressleiste
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l" && viewerInternal !== null && !viewer.hidden) { e.preventDefault(); urlInput.focus(); }
 });
