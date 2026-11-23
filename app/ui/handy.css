@@ -22,7 +22,8 @@
   .topbar .mode-switch { gap: 4px; padding-inline: 5px; }
   .topbar .mode-switch > svg { width: 18px; height: 18px; }
   .app .rail {
-    display: flex; position: fixed; inset: 0 auto 0 env(safe-area-inset-left); z-index: 11;
+    display: flex; position: fixed; inset: 0 auto auto env(safe-area-inset-left); z-index: 11;
+    height: var(--handy-height, 100dvh);
     width: min(86vw, 320px); padding: 0 12px max(12px, env(safe-area-inset-bottom));
     background: var(--surface-low); visibility: hidden; transform: translateX(-110%);
     transition: transform var(--d-m2) var(--ease), visibility var(--d-m2);
