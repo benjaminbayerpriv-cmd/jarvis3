@@ -23,6 +23,7 @@ import { parseRange, readUsage, summarize } from "./usage";
 import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
 import { defaults, parseSettings, type Settings } from "./settings";
+import { Haptics } from "./haptics";
 import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, type Visual } from "./visuals";
 import { needsChatTitle, parseChatTitle, provisionalChatTitle, titleExcerpt, visibleChatTitle, type ChatMeta } from "./chat-title";
 
@@ -89,6 +90,18 @@ let models: ModelInfo[] = [];
 let session: string | undefined;   // der Chat, den die Oberfläche gerade zeigt und an den neue Nachrichten gehen
 // Mehrere Chats laufen parallel: pro Chat ein eigener Lauf. latestRun merkt die neueste Lauf-Nummer je Chat; nur sie gilt als aktuell.
 const busySessions = new Set<string>();
+// Haptik am Trackpad (nur macOS): Klick, Denk-Takt, Buchstaben im Antwort-Stream
+// Fokus: vibriert wird nur, wenn mindestens eine Jarvis-Oberfläche (App oder Webseite) im Vordergrund ist.
+const uiFocus = new Map<unknown, boolean>();
+const anyUiFocused = () => [...uiFocus.values()].some(Boolean);
+const runningTools = new Set<string>();            // laufende Werkzeugaufrufe (kein Denk-Takt, solange eins läuft)
+const haptics = new Haptics({
+  enabled: () => settings.haptics && anyUiFocused(),
+  allow: p => ({ click: settings.hapticsClick, tool: settings.hapticsTool, think: settings.hapticsThink, tick: settings.hapticsType })[p],
+  strength: () => settings.hapticsStrength,
+  waiting: () => busySessions.size > 0 && runningTools.size === 0,
+});
+haptics.start();
 const latestRun = new Map<string, number>();
 const runBuffer = new RunBuffer();
 const isBusy = () => !!session && busySessions.has(session);
@@ -665,6 +678,9 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
       finalSpeech += e.delta;
     }
     if (e.kind === "tool") {
+      const key = `${sid}:${e.id}`;
+      if ((e.status === "pending" || e.status === "running") && !runningTools.has(key)) { runningTools.add(key); haptics.pulse("tool"); }  // Aufruf beginnt
+      else if ((e.status === "completed" || e.status === "error") && runningTools.delete(key)) haptics.pulse("tool");                    // Aufruf endet
       toolSeen = true;
       if (lastRun) lastRun.toolSeen = true;
       if (e.status === "pending" || e.status === "running") finalSpeech = "";
@@ -709,6 +725,8 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     }
     if (e.kind === "done" || e.kind === "error") {
       finished = true;
+      haptics.finish();
+      for (const key of runningTools) if (key.startsWith(`${sid}:`)) runningTools.delete(key);
       clearTimeout(ackTimer);
       const aborted = e.kind === "done" && e.aborted;
       if (!aborted) {
@@ -727,7 +745,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
         void refineChatTitle(sid);
     }
     if (e.kind === "text") {
-      if (!spoken && !click) emit({ type: "delta", text: e.delta });
+      if (!spoken && !click) { emit({ type: "delta", text: e.delta }); haptics.text(e.delta.length); }
     } else if (e.kind === "reasoning") {
       if (!spoken && !click) emit({ type: "reasoning", text: e.delta });
     } else emit({ type: e.kind, ...e });
@@ -886,6 +904,7 @@ browser.onEvent = m => {
 
 /** Stoppt den gezeigten Chat; mit all=true (Not-Aus) alle laufenden Chats. Die anderen Chats laufen sonst ungestört weiter. */
 async function stop(all = false, chat = session) {
+  haptics.finish();
   const targets = all ? [...busySessions] : chat && busySessions.has(chat) ? [chat] : [];
   if (all || targets.length >= busySessions.size) stoppedUntil = Date.now() + 1500; // Werkzeuge nur sperren, wenn kein anderer Chat sie braucht
   preview.clear();
@@ -1016,6 +1035,7 @@ async function runTool(target: string, cmd: Record<string, any>) {
   try {
     r = await runToolInner(target, cmd);
     if (click && r.ok) click.clickSent = true;
+    if (r.ok && cmd.cmd === "click") haptics.pulse("click"); // Webseite oder Computer: ein Klick am Trackpad
   } catch (error) {
     r = { ok: false, error: String((error as Error)?.message ?? error) };
   } finally {
@@ -1286,7 +1306,7 @@ Bun.serve<{ kind: string; fresh?: boolean }, {}>({
       }
       else {
         vlog(`ui #${uiId(ws)} close`);
-        uis.delete(ws);
+        uis.delete(ws); uiFocus.delete(ws);
         if (uis.size === 0) preview.clear();
         // Wer Live gestartet hat und die Verbindung verliert, beendet es. Das gilt auch, wenn andere UIs noch offen sind.
         if (voiceOwner === ws) { vlog(`voice-owner ui #${uiId(ws)} weg -> off`); setVoice("off"); }
@@ -1427,6 +1447,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       }
       else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
+      else if (msg.type === "focus") uiFocus.set(ws, msg.focused === true);
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") {
         const id = String(msg.id);
@@ -1498,4 +1519,4 @@ void repairChatTitles();
 setInterval(() => void repairChatTitles(), TITLE_RETRY_MS);
 console.log(`jarvisd bereit: http://127.0.0.1:${PORT} · ${models.length} Modelle · Standard ${settings.model}`);
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { brain.stop(); desktop.stop(); process.exit(0); });
+  process.on(sig, () => { brain.stop(); desktop.stop(); haptics.stop(); process.exit(0); });
