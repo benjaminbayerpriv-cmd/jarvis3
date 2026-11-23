@@ -66,7 +66,8 @@ const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), wor
 const desktop = new Desktop();
 const browser = new Browser();
 const dbrowser = new DirectBrowser();         // direkter Browser: echte Seiten im Rahmen der Vorschau (Proxy), Jarvis steuert sie über einen Agenten in der Seite
-const webProxy = new WebProxy(PORT, agentSource);
+let uiDark = true;   // Darstellung der Oberfläche (hell/dunkel, Systemmodus eingeschlossen)
+const webProxy = new WebProxy(PORT, agentSource, undefined, () => ({ dark: uiDark, forceDark: settings.darkPages }));
 const ibrowser = new InternalBrowser();   // eigener, eingebauter Browser (Vorschau); Chrome-Erweiterung bleibt für echtes Chrome
 const projects = new Projects();
 try { projects.load(); } catch (error) {
@@ -1519,7 +1520,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "focus") uiFocus.set(ws, msg.focused === true);
-      else if (msg.type === "theme") { setVisualTheme(msg.dark === false ? "light" : "dark"); ibrowser.setTheme(msg.dark !== false); }   // hell/dunkel der Oberfläche (Systemmodus eingeschlossen)
+      else if (msg.type === "theme") { uiDark = msg.dark !== false; setVisualTheme(uiDark ? "dark" : "light"); ibrowser.setTheme(msg.dark !== false); }   // hell/dunkel der Oberfläche (Systemmodus eingeschlossen)
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") {
         const id = String(msg.id);

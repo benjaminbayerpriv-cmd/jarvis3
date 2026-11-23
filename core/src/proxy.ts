@@ -17,7 +17,7 @@ const LABEL = /^(p[0-9a-f]{10})\.localhost(?::\d+)?$/;
 const DROP_RESPONSE = new Set(["content-security-policy", "content-security-policy-report-only", "x-frame-options", "cross-origin-opener-policy",
   "cross-origin-embedder-policy", "cross-origin-resource-policy", "permissions-policy", "strict-transport-security", "content-encoding",
   "content-length", "transfer-encoding", "connection", "keep-alive", "set-cookie", "report-to", "nel", "clear-site-data", "alt-svc"]);
-const DROP_REQUEST = new Set(["host", "connection", "content-length", "origin", "referer", "accept-encoding", "sec-fetch-site", "sec-fetch-mode",
+const DROP_REQUEST = new Set(["if-none-match", "if-modified-since", "host", "connection", "content-length", "origin", "referer", "accept-encoding", "sec-fetch-site", "sec-fetch-mode",
   "sec-fetch-dest", "sec-fetch-user", "upgrade-insecure-requests", "x-forwarded-for"]);
 const MAX_REWRITE = 6_000_000;
 
@@ -30,7 +30,8 @@ export class WebProxy {
   private byLabel = new Map<string, Origin>();
   private byKey = new Map<string, string>();
 
-  constructor(private port: number, private agent: () => string, private file = join(homedir(), ".jarvis3", "proxy-origins.json")) {
+  constructor(private port: number, private agent: () => string, private file = join(homedir(), ".jarvis3", "proxy-origins.json"),
+              private look: () => { dark: boolean; forceDark: boolean } = () => ({ dark: false, forceDark: false })) {
     try {
       const saved = JSON.parse(readFileSync(this.file, "utf8")) as Record<string, Origin>;
       for (const [label, o] of Object.entries(saved)) if (LABEL.test(`${label}.localhost`)) { this.byLabel.set(label, o); this.byKey.set(originKey(o), label); }
@@ -86,14 +87,16 @@ export class WebProxy {
   }
 
   private rewriteHtml(html: string, o: Origin, label: string, real: string): string {
-    let out = this.rewriteOrigin(html, o, label);
+    // eigene Adresse nur in Tags, Skripten und Stilen umschreiben, nie im sichtbaren Text (dort soll die echte Adresse stehen)
+    let out = html.split(/(<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>)/i).map((part, i) => i % 2 ? this.rewriteOrigin(part, o, label) : part).join("");
     // Navigationsziele zu anderen Herkünften über den Proxy führen (Bilder, Skripte und Stile laden direkt von dort)
     out = out.replace(/(\s)(href|action)=("|')(https?:\/\/[^"'#\s>]+)(\3)/gi, (m, sp, attr, q, url) => {
-      const p = this.proxify(url);
-      return p ? `${sp}${attr}=${q}${p}${q} data-jv-href=${q}${url}${q}` : m;
+      const real = this.realOf(url) ?? url;                         // war die Adresse schon die eigene (umgeschrieben), gilt die echte
+      const p = this.proxify(real);
+      return p ? `${sp}${attr}=${q}${p}${q} data-jv-href=${q}${real}${q}` : m;
     });
     out = out.replace(/\sintegrity=("[^"]*"|'[^']*')/gi, "").replace(/<meta[^>]+http-equiv=["']?content-security-policy[^>]*>/gi, "");
-    const inject = `<script>window.__JV=${JSON.stringify({ real, origin: originUrl(o), daemon: `ws://127.0.0.1:${this.port}/page`, open: `http://127.0.0.1:${this.port}/__jarvis__/open?u=` })}</script><script src="/__jarvis__/agent.js"></script>`;
+    const inject = `<script>window.__JV=${JSON.stringify({ real, origin: originUrl(o), daemon: `ws://127.0.0.1:${this.port}/page`, dark: this.look().dark, forceDark: this.look().forceDark, open: `http://127.0.0.1:${this.port}/__jarvis__/open?u=` })}</script><script src="/__jarvis__/agent.js"></script>`;
     const head = /<head[^>]*>/i.exec(out);
     return head ? out.slice(0, head.index + head[0].length) + inject + out.slice(head.index + head[0].length)
       : /<html[^>]*>/i.test(out) ? out.replace(/<html[^>]*>/i, m => m + inject) : inject + out;
@@ -112,6 +115,7 @@ export class WebProxy {
     const real = originUrl(origin) + url.pathname + url.search;
     const headers = new Headers();
     req.headers.forEach((value, key) => { if (!DROP_REQUEST.has(key.toLowerCase())) headers.set(key, value); });
+    headers.set("sec-ch-prefers-color-scheme", this.look().dark ? "dark" : "light");   // Google & Co. wählen hell/dunkel serverseitig nach diesem Hinweis
     headers.set("accept-language", req.headers.get("accept-language") ?? "de-DE,de;q=0.9,en;q=0.8");
     if (req.method !== "GET" && req.method !== "HEAD") headers.set("origin", originUrl(origin));
     const referer = req.headers.get("referer");
@@ -137,7 +141,10 @@ export class WebProxy {
     if (!textual || req.method === "HEAD" || upstream.status === 204 || upstream.status === 304) return new Response(upstream.body, { status: upstream.status, headers: out });
     const text = await upstream.text();
     if (text.length > MAX_REWRITE) return new Response(text, { status: upstream.status, headers: out });
-    const body = /html|xhtml/.test(type) ? this.rewriteHtml(text, origin, label, real) : this.rewriteOrigin(text, origin, label);
+    const isHtml = /html|xhtml/.test(type);
+    // Die Seite trägt Einstellungen des Augenblicks (hell/dunkel, Agent): nie vom Browser zwischenspeichern oder per 304 wiederverwenden
+    if (isHtml) { out.set("cache-control", "no-store"); out.delete("etag"); out.delete("last-modified"); out.delete("expires"); }
+    const body = isHtml ? this.rewriteHtml(text, origin, label, real) : this.rewriteOrigin(text, origin, label);
     return new Response(body, { status: upstream.status, headers: out });
   }
 }

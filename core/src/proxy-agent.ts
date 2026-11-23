@@ -28,6 +28,45 @@ export function agentSource(): string {
   new MutationObserver(report).observe(document.head || document.documentElement, { childList: true, subtree: true, characterData: true });
   report();
 
+  // ----- Dunkler Modus: hat die Seite keinen eigenen, wird sie abgedunkelt (Farben invertiert, Bilder zurück) -----
+  // Helligkeit der Seite: an mehreren Punkten vom Element nach oben bis zum ersten deckenden Hintergrund (transparent = weiß)
+  function pageLuminance() {
+    const cs = getComputedStyle(document.documentElement).colorScheme || "";
+    if (/\bdark\b/.test(cs) && !/\blight\b/.test(cs.replace(/light dark|dark light/, ""))) return 0;   // Seite erklärt sich selbst als dunkel
+    const values = [];
+    for (const [x, y] of [[0.5, 0.25], [0.5, 0.6], [0.15, 0.5], [0.85, 0.5]]) {
+      let el = document.elementFromPoint(Math.round(innerWidth * x), Math.round(innerHeight * y)), lum = 1;
+      for (; el; el = el.parentElement) {
+        const m = getComputedStyle(el).backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (!m) continue;
+        const [r, g, b, a = 1] = (m[1].match(/[\\d.]+/g) || []).map(Number);   // auch die neue Schreibweise rgb(34 36 42 / 0.5)
+        if (a > 0.5 && [r, g, b].every(Number.isFinite)) { lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255; break; }
+      }
+      values.push(lum);
+    }
+    return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+  // Mehrfach prüfen: manche Seiten schalten ihren eigenen Dunkelmodus erst nach dem Laden (per Skript) um. Die Helligkeit kommt aus den
+  // berechneten Stilen und ist vom Abdunkel-Filter unabhängig, darum lässt sich der Filter jederzeit wieder entfernen.
+  let lastReading = null;
+  function autoDark() {
+    if (!JV.forceDark || !JV.dark) return;
+    const lum = pageLuminance(), dark = lum < 0.6;    // Seite ist von sich aus dunkel
+    (autoDark.log ||= []).push(Math.round(lum * 100) / 100); if (autoDark.log.length > 16) autoDark.log.shift();
+    const on = document.getElementById("__jv_dark");
+    // Eine Änderung braucht zwei gleiche Messungen hintereinander (kurzzeitige Überlagerungen beim Laden täuschen sonst)
+    const confirmed = lastReading === dark; lastReading = dark;
+    if (dark && on) { if (confirmed) on.remove(); return; }
+    if (dark || on) return;
+    const style = document.createElement("style");
+    style.id = "__jv_dark";
+    style.textContent = "html{filter:invert(1) hue-rotate(180deg)!important;background:#fff}img,picture,video,canvas,iframe,svg image,[style*='background-image']{filter:invert(1) hue-rotate(180deg)!important}";
+    (document.head || document.documentElement).append(style);
+  }
+  for (const ms of [300, 900, 1800, 3000, 5000, 8000, 12000]) setTimeout(autoDark, ms);
+  new MutationObserver(() => { clearTimeout(autoDark.t); autoDark.t = setTimeout(autoDark, 250); }).observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-color-scheme"] });
+  document.addEventListener("DOMContentLoaded", () => setTimeout(autoDark, 50));
+
   // ----- Links, Formulare und neue Fenster -----
   document.addEventListener("click", e => {
     if (e.defaultPrevented || e.button !== 0) return;
@@ -79,7 +118,7 @@ export function agentSource(): string {
 
   async function run(m) {
     switch (m.cmd) {
-      case "info": return { url: realUrl(), title: document.title };
+      case "info": return { url: realUrl(), title: document.title, luminance: pageLuminance(), colorScheme: getComputedStyle(document.documentElement).colorScheme, htmlBg: getComputedStyle(document.documentElement).backgroundColor, bodyBg: document.body && getComputedStyle(document.body).backgroundColor, dark: !!document.getElementById("__jv_dark"), readings: autoDark.log, cfg: { dark: JV.dark, forceDark: JV.forceDark } };
       case "scan": {
         if (document.readyState === "loading") await sleep(300);
         const r = SCAN(m.all === true);
