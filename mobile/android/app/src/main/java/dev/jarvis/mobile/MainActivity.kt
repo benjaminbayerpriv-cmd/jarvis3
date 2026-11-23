@@ -18,6 +18,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,12 +29,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -149,8 +153,15 @@ private fun Jarvis(
     vm: JarvisModel, scanning: Boolean, onCamera: () -> Unit, onScan: (String) -> Unit, closeCamera: () -> Unit,
     dictating: Boolean, onDictate: () -> Unit, onNotifications: () -> Unit
 ) {
-    var page by remember { mutableStateOf(Seite.CHAT) }
-    var chatOpen by remember { mutableStateOf(false) }
+    var page by rememberSaveable { mutableStateOf(Seite.CHAT) }
+    var chatOpen by rememberSaveable { mutableStateOf(false) }
+    val compact = LocalConfiguration.current.screenHeightDp < 480
+    val keyboardShown = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val newChat = { vm.newChat(); chatOpen = true }
+    val selectPage: (Seite) -> Unit = { item ->
+        if (page == item && item == Seite.CHAT) chatOpen = false
+        page = item
+    }
     val scroll = TopAppBarDefaults.enterAlwaysScrollBehavior()
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(vm.notice) { if (vm.notice.isNotBlank()) { snack.showSnackbar(vm.notice); vm.error("") } }
@@ -182,6 +193,11 @@ private fun Jarvis(
                     }
                 },
                 actions = {
+                    if (compact && vm.paired && page == Seite.CHAT && !chatOpen) {
+                        IconButton(enabled = vm.online, onClick = newChat) {
+                            Symbol(R.drawable.symbol_add, "Neuer Chat")
+                        }
+                    }
                     if (vm.paired) IconButton(enabled = vm.online, onClick = vm::emergency) {
                         Icon(painterResource(R.drawable.symbol_stop), "Not-Aus", tint = MaterialTheme.colorScheme.error)
                     }
@@ -190,19 +206,29 @@ private fun Jarvis(
             )
         },
         bottomBar = {
-            if (vm.paired) NavigationBar {
+            if (vm.paired && !compact && !keyboardShown) NavigationBar {
                 for (item in Seite.entries) NavigationBarItem(
-                    selected = page == item, onClick = { if (page == item && item == Seite.CHAT) chatOpen = false; page = item },
+                    selected = page == item, onClick = { selectPage(item) },
                     icon = { Symbol(item.icon, null) }, label = { Text(item.title) })
             }
         },
     ) { padding ->
-        when {
-            !vm.paired -> Verbindungsseite(vm, onCamera, Modifier.padding(padding))
-            page == Seite.PREVIEW -> Vorschau(vm, Modifier.padding(padding))
-            page == Seite.SETTINGS -> Einstellungen(vm, onNotifications, Modifier.padding(padding))
-            chatOpen -> Unterhaltung(vm, dictating, onDictate, Modifier.padding(padding))
-            else -> Chatliste(vm, open = { vm.open(it); chatOpen = true }, new = { vm.newChat(); chatOpen = true }, Modifier.padding(padding))
+        Row(Modifier.fillMaxSize().padding(padding)) {
+            if (vm.paired && compact && !keyboardShown) {
+                NavigationRail(windowInsets = WindowInsets(0), modifier = Modifier.width(112.dp)) {
+                    for (item in Seite.entries) NavigationRailItem(
+                        selected = page == item, onClick = { selectPage(item) },
+                        icon = { Symbol(item.icon, null) }, label = { Text(item.title) })
+                }
+            }
+            val body = Modifier.weight(1f)
+            when {
+                !vm.paired -> Verbindungsseite(vm, onCamera, body)
+                page == Seite.PREVIEW -> Vorschau(vm, body)
+                page == Seite.SETTINGS -> Einstellungen(vm, onNotifications, body)
+                chatOpen -> Unterhaltung(vm, dictating, onDictate, compact, body)
+                else -> Chatliste(vm, open = { vm.open(it); chatOpen = true }, new = newChat, compact, body)
+            }
         }
     }
 }
@@ -246,23 +272,28 @@ private fun Verbindungsseite(vm: JarvisModel, camera: () -> Unit, modifier: Modi
 }
 
 @Composable
-private fun Chatliste(vm: JarvisModel, open: (String) -> Unit, new: () -> Unit, modifier: Modifier) {
+private fun Chatliste(vm: JarvisModel, open: (String) -> Unit, new: () -> Unit, compact: Boolean, modifier: Modifier) {
     var query by remember { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
     val filtered = vm.chats.filter { it.title.contains(query, true) || it.folder?.contains(query, true) == true }
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            SearchBar(inputField = {
+            @Composable fun Eingabe() {
                 SearchBarDefaults.InputField(query = query, onQueryChange = { query = it }, onSearch = { expanded = false },
                     expanded = expanded, onExpandedChange = { expanded = it }, placeholder = { Text("Chats suchen") },
                     leadingIcon = { Symbol(R.drawable.symbol_search, null) })
-            }, expanded = expanded, onExpandedChange = { expanded = it },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                Chatzeilen(filtered, open = { expanded = false; open(it) })
             }
-            if (!expanded) Chatzeilen(filtered, open)
+            val search = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+            if (compact) DockedSearchBar(inputField = { Eingabe() }, expanded = expanded,
+                onExpandedChange = { expanded = it }, modifier = search) {
+                Chatzeilen(filtered, bottom = 16, open = { expanded = false; open(it) })
+            } else SearchBar(inputField = { Eingabe() }, expanded = expanded,
+                onExpandedChange = { expanded = it }, modifier = search) {
+                Chatzeilen(filtered, bottom = 16, open = { expanded = false; open(it) })
+            }
+            if (!expanded) Chatzeilen(filtered, bottom = if (compact) 16 else 88, open = open)
         }
-        HorizontalFloatingToolbar(expanded = true, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+        if (!compact && !expanded) HorizontalFloatingToolbar(expanded = true, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
             Button(onClick = new, enabled = vm.online) {
                 Symbol(R.drawable.symbol_add, null); Spacer(Modifier.width(8.dp)); Text("Neuer Chat")
             }
@@ -271,8 +302,8 @@ private fun Chatliste(vm: JarvisModel, open: (String) -> Unit, new: () -> Unit, 
 }
 
 @Composable
-private fun Chatzeilen(chats: List<Chat>, open: (String) -> Unit) {
-    LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 88.dp)) {
+private fun Chatzeilen(chats: List<Chat>, bottom: Int, open: (String) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = bottom.dp)) {
         if (chats.isEmpty()) item {
             Text("Keine Chats gefunden.", modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -291,12 +322,18 @@ private fun Chatzeilen(chats: List<Chat>, open: (String) -> Unit) {
 }
 
 @Composable
-private fun Unterhaltung(vm: JarvisModel, dictating: Boolean, onDictate: () -> Unit, modifier: Modifier) {
+private fun Unterhaltung(vm: JarvisModel, dictating: Boolean, onDictate: () -> Unit, compact: Boolean, modifier: Modifier) {
     val state = rememberLazyListState()
     val total = vm.messages.size + vm.tools.size
     LaunchedEffect(total, vm.messages.lastOrNull()?.text?.length) {
-        if (total > 0 && state.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= total - 3 } != false)
+        if (total > 0 && state.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= total - 3 } != false) {
             state.scrollToItem(total - 1)
+            val layout = state.layoutInfo
+            layout.visibleItemsInfo.lastOrNull()?.let { last ->
+                val overflow = last.offset + last.size + layout.afterContentPadding - layout.viewportEndOffset
+                if (overflow > 0) state.scrollBy(overflow.toFloat())
+            }
+        }
     }
     Column(modifier.fillMaxSize().imePadding()) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = state,
@@ -339,13 +376,23 @@ private fun Unterhaltung(vm: JarvisModel, dictating: Boolean, onDictate: () -> U
         Surface(tonalElevation = 2.dp) {
             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (vm.editing != null) TextButton(onClick = vm::cancelEdit) { Text("Bearbeiten abbrechen") }
-                OutlinedTextField(vm.draft, { vm.draft = it }, modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (vm.editing != null) "Nachricht bearbeiten" else "Nachricht") }, maxLines = 5)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                @Composable fun Nachricht(field: Modifier) {
+                    OutlinedTextField(vm.draft, { vm.draft = it }, modifier = field,
+                        label = { Text(if (vm.editing != null) "Nachricht bearbeiten" else "Nachricht") },
+                        maxLines = if (compact) 2 else 5)
+                }
+                if (!compact) Nachricht(Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onDictate, enabled = !vm.busy) {
                         Symbol(if (dictating) R.drawable.symbol_stop else R.drawable.symbol_mic, if (dictating) "Diktat beenden" else "Diktieren")
                     }
-                    if (vm.busy) FilledTonalButton(onClick = vm::stop, enabled = vm.active != null) { Text("Stopp") }
+                    if (compact) Nachricht(Modifier.weight(1f)) else Spacer(Modifier.weight(1f))
+                    if (compact) {
+                        IconButton(onClick = { if (vm.busy) vm.stop() else vm.sendDraft() },
+                            enabled = if (vm.busy) vm.active != null else vm.online && vm.draft.isNotBlank()) {
+                            if (vm.busy) Symbol(R.drawable.symbol_stop, "Stopp") else Symbol(R.drawable.symbol_send, "Senden")
+                        }
+                    } else if (vm.busy) FilledTonalButton(onClick = vm::stop, enabled = vm.active != null) { Text("Stopp") }
                     else Button(onClick = vm::sendDraft, enabled = vm.online && vm.draft.isNotBlank()) {
                         Symbol(R.drawable.symbol_send, null); Spacer(Modifier.width(8.dp)); Text("Senden")
                     }
