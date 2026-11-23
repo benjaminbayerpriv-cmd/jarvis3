@@ -98,6 +98,7 @@ function handle(m) {
     case "ext_scan": renderImport(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
+    case "ib_clipboard": if (m.text) navigator.clipboard?.writeText(m.text).catch(() => {}); break;
     case "error": showError(m.message); break;
     case "stopped": finishTurn("Gestoppt"); break;
     case "speech": speechEvent(m); break;
@@ -974,10 +975,15 @@ const vcanvas = $("#viewerCanvas"), vctx = vcanvas.getContext("2d");
 
 function renderViewerTabs() {
   const box = $("#viewerTabs"); box.replaceChildren();
-  const mk = (label, sel, onclick, iconHtml = "", title = "") => {
-    const b = document.createElement("button"); b.type = "button"; b.className = "vtab"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(sel));
+  const mk = (label, sel, onclick, iconHtml = "", title = "", onclose = null, extra = "") => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "vtab" + (extra ? " " + extra : ""); b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(sel));
     if (iconHtml) b.insertAdjacentHTML("beforeend", iconHtml);
-    const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick; box.append(b);
+    const t = document.createElement("span"); t.className = "t"; t.textContent = label; b.append(t); b.title = title || label; b.onclick = onclick;
+    if (onclose) { // Tab des eigenen Browsers schließen
+      const x = document.createElement("span"); x.className = "vtab-x"; x.setAttribute("role", "button"); x.setAttribute("aria-label", "Tab schließen"); x.innerHTML = icon("x");
+      x.onclick = e => { e.stopPropagation(); onclose(); }; b.append(x);
+    }
+    box.append(b);
   };
   mk("Automatisch", viewerPinned === null, () => chooseViewer(null), icon("sparkles"), "Dem Tab oder Fenster folgen, in dem Jarvis gerade arbeitet");
   for (const v of viewerVisuals) {
@@ -985,8 +991,9 @@ function renderViewerTabs() {
     mk(v.title, viewerPinned === key, () => showVisual(v), icon("chart-line"), v.title);
   }
   for (const t of viewerTabs) {
-    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon("world");
-    mk(t.title || t.url || "Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, t.url || t.title);
+    const fav = t.favicon ? `<img src="${t.favicon.replace(/"/g, "&quot;")}" alt="" referrerpolicy="no-referrer">` : icon(t.chrome ? "brand-chrome" : "world");
+    mk(t.title || t.url || "Neuer Tab", t.tab === viewerPinned, () => chooseViewer(t.tab), fav, `${t.chrome ? "Chrome · " : ""}${t.url || t.title || ""}`,
+      t.internal ? () => send({ type: "ib", op: "close", tab: t.tab }) : null);
   }
   // Programmfenster (Bildschirmsteuerung): Live-Bild des Fensters, auch wenn es verdeckt ist
   for (const w of viewerWindows) {
@@ -994,9 +1001,10 @@ function renderViewerTabs() {
     mk(w.title || w.app, viewerPinned === key, () => chooseViewer(key),
       icon("device-desktop"), `${w.app} – ${w.title}${w.onScreen ? "" : " (verdeckt)"}`);
   }
+  if (state.internalBrowser !== false) mk("Neuer Tab", false, newBrowserTab, icon("plus"), "Neuen Tab im eingebauten Browser öffnen", null, "vtab-new");
   const empty = $("#viewerEmpty");
   if (String(viewerPinned).startsWith("vis:")) empty.textContent = "";
-  else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch keine Tabs in der Gruppe „Jarvis“. Bitte Jarvis, eine Seite zu öffnen.";
+  else if (!viewerGotFrame) empty.textContent = viewerTabs.length || viewerWindows.length ? "Wähle oben einen Tab oder ein Fenster, um es live zu sehen." : "Noch kein Tab offen. Mit „Neuer Tab“ öffnest du selbst eine Seite, oder bitte Jarvis darum.";
   else empty.textContent = "";
 }
 const syncViewerButtons = () => { $("#liveView").setAttribute("aria-pressed", String(!viewer.hidden)); $("#viewToggle").setAttribute("aria-pressed", String(!viewer.hidden)); };
@@ -1025,7 +1033,7 @@ function resetViewerFrame() {
   document.documentElement.style.removeProperty("--viewer-frame-width");
 }
 function hideViewer() {
-  clearVisual();
+  clearVisual(); setInternal(null);
   clearTimeout(viewerTimer); clearInterval(viewerPoll);
   viewer.hidden = true; viewerPicker = false; viewerPinned = null;
   resetViewerFrame();
@@ -1038,7 +1046,7 @@ function viewerIdle() {
   else { resetViewerFrame(); renderViewerTabs(); }
 }
 function chooseViewer(target) {
-  clearVisual();
+  clearVisual(); setInternal(null);
   viewerPinned = target;
   if (target !== null) viewerPicker = false;
   resetViewerFrame();
@@ -1087,7 +1095,9 @@ function showFrame(m) {
   viewerPicker = false;
   const changed = viewerStreaming !== m.tab;
   viewerStreaming = m.tab;
-  if (m.w > 0 && m.h > 0 && m.w / m.h !== viewerAspect) {
+  if (m.internal) { // eigener Browser: Größe richtet sich nach dem Vorschaufenster, nicht umgekehrt
+    setInternal(m.tab, m);
+  } else if (m.w > 0 && m.h > 0 && m.w / m.h !== viewerAspect) {
     viewerAspect = m.w / m.h;
     sizeViewer();
   }
@@ -1139,6 +1149,105 @@ function resetViewerWidth() {
   try { localStorage.removeItem("jarvis.viewerW"); } catch {}
 }
 viewerGrip.addEventListener("dblclick", resetViewerWidth);
+
+// ---------- Eingebauter Browser: Adressleiste, Größe, Maus und Tastatur ----------
+let viewerInternal = null, viewerInfo = { w: 0, h: 0, dpr: 1 }, viewerSent = "", resizeTimer = 0;
+const urlInput = $("#viewerUrl");
+function setInternal(tab, frame) {
+  const changed = viewerInternal !== tab;
+  viewerInternal = tab;
+  $("#viewerNav").hidden = tab === null;
+  if (tab === null) { delete viewer.dataset.internal; return; }
+  viewer.dataset.internal = "1";
+  if (frame) {
+    viewerInfo = { w: frame.w, h: frame.h, dpr: frame.dpr || 1 };
+    if (document.activeElement !== urlInput && (changed || urlInput.value !== (frame.url || ""))) urlInput.value = frame.url === "about:blank" ? "" : (frame.url || "");
+    fitInternal();
+  }
+}
+/** Viewport des Tabs an die Größe des Vorschaufensters anpassen (scharf: Pixeldichte des Bildschirms) */
+function fitInternal(now = false) {
+  if (viewerInternal === null || viewer.hidden) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const w = Math.round(viewerFrame.clientWidth), h = Math.round(viewerFrame.clientHeight), dpr = Math.min(3, devicePixelRatio || 1);
+    if (w < 120 || h < 80) return;
+    const key = `${viewerInternal}:${w}x${h}@${dpr}`;
+    if (key === viewerSent) return;
+    viewerSent = key;
+    send({ type: "ib", op: "resize", tab: viewerInternal, w, h, dpr });
+  }, now ? 0 : 120);
+}
+new ResizeObserver(() => fitInternal()).observe(viewerFrame);
+const newBrowserTab = () => { send({ type: "ib", op: "new", url: "about:blank" }); setTimeout(() => urlInput.focus(), 400); };
+$("#viewerNav").onsubmit = e => { e.preventDefault(); const url = urlInput.value.trim(); if (viewerInternal !== null && url) { send({ type: "ib", op: "navigate", tab: viewerInternal, url }); vcanvas.focus(); } };
+$("#vBack").onclick = () => viewerInternal !== null && send({ type: "ib", op: "back", tab: viewerInternal });
+$("#vFwd").onclick = () => viewerInternal !== null && send({ type: "ib", op: "forward", tab: viewerInternal });
+$("#vReload").onclick = () => viewerInternal !== null && send({ type: "ib", op: "reload", tab: viewerInternal });
+urlInput.addEventListener("focus", () => urlInput.select());
+document.addEventListener("keydown", e => { // Cmd/Strg+L: Adressleiste
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l" && viewerInternal !== null && !viewer.hidden) { e.preventDefault(); urlInput.focus(); }
+});
+
+const mods = e => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+/** Punkt im Seiten-Koordinatensystem (CSS-Pixel des Tabs) */
+function pagePoint(e) {
+  const r = vcanvas.getBoundingClientRect();
+  if (!vcanvas.width || !viewerInfo.w) return null;
+  const scale = Math.min(r.width / vcanvas.width, r.height / vcanvas.height);
+  const cw = vcanvas.width * scale, ch = vcanvas.height * scale;
+  const x = (e.clientX - (r.left + (r.width - cw) / 2)) / cw * viewerInfo.w, y = (e.clientY - (r.top + (r.height - ch) / 2)) / ch * viewerInfo.h;
+  return x < 0 || y < 0 || x > viewerInfo.w || y > viewerInfo.h ? null : { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 };
+}
+const sendInput = event => viewerInternal !== null && send({ type: "ib", op: "input", tab: viewerInternal, event });
+const BUTTONS = ["left", "middle", "right"];
+let moveFrame = 0, lastMove = null;
+vcanvas.addEventListener("pointerdown", e => {
+  if (viewerInternal === null) return;
+  vcanvas.focus(); vcanvas.setPointerCapture(e.pointerId);
+  const p = pagePoint(e); if (!p) return;
+  e.preventDefault();
+  sendInput({ kind: "mouse", type: "mousePressed", ...p, button: BUTTONS[e.button] ?? "left", buttons: e.buttons, clickCount: e.detail || 1, modifiers: mods(e) });
+});
+vcanvas.addEventListener("pointerup", e => {
+  if (viewerInternal === null) return;
+  const p = pagePoint(e) ?? lastMove; if (!p) return;
+  sendInput({ kind: "mouse", type: "mouseReleased", ...p, button: BUTTONS[e.button] ?? "left", buttons: e.buttons, clickCount: e.detail || 1, modifiers: mods(e) });
+});
+vcanvas.addEventListener("pointermove", e => {
+  if (viewerInternal === null) return;
+  const p = pagePoint(e); if (!p) return;
+  lastMove = p;
+  if (moveFrame) return;
+  moveFrame = requestAnimationFrame(() => { moveFrame = 0; sendInput({ kind: "mouse", type: "mouseMoved", ...lastMove, button: e.buttons & 1 ? "left" : "none", buttons: e.buttons, modifiers: mods(e) }); });
+});
+vcanvas.addEventListener("wheel", e => {
+  if (viewerInternal === null) return;
+  const p = pagePoint(e); if (!p) return;
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewerInfo.h : 1;
+  sendInput({ kind: "mouse", type: "mouseWheel", ...p, deltaX: e.deltaX * k, deltaY: e.deltaY * k, modifiers: mods(e) });
+}, { passive: false });
+vcanvas.addEventListener("contextmenu", e => { if (viewerInternal !== null) e.preventDefault(); });
+const EDIT = { a: "selectAll", c: "copy", x: "cut", z: "undo", y: "redo" };
+const pasteText = () => navigator.clipboard?.readText().then(t => t && sendInput({ kind: "text", text: t })).catch(() => {});
+function keyEvent(e, type) {
+  if (type === "keyDown" && (e.metaKey || e.ctrlKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === "v") { e.preventDefault(); pasteText(); return; }
+    if (k === "c") { e.preventDefault(); send({ type: "ib", op: "copy", tab: viewerInternal }); return; }
+    if (EDIT[k]) { e.preventDefault(); sendInput({ kind: "key", type: "rawKeyDown", key: e.key, code: e.code, modifiers: mods(e), vk: e.keyCode, commands: [EDIT[k] === "redo" ? "redo" : EDIT[k]] }); return; }
+    if (k === "l") return; // Adressleiste
+  }
+  const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+  if (e.key === "Dead" || e.key === "Process" || e.key === "Unidentified") return;
+  e.preventDefault();
+  const text = printable ? e.key : e.key === "Enter" ? "\r" : e.key === "Tab" ? "\t" : undefined;
+  sendInput({ kind: "key", type: type === "keyUp" ? "keyUp" : text ? "keyDown" : "rawKeyDown", key: e.key, code: e.code, text, modifiers: mods(e), vk: e.keyCode });
+}
+vcanvas.addEventListener("keydown", e => { if (viewerInternal !== null) keyEvent(e, "keyDown"); });
+vcanvas.addEventListener("keyup", e => { if (viewerInternal !== null) keyEvent(e, "keyUp"); });
+vcanvas.addEventListener("paste", e => { if (viewerInternal === null) return; e.preventDefault(); const t = e.clipboardData?.getData("text/plain"); if (t) sendInput({ kind: "text", text: t }); });
 
 // ---------- Visualisierungen (Werkzeuge visualize_python / visualize_html) ----------
 // Bilder und HTML-Seiten liefert jarvisd unter /visual/<id>/<datei>; HTML läuft in einer abgeschotteten Sandbox.

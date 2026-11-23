@@ -6,6 +6,7 @@ import type { ServerWebSocket } from "bun";
 import { OpenCode, listModels, type ModelInfo, type BrainEvent, type PromptImage } from "./opencode";
 import { Desktop } from "./desktop";
 import { Browser } from "./browser";
+import { InternalBrowser } from "./ibrowser";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech } from "./speech";
 import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
@@ -60,6 +61,7 @@ writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, 
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
+const ibrowser = new InternalBrowser();   // eigener, eingebauter Browser (Vorschau); Chrome-Erweiterung bleibt für echtes Chrome
 const projects = new Projects();
 try { projects.load(); } catch (error) {
   recordError({ category: "daemon", source: "jarvisd/projects-load", message: "Projekte konnten nicht gelesen werden", error });
@@ -872,10 +874,11 @@ function follow(target: PreviewTarget) {
 }
 /** Tabs der Gruppe "Jarvis" (auch "Jarvis …"-Gruppen) für die Auswahl oben in der Vorschau. */
 async function jarvisTabs() {
-  if (!browser.connected) return [];
+  const mine = settings.internalBrowser && ibrowser.running ? ibrowser.list() : [];
+  if (!browser.connected) return mine;
   const r = await browser.call({ cmd: "tab_list" }, 5000).catch(() => undefined);
   const tabs = ((r?.tabs ?? []) as any[]).filter(t => typeof t.group === "string" && /^jarvis/i.test(t.group));
-  return tabs.map(t => ({ tab: t.tab, title: t.title, url: t.url, favicon: t.favicon ?? "", active: !!t.active }));
+  return [...mine, ...tabs.map(t => ({ tab: t.tab, title: t.title, url: t.url, favicon: t.favicon ?? "", active: !!t.active, chrome: true }))];
 }
 // Erweiterung veraltet? Neue Versionen lädt sie auf Anweisung selbst; sehr alte (vor 1.2.0) muss der Nutzer einmal neu laden.
 const wantedExtension = () => { try { return JSON.parse(readFileSync(join(ROOT, "extension/manifest.json"), "utf8")).version as string; } catch { return ""; } };
@@ -896,6 +899,15 @@ browser.onHello = version => {
     broadcast({ type: "notice", text: `Die Chrome-Erweiterung ist veraltet (${version}, aktuell ${want}). Bitte einmal unter chrome://extensions bei „Jarvis“ neu laden – danach aktualisiert sie sich selbst.` });
   }
   broadcast(state());
+};
+ibrowser.onFrame = m => { if (preview.shows(m.tab)) broadcast(m); };
+ibrowser.onClosed = tab => preview.ended(tab);
+ibrowser.onNotice = text => broadcast({ type: "notice", text });
+ibrowser.onOpened = tab => { if (preview.pinned !== undefined || uis.size > 0) preview.pin(tab); };        // Popup der Seite: gleich zeigen
+let tabsTimer: ReturnType<typeof setTimeout> | undefined;
+ibrowser.onTabs = () => {                                                                                  // Tab-Leiste in allen Oberflächen aktuell halten
+  clearTimeout(tabsTimer);
+  tabsTimer = setTimeout(async () => broadcast({ type: "tabs", tabs: await jarvisTabs(), windows: await previewWindows(), pinned: preview.pinned ?? null }), 150);
 };
 browser.onEvent = m => {
   if (m.type === "stream_ended") preview.ended(m.tab);
@@ -933,8 +945,8 @@ async function errorShot(target: string, tab: unknown, boxes: number[][]): Promi
   try {
     let png: Uint8Array, rect: number[];
     if (target === "browser") {
-      if (!browser.connected || !Number.isInteger(tab)) return undefined;
-      const r = await browser.call({ cmd: "shot", tab }, 10_000);
+      if (!Number.isInteger(tab) || (!ibrowser.owns(tab) && !browser.connected)) return undefined;
+      const r = ibrowser.owns(tab) ? await ibrowser.call({ cmd: "shot", tab }) : await browser.call({ cmd: "shot", tab }, 10_000);
       if (!r.ok || typeof r.dataUrl !== "string" || !r.dataUrl.startsWith("data:image/png")) return undefined;
       png = Buffer.from(r.dataUrl.split(",")[1], "base64"); rect = r.rect as number[];
     } else {
@@ -1058,7 +1070,15 @@ async function runToolInner(target: string, cmd: Record<string, any>) {
   if (target === "browser") {
     if (!await announceToolAction("browser", cmd)) return { ok: false, error: "vom Nutzer gestoppt" };
     if (Number.isInteger(cmd.tab) && !["tab_close", "tab_release"].includes(cmd.cmd)) follow(cmd.tab);
-    const r = await browser.call(cmd);
+    // Der eigene Browser hat Vorrang; echtes Chrome nur auf ausdrücklichen Wunsch (in: "chrome") oder wenn er nicht verfügbar ist
+    const own = ibrowser.owns(cmd.tab) || (cmd.cmd === "tab_open" && cmd.in !== "chrome" && settings.internalBrowser && ibrowser.available());
+    if (cmd.cmd === "tab_list") {
+      const [mine, chrome] = await Promise.all([ibrowser.running ? ibrowser.call({ cmd: "tab_list" }) : { ok: true, tabs: [] },
+        browser.connected ? browser.call(cmd) : { ok: true, tabs: [] }]);
+      const chromeTabs = ((chrome as any).tabs ?? []).map((t: any) => ({ ...t, chrome: true }));
+      return { ok: true, tabs: [...((mine as any).tabs ?? []), ...chromeTabs], ...(chrome.ok ? {} : { chromeError: chrome.error }) };
+    }
+    const r = own ? await ibrowser.call(cmd) : await browser.call(cmd);
     if (cmd.cmd === "tab_open" && r.ok && Number.isInteger(r.tab)) follow(r.tab as number);
     return r;
   }
@@ -1243,7 +1263,7 @@ async function windowFallbackLoop(win: number, run: number) {
 const preview = new Preview({
   async start(target) {
     if (typeof target === "number") {
-      const r = await browser.call({ cmd: "stream_start", tab: target }, 8000);
+      const r = ibrowser.owns(target) ? await ibrowser.call({ cmd: "stream_start", tab: target }) : await browser.call({ cmd: "stream_start", tab: target }, 8000);
       if (!r.ok && preview.pinned === target) broadcast({ type: "notice", text: `Tab-Vorschau nicht möglich: ${r.error ?? "unbekannter Fehler"}` });
       return r.ok;
     }
@@ -1261,7 +1281,7 @@ const preview = new Preview({
     return true;
   },
   async stop(target) {
-    if (typeof target === "number") await browser.call({ cmd: "stream_stop", tab: target }, 5000);
+    if (typeof target === "number") await (ibrowser.owns(target) ? ibrowser.call({ cmd: "stream_stop", tab: target }) : browser.call({ cmd: "stream_stop", tab: target }, 5000));
     else {
       windowCaptureRun++;
       if (capture.available()) await capture.call({ cmd: "stream_stop" }, 4000);
@@ -1273,7 +1293,7 @@ const preview = new Preview({
 async function previewWindows() {
   const r: any = await desktop.call({ cmd: "windows" }, 5000).catch(() => ({}));
   return (Array.isArray(r?.windows) ? r.windows : [])
-    .filter((w: any) => w.title && w.rect?.[3] >= 150 && !/^Jarvis/.test(w.title) && !/AuthWarn|UserNotificationCenter|loginwindow/i.test(w.app))
+    .filter((w: any) => w.title && w.rect?.[3] >= 150 && w.pid !== ibrowser.pid && !/^Jarvis/.test(w.title) && !/AuthWarn|UserNotificationCenter|loginwindow/i.test(w.app))
     .slice(0, 12).map((w: any) => ({ id: w.id, app: w.app, title: w.title, onScreen: w.onScreen }));
 }
 
@@ -1440,6 +1460,14 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         const [tabs, windows] = await Promise.all([jarvisTabs(), previewWindows()]);
         ws.send(JSON.stringify({ type: "tabs", tabs, windows, pinned: preview.pinned ?? null }));
       }
+      else if (msg.type === "ib") { // Bedienung des eingebauten Browsers aus der Vorschau
+        const op = String(msg.op ?? "");
+        if (!["new", "navigate", "back", "forward", "reload", "close", "resize", "input", "copy"].includes(op)) return;
+        const r = await ibrowser.call(op === "new" ? { cmd: "tab_open", url: msg.url ?? "about:blank" } : { cmd: op, tab: msg.tab, url: msg.url, w: msg.w, h: msg.h, dpr: msg.dpr, event: msg.event });
+        if (op === "copy") { if (r.ok && typeof r.text === "string") ws.send(JSON.stringify({ type: "ib_clipboard", text: r.text })); return; }
+        if (op === "new" && r.ok) { preview.pin(r.tab as number); ibrowser.onTabs?.(); }
+        else if (!r.ok && op !== "input" && op !== "resize") ws.send(JSON.stringify({ type: "notice", text: `Browser: ${r.error}` }));
+      }
       else if (msg.type === "viewer_tab" && settings.liveView) {
         if (Number.isInteger(msg.tab)) preview.pin(msg.tab);
         else if (settings.previewAuto) preview.pin();
@@ -1519,4 +1547,4 @@ void repairChatTitles();
 setInterval(() => void repairChatTitles(), TITLE_RETRY_MS);
 console.log(`jarvisd bereit: http://127.0.0.1:${PORT} · ${models.length} Modelle · Standard ${settings.model}`);
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { brain.stop(); desktop.stop(); haptics.stop(); process.exit(0); });
+  process.on(sig, () => { brain.stop(); desktop.stop(); ibrowser.stop(); haptics.stop(); process.exit(0); });

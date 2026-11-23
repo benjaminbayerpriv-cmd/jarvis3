@@ -1,5 +1,8 @@
 // Eigene Icons im Tabler-Raster (24×24, Strich 1.75, runde Enden).
 export const CUSTOM = {
+  "arrow-left": { d: '<path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/>', fill: false },
+  "arrow-right": { d: '<path d="M5 12l14 0"/><path d="M13 18l6 -6"/><path d="M13 6l6 6"/>', fill: false },
+  lock: { d: '<path d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2l0 -6"/><path d="M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0"/><path d="M8 11v-4a4 4 0 1 1 8 0v4"/>', fill: false },
   // Visualisierungen (Tabler chart-line, arrow-up-right, download)
   "chart-line": { d: '<path d="M4 19l16 0"/><path d="M4 15l4 -6l4 2l4 -5l4 4"/>', fill: false },
   "arrow-up-right": { d: '<path d="M17 7l-10 10"/><path d="M8 7l9 0l0 9"/>', fill: false },

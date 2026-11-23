@@ -86,8 +86,14 @@
         <button class="icon-btn viewer-close" id="viewerClose" data-icon="x" aria-label="Vorschau schließen"></button>
       </header>
         <div class="viewer-tabs" id="viewerTabs" role="tablist" aria-label="Vorschauquelle"></div>
+      <form class="viewer-nav" id="viewerNav" hidden autocomplete="off">
+        <button type="button" class="icon-btn small" id="vBack" aria-label="Zurück" title="Zurück"><span data-icon="arrow-left"></span></button>
+        <button type="button" class="icon-btn small" id="vFwd" aria-label="Vorwärts" title="Vorwärts"><span data-icon="arrow-right"></span></button>
+        <button type="button" class="icon-btn small" id="vReload" aria-label="Neu laden" title="Neu laden"><span data-icon="refresh"></span></button>
+        <input id="viewerUrl" class="viewer-url" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Adresse oder Suchbegriff" placeholder="Adresse oder Suchbegriff">
+      </form>
       <div class="viewer-frame">
-        <canvas id="viewerCanvas" aria-label="Live-Bild des Tabs oder Fensters"></canvas>
+        <canvas id="viewerCanvas" tabindex="0" aria-label="Live-Bild des Tabs oder Fensters"></canvas>
         <div class="viewer-visual" id="viewerVisual" hidden></div>
         <div class="viewer-empty" id="viewerEmpty"></div>
       </div>
@@ -219,6 +225,7 @@
         </section>
         <section class="set-pane" data-pane="privacy" hidden>
           <div class="setting"><div><label for="set-errorScreenshots" id="set-errorScreenshots-label">Diagnosebilder bei Fehlern</label><p id="set-errorScreenshots-desc">Erlaubt automatische Screenshots bei Werkzeugfehlern.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-errorScreenshots-label" aria-describedby="set-errorScreenshots-desc" id="set-errorScreenshots" data-daemon="errorScreenshots"></button></div>
+          <div class="setting"><div><label for="set-internalBrowser" id="set-internalBrowser-label">Eigenen Browser bevorzugen</label><p id="set-internalBrowser-desc">Jarvis öffnet Webseiten in seinem eingebauten Browser (Vorschau rechts, mit eigenen Tabs). Aus: Jarvis nimmt dein Chrome mit der Erweiterung. Chrome bleibt auf Wunsch immer steuerbar.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-internalBrowser-label" aria-describedby="set-internalBrowser-desc" id="set-internalBrowser" data-daemon="internalBrowser"></button></div>
           <div class="setting"><div><label for="set-haptics" id="set-haptics-label">Haptisches Feedback (Trackpad)</label><p id="set-haptics-desc">Nur auf dem Mac mit Force-Touch-Trackpad und nur, solange Jarvis (App oder Webseite) im Vordergrund ist. Hauptschalter; die Arten darunter lassen sich einzeln abschalten.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-haptics-label" aria-describedby="set-haptics-desc" id="set-haptics" data-daemon="haptics"></button></div>
           <div class="setting"><div><label for="set-hapticsClick" id="set-hapticsClick-label">Vibration bei Klicks</label><p id="set-hapticsClick-desc">Ein deutlicher Impuls bei jedem Klick von Jarvis (Webseite oder Computer).</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-hapticsClick-label" aria-describedby="set-hapticsClick-desc" id="set-hapticsClick" data-daemon="hapticsClick"></button></div>
           <div class="setting"><div><label for="set-hapticsTool" id="set-hapticsTool-label">Vibration bei Werkzeugen</label><p id="set-hapticsTool-desc">Ein Impuls, wenn Jarvis einen Werkzeugaufruf beginnt, und einer, wenn er endet.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-hapticsTool-label" aria-describedby="set-hapticsTool-desc" id="set-hapticsTool" data-daemon="hapticsTool"></button></div>
