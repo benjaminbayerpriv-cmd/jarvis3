@@ -210,8 +210,9 @@ export function writeWorkspace(workspace: string, base: Record<string, any>, sto
     config.mcp[name] = { ...(Object.hasOwn(config.mcp, name) ? config.mcp[name] : {}), enabled };
   }
   config.plugin = store.plugins;
-  if (store.disabledSkills.length)
-    config.permission = { ...(base.permission ?? {}), skill: Object.fromEntries(store.disabledSkills.map(n => [n, "deny"])) };
+  // Skills stehen NIE im Systemprompt: OpenCodes eigenes Skill-Werkzeug bekommt keinen Skill (alle verweigert), stattdessen holt Jarvis sie
+  // bei Bedarf mit skill_list und skill_read (mcp.ts). So sprengen auch viele aktivierte Skills das Kontextlimit nicht.
+  config.permission = { ...(base.permission ?? {}), skill: { "*": "deny" } };
   writeFileSync(join(workspace, "opencode.json"), JSON.stringify(config, null, 2));
 
   // eigene Befehle als Markdown-Dateien
@@ -221,17 +222,39 @@ export function writeWorkspace(workspace: string, base: Record<string, any>, sto
   for (const [name, c] of Object.entries(store.commands))
     writeFileSync(join(commandDir, `${name}.md`), `---\ndescription: ${(c.description || name).replace(/\n/g, " ")}\n---\n<!-- jarvis-extension -->\n${c.template}\n`);
 
-  // importierte Skills als Verknüpfungen
+  // Alte Verknüpfungen aus früheren Fassungen entfernen (Skills werden nicht mehr in OpenCode geladen)
   const skillRoot = join(workspace, ".opencode", "skills");
-  mkdirSync(skillRoot, { recursive: true });
-  for (const name of readdirSync(skillRoot)) {
-    const p = join(skillRoot, name);
-    try { if (lstatSync(p).isSymbolicLink()) unlinkSync(p); } catch {}
-  }
-  for (const [name, s] of Object.entries(store.skillDirs)) {
-    if (!isDir(s.path)) continue;
-    try { symlinkSync(s.path, join(skillRoot, safeName(name))); } catch { /* existiert schon */ }
-  }
+  try { for (const name of readdirSync(skillRoot)) { const p = join(skillRoot, name); if (lstatSync(p).isSymbolicLink()) unlinkSync(p); } } catch { /* kein Ordner */ }
+}
+
+// ---------- Skills bei Bedarf ----------
+export interface SkillInfo { name: string; description: string; path: string; source: Source; enabled: boolean }
+/** Alle bekannten Skills (importiert) mit Beschreibung aus SKILL.md */
+export function skillCatalog(store = loadStore()): SkillInfo[] {
+  return Object.entries(store.skillDirs).filter(([, s]) => isDir(s.path)).map(([name, s]) => {
+    const { meta } = parseMarkdown(readText(join(s.path, "SKILL.md")));
+    return { name, description: (meta.description || "").replace(/\s+/g, " ").trim(), path: s.path, source: s.source, enabled: !store.disabledSkills.includes(name) };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+export const enabledSkills = (store = loadStore()) => skillCatalog(store).filter(s => s.enabled);
+
+/** Inhalt eines aktivierten Skills samt Liste der weiteren Dateien (zum Nachlesen mit dem Datei-Werkzeug) */
+export function readSkill(name: string, store = loadStore()): { ok: true; name: string; text: string; path: string; files: string[] } | { ok: false; error: string } {
+  const skill = skillCatalog(store).find(s => s.name.toLowerCase() === name.trim().toLowerCase());
+  if (!skill) return { ok: false, error: `Einen Skill „${name}“ gibt es nicht. skill_list zeigt die aktivierten.` };
+  if (!skill.enabled) return { ok: false, error: `Der Skill „${skill.name}“ ist nicht aktiviert (Einstellungen → Skills).` };
+  const text = readText(join(skill.path, "SKILL.md"));
+  if (!text) return { ok: false, error: `SKILL.md von „${skill.name}“ nicht lesbar.` };
+  const files: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    for (const entry of readdirSync(dir)) {
+      if (entry.startsWith(".") || entry === "SKILL.md" || entry === "node_modules" || files.length >= 60) continue;
+      const full = join(dir, entry);
+      if (isDir(full)) { if (depth < 3) walk(full, depth + 1); } else files.push(full.slice(skill.path.length + 1));
+    }
+  };
+  try { walk(skill.path, 0); } catch { /* unlesbarer Unterordner */ }
+  return { ok: true, name: skill.name, text: text.length > 80_000 ? text.slice(0, 80_000) + "\n[… gekürzt]" : text, path: skill.path, files };
 }
 
 // ---------- Befehle ----------

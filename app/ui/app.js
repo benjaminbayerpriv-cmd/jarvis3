@@ -1779,7 +1779,7 @@ window.__jarvisDebug = { handle };
 
 // ---------- Schrägstrich-Befehle im Chat ----------
 let slashItems = [], slashIndex = 0, slashOpen = false, slashAsked = false;
-const SOURCE_LABEL = { builtin: "Jarvis", command: "Befehl", skill: "Skill" };
+const SOURCE_LABEL = { builtin: "Jarvis", function: "Funktion", command: "Befehl", skill: "Skill" };
 function slashQuery() { const v = input.value; return v.startsWith("/") && !/\s/.test(v) ? v.slice(1).toLowerCase() : null; }
 function slashMatches() {
   const q = slashQuery(); if (q === null) return [];

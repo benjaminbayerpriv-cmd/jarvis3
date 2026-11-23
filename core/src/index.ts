@@ -10,6 +10,7 @@ import { InternalBrowser, urlFor } from "./ibrowser";
 import { DirectBrowser, type PageSocket } from "./dbrowser";
 import { WebProxy } from "./proxy";
 import { agentSource } from "./proxy-agent";
+import { FUNCTION_COMMANDS } from "./functions";
 import { SYSTEM_PROMPT } from "./prompt";
 import { Speech } from "./speech";
 import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
@@ -20,7 +21,7 @@ import { Projects } from "./projects";
 import { SidecarSupervisor } from "./sidecar";
 import { DEAD_LEVEL, nextMicStep } from "./mic-heal";
 import { Capture } from "./capture";
-import { applyImport, expandTemplate, loadStore, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
+import { applyImport, enabledSkills, expandTemplate, loadStore, readSkill, skillCatalog, mcpSummary, saveStore, scanImport, writeWorkspace, type Candidate, type McpEntry, type Source } from "./extensions";
 import { Preview, type PreviewTarget } from "./preview";
 import { classificationPrompt, parseClassification } from "./classify";
 import { parseRange, readUsage, summarize } from "./usage";
@@ -1146,9 +1147,10 @@ const BUILTIN_COMMANDS = [
 ];
 async function commandList() {
   const oc: any[] = (await ocGet("/command")) ?? [];
-  const disabled = loadStore().disabledSkills;
-  const items = oc.filter(c => c.source !== "skill" || !disabled.includes(c.name)).map(c => ({ name: c.name, description: String(c.description ?? "").slice(0, 160), source: c.source === "skill" ? "skill" : "command", hint: c.hints?.length ? "Argumente" : undefined }));
-  return [...BUILTIN_COMMANDS.map(c => ({ ...c, source: "builtin" })), ...items];
+  const items = oc.filter(c => c.source !== "skill").map(c => ({ name: c.name, description: String(c.description ?? "").slice(0, 160), source: "command", hint: c.hints?.length ? "Argumente" : undefined }));
+  const taken = new Set([...BUILTIN_COMMANDS.map(c => c.name), ...FUNCTION_COMMANDS.map(c => c.name), ...items.map(c => c.name)]);
+  const skills = enabledSkills().filter(sk => !taken.has(sk.name)).map(sk => ({ name: sk.name, description: sk.description.slice(0, 160), source: "skill", hint: "Aufgabe" }));
+  return [...BUILTIN_COMMANDS.map(c => ({ ...c, source: "builtin" })), ...FUNCTION_COMMANDS.map(c => ({ name: c.name, description: c.description, hint: c.hint, source: "function" })), ...items, ...skills];
 }
 async function extensionState() {
   const store = loadStore();
@@ -1166,9 +1168,7 @@ async function extensionState() {
       detail: builtin ? "Browser- und Desktop-Werkzeuge" : managed ? mcpSummary(store.mcp[name]) : "Aus OpenCode",
       status: enabled ? status[name]?.status ?? "unbekannt" : "disabled", error: enabled ? status[name]?.error : undefined };
   });
-  const skillList: any[] = (await ocGet("/skill")) ?? [];
-  const skills = skillList.map(sk => ({ name: sk.name, description: String(sk.description ?? "").slice(0, 200), source: skillSource(String(sk.location ?? "")), disabled: store.disabledSkills.includes(sk.name) }));
-  for (const n of store.disabledSkills) if (!skills.some(x => x.name === n)) skills.push({ name: n, description: "(gesperrt)", source: "Jarvis", disabled: true });
+  const skills = skillCatalog(store).map(sk => ({ name: sk.name, description: sk.description.slice(0, 200), source: skillSource(sk.path), disabled: !sk.enabled }));
   const commands = Object.entries(store.commands).map(([name, c]) => ({ name, description: c.description, source: c.source, custom: true }));
   return { type: "extensions", mcp, skills, commands, plugins: store.plugins };
 }
@@ -1403,6 +1403,8 @@ async function route(req: Request, srv: any) {
       if (!webProxy.isProxyHost(host)) return new Response("verboten", { status: 403 });
       return srv.upgrade(req, { data: { kind: "page" } }) ? undefined : new Response("upgrade", { status: 400 });
     }
+    if (u.pathname === "/skills") return Response.json(enabledSkills().map(sk => ({ name: sk.name, description: sk.description })));   // für skill_list (mcp.ts)
+    if (u.pathname.startsWith("/skills/")) return Response.json(readSkill(decodeURIComponent(u.pathname.slice(8))));                   // für skill_read
     if (u.pathname === "/__jarvis__/open") { // Navigation zu einer echten Adresse: in den Proxy umleiten
       const target = webProxy.proxify(u.searchParams.get("u") ?? "");
       return target ? Response.redirect(target, 302) : new Response("ungültige Adresse", { status: 400 });
@@ -1546,16 +1548,17 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "run_command") {
         // Schrägstrich-Befehl oder Skill: Vorlage mit Argumenten füllen und wie eine Nachricht senden
         const name = String(msg.name ?? ""), args = String(msg.args ?? "");
-        const found = ((await ocGet("/command")) as any[] | undefined)?.find(c => c.name === name);
-        if (!found) ws.send(JSON.stringify({ type: "error", message: `Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.` }));
-        else if (found.source === "skill" && loadStore().disabledSkills.includes(name))
-          ws.send(JSON.stringify({ type: "notice", text: `Der Skill „${name}“ ist deaktiviert.` }));
-        else {
-          const prompt = found.source === "skill"
-            ? `Nutze den Skill „${name}“ für diese Aufgabe.${args.trim() ? `\n\nAufgabe: ${args.trim()}` : ""}\n\n${expandTemplate(String(found.template ?? ""), args)}`
-            : expandTemplate(String(found.template ?? ""), args);
-          await chat(prompt, msg.model, false, [], ws.data.fresh);
-        }
+        const fn = FUNCTION_COMMANDS.find(c => c.name === name);
+        const skill = skillCatalog().find(sk => sk.name === name);
+        const found = fn || skill ? undefined : ((await ocGet("/command")) as any[] | undefined)?.find(c => c.name === name);
+        if (fn) {
+          if (fn.mode && settings.mode !== fn.mode) { settings = { ...settings, mode: fn.mode }; save(); broadcast(state()); }   // /computer schaltet die Computer-Steuerung ein
+          await chat(expandTemplate(fn.template, args), msg.model, false, [], ws.data.fresh);
+        } else if (skill) {
+          if (!skill.enabled) ws.send(JSON.stringify({ type: "notice", text: `Der Skill „${name}“ ist deaktiviert (Einstellungen → Skills).` }));
+          else await chat(`Nutze den Skill „${skill.name}“ für diese Aufgabe. Lies ihn zuerst mit skill_read und befolge ihn.${args.trim() ? `\n\nAufgabe: ${args.trim()}` : ""}`, msg.model, false, [], ws.data.fresh);
+        } else if (!found) ws.send(JSON.stringify({ type: "error", message: `Den Befehl „/${name}“ gibt es nicht. /hilfe zeigt alle.` }));
+        else await chat(expandTemplate(String(found.template ?? ""), args), msg.model, false, [], ws.data.fresh);
       }
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
