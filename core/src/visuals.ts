@@ -27,8 +27,20 @@ function outputs(dir: string) {
     .sort((a, b) => statSync(join(dir, a)).mtimeMs - statSync(join(dir, b)).mtimeMs);
 }
 
-// Vorspann: Figuren werden automatisch gespeichert (plt.show() blockiert nicht, sondern speichert), dunkles Design passend zur Oberfläche.
-const PRELUDE = `
+// Hell oder dunkel: folgt der Darstellung der Oberfläche (setVisualTheme, gemeldet von der Oberfläche; Systemmodus eingeschlossen).
+export type Theme = "dark" | "light";
+let theme: Theme = "dark";
+export const setVisualTheme = (t: Theme) => { theme = t; };
+const PALETTE: Record<Theme, Record<string, string>> = {
+  dark: { bg: "#131314", fg: "#e3e3e3", muted: "#9a9b9c", line: "#444746", accent: "#4fa0ff", accent2: "#d8627e", accent3: "#00a5b7", accent4: "#ffb74d", accent5: "#a975aa", accent6: "#6dd58c" },
+  light: { bg: "#ffffff", fg: "#1f1f1f", muted: "#5f6368", line: "#dadce0", accent: "#1a73e8", accent2: "#d93a5e", accent3: "#009688", accent4: "#e37400", accent5: "#8e4ec6", accent6: "#1e8e3e" },
+};
+const cssVars = (t: Theme) => `:root{color-scheme:${t};${Object.entries(PALETTE[t]).map(([k, v]) => `--${k}:${v}`).join(";")}}`;
+
+// Vorspann: Figuren werden automatisch gespeichert (plt.show() blockiert nicht, sondern speichert), Stil passend zur Oberfläche.
+const prelude = (t: Theme) => {
+  const c = PALETTE[t];
+  return `
 import os, sys, warnings
 warnings.filterwarnings("ignore")
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -36,12 +48,12 @@ try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    plt.style.use("dark_background")
-    plt.rcParams.update({"figure.facecolor": "#131314", "axes.facecolor": "#131314", "savefig.facecolor": "#131314",
-        "figure.dpi": 110, "savefig.dpi": 160, "axes.grid": True, "grid.alpha": .18, "font.size": 11,
-        "axes.edgecolor": "#444746", "axes.labelcolor": "#c4c7c5", "xtick.color": "#9a9b9c", "ytick.color": "#9a9b9c", "text.color": "#e3e3e3",
+    plt.style.use(${t === "dark" ? '"dark_background"' : '"default"'})
+    plt.rcParams.update({"figure.facecolor": "${c.bg}", "axes.facecolor": "${c.bg}", "savefig.facecolor": "${c.bg}",
+        "figure.dpi": 110, "savefig.dpi": 160, "axes.grid": True, "grid.alpha": ${t === "dark" ? ".18" : ".28"}, "font.size": 11,
+        "axes.edgecolor": "${c.line}", "axes.labelcolor": "${c.fg}", "xtick.color": "${c.muted}", "ytick.color": "${c.muted}", "text.color": "${c.fg}",
         "legend.frameon": False, "axes.spines.top": False, "axes.spines.right": False,
-        "axes.prop_cycle": matplotlib.cycler(color=["#4fa0ff", "#d8627e", "#00a5b7", "#ffb74d", "#a975aa", "#6dd58c"])})
+        "axes.prop_cycle": matplotlib.cycler(color=["${c.accent}", "${c.accent2}", "${c.accent3}", "${c.accent4}", "${c.accent5}", "${c.accent6}"])})
     _jarvis_saved = set()
     def _jarvis_save_all(*_a, **_k):
         for n in plt.get_fignums():
@@ -53,13 +65,14 @@ try:
 except Exception:
     pass
 `;
+};
 
 /** Führt Python-Code in einem eigenen Ordner aus und sammelt Bilder (Figuren, gespeicherte Dateien). */
 export async function runPython(code: string, title = "Visualisierung"): Promise<Visual> {
   const id = newId(), dir = dirOf(id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "skript.py"), code);
-  writeFileSync(join(dir, ".run.py"), PRELUDE + "\nexec(compile(open('skript.py', encoding='utf-8').read(), 'skript.py', 'exec'))\n");
+  writeFileSync(join(dir, ".run.py"), prelude(theme) + "\nexec(compile(open('skript.py', encoding='utf-8').read(), 'skript.py', 'exec'))\n");
   const uv = Bun.which("uv") ?? join(homedir(), ".local", "bin", "uv");
   const cmd = existsSync(uv)
     ? [uv, "run", "--quiet", "--no-project", "--python", "3.12", ...PY_PACKAGES.flatMap(p => ["--with", p]), "python", "-I", ".run.py"]
@@ -85,9 +98,11 @@ export function saveHtml(html: string, title = "Visualisierung"): Visual {
     writeFileSync(join(dir, "bild.svg"), trimmed.includes("xmlns=") ? trimmed : trimmed.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"'));
     return save({ id, kind: "html", title: title.slice(0, 120), files: ["bild.svg"], created: Date.now() });
   }
-  const doc = /<html[\s>]/i.test(trimmed) ? trimmed
+  const base = `<style>${cssVars(theme)}</style>`;
+  const doc = /<html[\s>]/i.test(trimmed)
+    ? (/<head[^>]*>/i.test(trimmed) ? trimmed.replace(/<head[^>]*>/i, m => m + base) : trimmed.replace(/<html[^>]*>/i, m => m + base))
     : `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>:root{color-scheme:dark}html,body{margin:0;background:#131314;color:#e3e3e3;font:15px/1.5 system-ui,-apple-system,sans-serif}body{padding:16px;box-sizing:border-box;min-height:100vh}</style>
+${base}<style>html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,sans-serif}body{padding:16px;box-sizing:border-box;min-height:100vh}</style>
 </head><body>${trimmed}</body></html>`;
   writeFileSync(join(dir, "index.html"), doc);
   return save({ id, kind: "html", title: title.slice(0, 120), files: ["index.html"], created: Date.now() });

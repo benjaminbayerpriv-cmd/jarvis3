@@ -28,7 +28,7 @@ import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
 import { defaults, parseSettings, type Settings } from "./settings";
 import { Haptics } from "./haptics";
-import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, type Visual } from "./visuals";
+import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, setVisualTheme, type Visual } from "./visuals";
 import { needsChatTitle, parseChatTitle, provisionalChatTitle, titleExcerpt, visibleChatTitle, type ChatMeta } from "./chat-title";
 
 const PORT = Number(process.env.JARVIS_PORT ?? 7777);
@@ -1517,6 +1517,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "viewer_window" && settings.liveView && Number.isInteger(msg.window)) preview.pin(`win:${msg.window}`);
       else if (msg.type === "voice") requestVoice(ws, msg.mode);
       else if (msg.type === "focus") uiFocus.set(ws, msg.focused === true);
+      else if (msg.type === "theme") { setVisualTheme(msg.dark === false ? "light" : "dark"); ibrowser.setTheme(msg.dark !== false); }   // hell/dunkel der Oberfläche (Systemmodus eingeschlossen)
       else if (msg.type === "history") { ws.send(JSON.stringify({ type: "history", sessions: await history(), folders: folderLabels() })); void syncProjects(); }
       else if (msg.type === "open") {
         const id = String(msg.id);

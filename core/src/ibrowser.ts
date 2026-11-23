@@ -56,6 +56,7 @@ export class InternalBrowser {
   private nextId = FIRST_ID + 1;
   private ua = "";
   private expectBlank = 0;
+  private dark = true;
   /** Live-Bild eines Tabs (nur für gestreamte Tabs) */
   onFrame?: (m: Record<string, any>) => void;
   /** Tabs kamen hinzu, gingen oder haben Titel/Adresse geändert */
@@ -149,6 +150,7 @@ export class InternalBrowser {
     await cdp.send("Page.enable"); await cdp.send("Runtime.enable");
     if (this.ua) await cdp.send("Emulation.setUserAgentOverride", { userAgent: this.ua, acceptLanguage: "de-DE,de;q=0.9,en;q=0.8" }).catch(() => {});
     await this.applyViewport(tab);
+    await this.applyMedia(tab);
     cdp.on("Page.screencastFrame", p => this.screencastFrame(tab, p));
     cdp.on("Page.javascriptDialogOpening", p => {
       this.onNotice?.(`Die Seite zeigt: ${String(p.message ?? "").slice(0, 160)}`);
@@ -176,6 +178,12 @@ export class InternalBrowser {
   private async applyViewport(tab: Tab) {
     await tab.cdp.send("Emulation.setDeviceMetricsOverride", { width: tab.w, height: tab.h, deviceScaleFactor: tab.dpr, mobile: false, screenWidth: tab.w, screenHeight: tab.h });
   }
+
+  /** Hell oder dunkel wie die Oberfläche (prefers-color-scheme der Seiten) */
+  private applyMedia(tab: Tab) {
+    return tab.cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: this.dark ? "dark" : "light" }] }).catch(() => {});
+  }
+  setTheme(dark: boolean) { this.dark = dark; for (const t of this.tabs.values()) void this.applyMedia(t); }
 
   /** Viewport an das Vorschaufenster anpassen (CSS-Pixel und Pixeldichte): scharf und ohne Ränder */
   async resize(id: number, w: number, h: number, dpr: number) {
