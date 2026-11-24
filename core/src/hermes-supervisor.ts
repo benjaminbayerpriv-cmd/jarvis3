@@ -1,6 +1,7 @@
 import { connect } from "node:net";
 import { defaultHome, setupHome } from "./hermes-tools";
-import { Hermes, hermesUrl } from "./hermes";
+import { Hermes, hermesUrl, managedGateway } from "./hermes";
+import type { BackendConfig } from "./backend-config";
 
 // Startet ausschließlich einen eigenen Prozess und verbindet sich nie mit einem fremd belegten Port.
 export class HermesSupervisor {
@@ -17,26 +18,29 @@ export class HermesSupervisor {
       socket.once("error", () => resolve(false)); socket.once("timeout", () => { socket.destroy(); resolve(false); });
     });
   }
-  async ensure(url: string, key: string) {
-    if (this.starting) { await this.starting; return this.ensure(url, key); }
-    this.starting = this.start(url, key);
+  async ensure(url: string, key: string, config?: BackendConfig, providerKey = "") {
+    if (this.starting) { await this.starting; return this.ensure(url, key, config, providerKey); }
+    this.starting = this.start(url, key, config, providerKey);
     try { await this.starting; } finally { this.starting = undefined; }
   }
-  private async start(url: string, key: string) {
+  private async start(url: string, key: string, config?: BackendConfig, providerKey = "") {
     const endpoint = new URL(hermesUrl(url));
-    if (endpoint.pathname !== "/") throw new Error("Der verwaltete Hermes-Server benötigt eine Adresse ohne Pfad");
+    if (!managedGateway(url)) {
+      await new Hermes({ url, apiKey: key }).testConnection();
+      return;
+    }
     if (key.trim().length < 16) throw new Error("Hermes-Server-Schlüssel muss mindestens 16 Zeichen lang sein");
     if (this.proc && this.proc.exitCode === null) {
       if (this.startedUrl !== url) throw new Error("Hermes läuft bereits mit einer anderen Adresse");
       await new Hermes({ url, apiKey: key }).testConnection(); return;
     }
-    const host = endpoint.hostname.replace(/^\[|\]$/g, ""), port = Number(endpoint.port || 80);
+    const host = endpoint.hostname === "localhost" ? "127.0.0.1" : endpoint.hostname.replace(/^\[|\]$/g, ""), port = Number(endpoint.port || 80);
     if (await this.portBusy(port, host)) throw new Error("Hermes-Port ist bereits belegt; fremde Dienste werden nicht übernommen");
-    const result = setupHome(this.home, { daemonUrl: `http://127.0.0.1:${this.daemonPort}`, stopOnCancel: true });
+    const result = setupHome(this.home, { daemonUrl: `http://127.0.0.1:${this.daemonPort}`, stopOnCancel: true, ...((config?.modelBaseUrl || config?.modelSupportsVision) ? { model: { id: config.model, baseUrl: config.modelBaseUrl, supportsVision: config.modelSupportsVision } } : {}) });
     if (!result.ok) throw new Error("Hermes-Arbeitsverzeichnis ist nicht von Jarvis verwaltet");
     this.startedUrl = url;
     this.proc = Bun.spawn(["hermes", "gateway"], { stdout: "ignore", stderr: "ignore", env: { ...process.env,
-      HERMES_HOME: this.home, API_SERVER_ENABLED: "true", API_SERVER_HOST: host, API_SERVER_PORT: String(port), API_SERVER_KEY: key } });
+      HERMES_HOME: this.home, JARVIS_HERMES_PROVIDER_KEY: providerKey, API_SERVER_ENABLED: "true", API_SERVER_HOST: host, API_SERVER_PORT: String(port), API_SERVER_KEY: key } });
     const client = new Hermes({ url, apiKey: key });
     for (let i = 0; i < 80; i++) {
       if (this.proc.exitCode !== null) throw new Error("Verwalteter Hermes-Server konnte nicht gestartet werden");

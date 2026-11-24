@@ -31,6 +31,7 @@ import { defaults, parseSettings, type Settings } from "./settings";
 import { Haptics } from "./haptics";
 import { BackendRuntime, isHermes } from "./backend-runtime";
 import { HermesSupervisor } from "./hermes-supervisor";
+import { managedGateway } from "./hermes";
 import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, setVisualTheme, type Visual } from "./visuals";
 import { needsChatTitle, parseChatTitle, provisionalChatTitle, titleExcerpt, visibleChatTitle, type ChatMeta } from "./chat-title";
 
@@ -131,8 +132,15 @@ const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const 
 type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
-const state = () => ({ type: "state", ...settings, extStale: extensionStale, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
-  speech: speech.connected, voice, models, devices: audioDevices });
+const effectiveBackend = () => session ? (isHermes(session) ? "hermes" : "opencode") : (backendRuntime?.active ?? "opencode");
+const hermesModelId = () => `hermes/${backendRuntime?.config.provider ?? "default"}/${backendRuntime?.config.model ?? "hermes-agent"}`;
+const state = () => {
+  const hermes = effectiveBackend() === "hermes";
+  const id = hermesModelId(), config = backendRuntime?.config;
+  return { type: "state", ...settings, ...(hermes ? { model: id, voiceModel: id } : {}), extStale: extensionStale,
+    backend: hermes ? "hermes" : "opencode", busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
+    speech: speech.connected, voice, models: hermes ? [{ id, provider: config?.provider ?? "default", model: config?.model ?? "hermes-agent", group: "other", vision: config?.modelSupportsVision === true }] : models, devices: audioDevices };
+};
 
 // ---------- Sprache ----------
 let voice: "off" | "live" | "dictate" | "muted" = "off";
@@ -371,14 +379,16 @@ function hermesHistory() {
     projectId: projects.chat(r.id)?.projectId ?? null, project: projects.label(projects.chat(r.id)?.projectId ?? null) }));
 }
 function backendState() {
-  let keySet = false;
-  try { keySet = !!backendRuntime?.store.getKey(); } catch { /* kein Schlüsselstatus */ }
+  let keySet = false, providerKeySet = false;
+  try { keySet = !!backendRuntime?.store.getKey(); providerKeySet = !!backendRuntime?.store.getKey("provider"); } catch { /* kein Schlüsselstatus */ }
   const c = backendRuntime?.config;
   return { type: "backend", active: backendRuntime?.active ?? "opencode", backends: {
     opencode: { label: "OpenCode", status: "ready", config: { provider: "opencode", model: settings.model, baseUrl: "" }, keySet: false },
-    hermes: { label: "Hermes", status: backendRuntime ? "ready" : "unsupported", keySet,
-      config: { provider: c?.provider ?? "default", model: c?.model ?? "hermes-agent", serverUrl: c?.baseUrl ?? "http://127.0.0.1:8642" },
-      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }] }
+    hermes: { label: "Hermes", status: backendRuntime ? "ready" : "unsupported", keySet, providerKeySet,
+      externalGatewayManaged: c ? managedGateway(c.baseUrl) : false,
+      ...((c && !managedGateway(c.baseUrl)) ? { error: "Externes Hermes-Gateway: Werkzeugregeln müssen dort separat eingerichtet sein." } : {}),
+      config: { provider: c?.provider ?? "default", model: c?.model ?? "hermes-agent", serverUrl: c?.baseUrl ?? "http://127.0.0.1:8642", modelBaseUrl: c?.modelBaseUrl ?? "", modelSupportsVision: c?.modelSupportsVision ?? false },
+      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] }
   } };
 }
 async function abortBackend(id: string) {
@@ -441,9 +451,22 @@ async function sessionMessages(id: string) {
   if (isHermes(id)) {
     if (!backendRuntime) throw new Error("Hermes nicht verfügbar");
     backendRuntime.client(id); // vor dem Start prüfen, ob der Chat zu diesem Server gehört
-    await hermesSupervisor.ensure(backendRuntime.config.baseUrl, backendRuntime.store.getKey() ?? "");
+    await hermesSupervisor.ensure(backendRuntime.config.baseUrl, backendRuntime.store.getKey() ?? "", backendRuntime.config, backendRuntime.store.getKey("provider") ?? "");
     const rows = await backendRuntime.client(id).messages(backendRuntime.raw(id)) as any[];
-    return rows.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ info: { id: String(m.id ?? ""), role: m.role }, parts: [{ type: "text", text: typeof m.content === "string" ? m.content : "" }] }));
+    return rows.filter(m => m.role === "user" || m.role === "assistant").map(m => {
+      const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : [];
+      const parts: any[] = [];
+      for (const item of content) {
+        if (item.type === "text" && typeof item.text === "string") {
+          const marker = m.role === "user" ? item.text.indexOf(`\n\n${ATTACHMENT_HEADER}`) : -1;
+          if (marker >= 0) { parts.push({ type: "text", text: item.text.slice(0, marker) }, { type: "text", text: item.text.slice(marker + 2) }); }
+          else parts.push({ type: "text", text: item.text });
+        } else if (m.role === "user" && item.type === "image_url" && typeof item.image_url?.url === "string") {
+          const url = item.image_url.url; parts.push({ type: "file", url, mime: /^data:([^;]+);/.exec(url)?.[1] ?? "image/png" });
+        }
+      }
+      return { info: { id: String(m.id ?? ""), role: m.role }, parts };
+    });
   }
   const response = await fetch(`${brain.url}/session/${encodeURIComponent(id)}/message`);
   if (!response.ok) throw new Error(`Nachrichten konnten nicht geladen werden (${response.status})`);
@@ -461,6 +484,7 @@ async function openSession(id: string) {
   const running = busySessions.has(id);
   const messages = chatHistory(await sessionMessages(id), running);
   session = id;
+  broadcast(state());
   return { messages, running: running && busySessions.has(id) };
 }
 
@@ -623,12 +647,25 @@ let hermesStopGeneration = 0, hermesActivity = 0;
 async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: Attachment[], existing?: string) {
   const backend = backendRuntime, stopGeneration = hermesStopGeneration;
   if (!backend) { broadcast({ type: "error", message: "Hermes ist auf diesem System nicht verfügbar.", session: existing }); return; }
+  if (!managedGateway(backend.config.baseUrl))
+    broadcast({ type: "notice", text: "Externes Hermes-Gateway: Die Werkzeugregeln müssen auf diesem Gateway eingerichtet sein.", session: existing });
   hermesActivity++;
   try {
-  try { await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? ""); }
+  try { await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? "", backend.config, backend.store.getKey("provider") ?? ""); }
   catch (error) { broadcast({ type: "error", message: error instanceof Error ? error.message : "Hermes konnte nicht gestartet werden", session: existing }); return; }
   if (stopGeneration !== hermesStopGeneration) return;
-  if (atts.length) { broadcast({ type: "error", message: "Anhänge sind für Hermes noch nicht verfügbar.", session: existing }); return; }
+  let attachmentText = ""; let images: PromptImage[] = [];
+  if (hasImages(atts) && !backend.config.modelSupportsVision) {
+    broadcast({ type: "error", message: "Für dieses Hermes-Modell ist Bildverständnis nicht aktiviert. Aktiviere es in den Backend-Einstellungen, wenn das Modell Bilder unterstützt.", session: existing }); return;
+  }
+  if (atts.length) {
+    const prepared = await prepare(atts, join(workspace, "uploads"), true);
+    if (prepared.problems.length) { broadcast({ type: "error", message: "Mindestens ein Anhang kann nicht als Text oder Bild an Hermes übergeben werden.", session: existing }); return; }
+    if (prepared.notes.length) broadcast({ type: "notice", text: prepared.notes.join(" "), session: existing });
+    attachmentText = `\n\n${ATTACHMENT_HEADER}${JSON.stringify(atts.map(a => a.name))}\n${prepared.text}`;
+    images = prepared.images;
+  }
+  if (stopGeneration !== hermesStopGeneration) return;
   const run = ++runSeq;
   if (existing) latestRun.set(existing, run);
   if (existing && busySessions.has(existing)) await abortBackend(existing);
@@ -645,7 +682,7 @@ async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: A
   const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
   let response = "", finished = false;
   try {
-    await client.prompt(rawId, text, SYSTEM_PROMPT, (event: BrainEvent) => {
+    await client.prompt(rawId, (text || "Sieh dir die angehängten Dateien an.") + attachmentText, SYSTEM_PROMPT, (event: BrainEvent) => {
       if (finished || latestRun.get(id) !== run) return;
       if (event.kind === "text") { response += event.delta; if (!spoken) emit({ type: "delta", text: event.delta }); }
       else if (event.kind === "tool") emit({ type: "tool", ...event });
@@ -655,7 +692,7 @@ async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: A
         if (event.kind === "done" && !event.aborted && spoken && response) { emit({ type: "delta", text: response }); liveAnswer.deliver(run, response); }
         emit({ type: event.kind, ...event });
       }
-    });
+    }, images);
   } finally {
     busySessions.delete(id); runBuffer.clear(id); backend.rename(id, backend.rows.find(r => r.id === id)?.title ?? "Neuer Chat");
     broadcast(state()); broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
@@ -1555,26 +1592,30 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         if (!backend || !["hermes", "opencode"].includes(msg.backend)) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Backend nicht verfügbar" }); return; }
         try {
           if (msg.type === "backend_set") {
-            backend.setActive(msg.backend); broadcast(backendState()); return;
+            backend.setActive(msg.backend); broadcast(backendState()); broadcast(state()); return;
           }
           if (msg.type === "backend_config") {
             if (msg.backend !== "hermes") throw new Error("OpenCode wird über seine eigene Konfiguration eingerichtet");
             if (hermesActivity > 0 || hermesSupervisor.isStarting || [...busySessions].some(isHermes)) throw new Error("Hermes arbeitet noch; Einstellungen erst danach ändern");
             if (!msg.config || typeof msg.config.serverUrl !== "string") throw new Error("Hermes-Serveradresse serverUrl fehlt; Modellanbieter-Adresse ist etwas anderes");
-            backend.configure({ provider: msg.config.provider, model: msg.config.model, baseUrl: msg.config.serverUrl });
+            const modelBaseUrl = msg.config.modelBaseUrl ?? backend.config.modelBaseUrl;
+            if (!managedGateway(msg.config.serverUrl) && modelBaseUrl) throw new Error("Hermes: Bei externem Gateway muss der Modellanbieter dort konfiguriert werden; Modellserver-Adresse hier leer lassen.");
+            backend.configure({ provider: msg.config.provider, model: msg.config.model, baseUrl: msg.config.serverUrl, modelBaseUrl, modelSupportsVision: msg.config.modelSupportsVision ?? backend.config.modelSupportsVision });
             hermesSupervisor.stop(); backend.resetClients();
           } else if (msg.type === "backend_secret") {
             if (msg.backend !== "hermes") throw new Error("OpenCode verwaltet seine Schlüssel selbst");
             if (hermesActivity > 0 || hermesSupervisor.isStarting || [...busySessions].some(isHermes)) throw new Error("Hermes arbeitet noch; Schlüssel erst danach ändern");
             if (!(msg.apiKey === null || typeof msg.apiKey === "string")) throw new Error("Ungültiger Server-Schlüssel");
-            backend.store.setKey(msg.apiKey); hermesSupervisor.stop(); backend.resetClients();
+            if (msg.target !== undefined && !["server", "provider"].includes(msg.target)) throw new Error("Ungültiger Schlüsseltyp");
+            if (msg.target === "provider" && !managedGateway(backend.config.baseUrl)) throw new Error("Hermes: Der Modellanbieter-Schlüssel muss am externen Gateway eingerichtet werden.");
+            backend.store.setKey(msg.apiKey, msg.target ?? "server"); hermesSupervisor.stop(); backend.resetClients();
           } else if (msg.type === "backend_test") {
             const started = performance.now();
-            if (msg.backend === "hermes") await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? "");
+            if (msg.backend === "hermes") await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? "", backend.config, backend.store.getKey("provider") ?? "");
             else if (!await brain.healthy()) throw new Error("OpenCode ist nicht erreichbar");
             reply({ type: "backend_test", backend: msg.backend, ok: true, latencyMs: Math.round(performance.now() - started) }); return;
           } else return;
-          reply({ type: "backend_saved", backend: msg.backend, ok: true }); broadcast(backendState());
+          reply({ type: "backend_saved", backend: msg.backend, ok: true }); broadcast(backendState()); broadcast(state());
         } catch (error) {
           const message = error instanceof Error && /^(Hermes|OpenCode|Der verwaltete|Nicht vertrauenswürdiger)/.test(error.message) ? error.message : "Backend-Einstellung konnte nicht verarbeitet werden";
           reply({ type: msg.type === "backend_test" ? "backend_test" : "backend_saved", backend: msg.backend, ok: false, error: message });
@@ -1594,6 +1635,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           if (text.trim() || atts.length) await chat(text, msg.model, false, [], ws.data.fresh, atts);
         } else {
           const id = String(msg.id), messageID = String(msg.messageID);
+          if (isHermes(id)) { ws.send(JSON.stringify({ type: "error", session: id, message: "Hermes bietet kein Zurücksetzen auf eine bestimmte Nachricht. Bearbeiten und erneutes Senden sind deshalb noch nicht möglich." })); return; }
           const original = (await sessionMessages(id)).find(message => message.info?.id === messageID && message.info.role === "user");
           if (!original) throw new Error("Nachricht nicht gefunden");
           const { view, saved } = readChatMessage(original);
@@ -1609,6 +1651,14 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "stop") await stop(!!msg.all, msg.session ? String(msg.session) : session);
       else if (msg.type === "settings" || msg.type === "liveview") {
         const patch = msg.type === "settings" ? parseSettings(msg.settings) : parseSettings({ liveView: msg.on });
+        if (effectiveBackend() === "hermes") {
+          // Hermes-Modellwahl gehört zur Hermes-Konfiguration, niemals zu OpenCode.
+          for (const key of ["model", "voiceModel"] as const) {
+            if (!(key in patch)) continue;
+            if (patch[key] !== hermesModelId()) ws.send(JSON.stringify({ type: "notice", text: "Hermes-Modelle werden in den Backend-Einstellungen gewählt." }));
+            delete patch[key];
+          }
+        }
         for (const [key, nameKey, side] of [["micDevice", "micName", "input"], ["speakerDevice", "speakerName", "output"]] as const) {
           if (!(key in patch)) continue;
           const selected = audioDevices?.[side].find(d => d.id === patch[key]);
@@ -1698,7 +1748,11 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
         else await chat(expandTemplate(String(found.template ?? ""), args), msg.model, false, [], ws.data.fresh);
       }
       else if (msg.type === "chat_action") await updateChat(msg);
-      else if (msg.type === "rewind") await rewindMessage(String(msg.id), String(msg.messageID));
+      else if (msg.type === "rewind") {
+        const id = String(msg.id);
+        if (isHermes(id)) ws.send(JSON.stringify({ type: "error", session: id, message: "Hermes bietet kein Zurücksetzen auf eine bestimmte Nachricht." }));
+        else await rewindMessage(id, String(msg.messageID));
+      }
       else if (msg.type === "new") { session = undefined; broadcast(state()); }
       else if (msg.type === "usage") ws.send(JSON.stringify({ type: "usage", ...summarize(readUsage(), parseRange(msg.range)) }));
       else if (msg.type === "projects") ws.send(JSON.stringify({ type: "projects", ...projects.data() }));

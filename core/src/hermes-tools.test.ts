@@ -67,3 +67,10 @@ describe.skipIf(!hermes)("echtes Hermes (hermes mcp test)", () => {
     expect(r.ok).toBe(true);
   }, 150_000);
 });
+
+test("Netzwerk-Modellanbieter wird ohne geheimen Schlüssel in Hermes-YAML eingetragen", () => {
+  const yaml = managedConfig({ model: { id: "vision-test", baseUrl: "http://192.168.1.8:1234/v1", supportsVision: true } });
+  expect(yaml).toContain('base_url: "http://192.168.1.8:1234/v1"');
+  expect(yaml).toContain('${JARVIS_HERMES_PROVIDER_KEY}');
+  expect(yaml).toContain('supports_vision: true');
+});

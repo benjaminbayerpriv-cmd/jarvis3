@@ -1,15 +1,19 @@
-// Hermes Runs API. Dieser Adapter ist noch nicht mit dem Daemon verdrahtet.
-import type { BrainEvent } from "./opencode";
+// Hermes Runs- und Sitzungs-Streaming-API.
+import type { BrainEvent, PromptImage } from "./opencode";
 import { baseToolName } from "./hermes-tools";
 
 export type HermesConfig = { url: string; apiKey: string; provider?: string; model?: string };
 
-// Nur explizite Loopback-Adressen: kein Redirect oder DNS-Rebinding für den API-Schlüssel.
+// Gateway-Adresse und Anbieter-Adresse sind unabhängig. Redirects bleiben gesperrt.
 export function hermesUrl(value: string): string {
   const u = new URL(value);
-  if (u.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(u.hostname) || u.username || u.password || u.search || u.hash)
-    throw new Error("Hermes-Adresse muss eine lokale HTTP-Loopback-Adresse sein");
+  if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash)
+    throw new Error("Hermes-Adresse muss eine HTTP(S)-Adresse ohne Zugangsdaten sein");
   return u.toString().replace(/\/$/, "");
+}
+export function managedGateway(value: string) {
+  const u = new URL(hermesUrl(value));
+  return u.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(u.hostname) && u.pathname === "/";
 }
 
 type Active = { runId?: string; stopRequested: boolean; controller: AbortController; finished: Promise<void>; finish: () => void; stopping?: Promise<void> };
@@ -31,6 +35,9 @@ export class Hermes {
     const r = await this.request("/v1/capabilities", { signal: AbortSignal.timeout(5000) });
     const data = await r.json() as { features?: Record<string, unknown> };
     if (!data.features?.run_submission || !data.features?.run_events_sse || !data.features?.run_stop) throw new Error("Hermes-Server unterstützt die benötigte Runs-API nicht");
+    const sessions = await this.request("/api/sessions?limit=1", { signal: AbortSignal.timeout(5000) });
+    const list = await sessions.json() as { data?: unknown };
+    if (!Array.isArray(list.data)) throw new Error("Hermes-Sitzungsverwaltung ist nicht bereit");
   }
 
   /** Hermes-API-Sitzungen sind vom OpenCode-Verlauf getrennt. */
@@ -74,7 +81,7 @@ export class Hermes {
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  async prompt(session: string, input: string, instructions: string, onEvent: (event: BrainEvent) => void) {
+  async prompt(session: string, input: string, instructions: string, onEvent: (event: BrainEvent) => void, images: PromptImage[] = []) {
     if (this.active.has(session)) throw new Error("Für diese Hermes-Sitzung läuft bereits eine Anfrage");
     let finish!: () => void;
     const finished = new Promise<void>(resolve => { finish = resolve; });
@@ -82,36 +89,54 @@ export class Hermes {
     this.active.set(session, run);
     let terminal = false;
     try {
-      const response = await this.request("/v1/runs", { method: "POST", signal: AbortSignal.timeout(15000), headers: { "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({ input, session_id: session, instructions, ...(this.config.provider ? { provider: this.config.provider } : {}), ...(this.config.model ? { model: this.config.model } : {}) }) });
-      const result = await response.json() as { run_id?: unknown };
-      if (typeof result.run_id !== "string" || !result.run_id) throw new Error("Hermes lieferte keine Lauf-ID");
-      run.runId = result.run_id;
-      if (run.stopRequested) await this.stopRun(run);
-      const stream = await this.request(`/v1/runs/${encodeURIComponent(run.runId)}/events`, { signal: run.controller.signal });
+      let stream: Response;
+      if (images.length) {
+        // Die native Sitzungs-API validiert multimodalen Inhalt; Runs verarbeitet
+        // Bildteile je Hermes-Version unterschiedlich.
+        stream = await this.request(`/api/sessions/${encodeURIComponent(session)}/chat/stream`, { method: "POST", signal: run.controller.signal,
+          body: JSON.stringify({ message: [{ type: "text", text: input }, ...images.map(image => ({ type: "image_url", image_url: { url: image.url } }))], instructions,
+            ...(this.config.provider ? { provider: this.config.provider } : {}), ...(this.config.model ? { model: this.config.model } : {}) }) });
+      } else {
+        const response = await this.request("/v1/runs", { method: "POST", signal: AbortSignal.timeout(15000), headers: { "Idempotency-Key": crypto.randomUUID() },
+          body: JSON.stringify({ input, session_id: session, instructions, ...(this.config.provider ? { provider: this.config.provider } : {}), ...(this.config.model ? { model: this.config.model } : {}) }) });
+        const result = await response.json() as { run_id?: unknown };
+        if (typeof result.run_id !== "string" || !result.run_id) throw new Error("Hermes lieferte keine Lauf-ID");
+        run.runId = result.run_id;
+        if (run.stopRequested) await this.stopRun(run);
+        stream = await this.request(`/v1/runs/${encodeURIComponent(run.runId)}/events`, { signal: run.controller.signal });
+      }
       if (!stream.body) throw new Error("Hermes lieferte keinen Ereignisstrom");
       const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
-      let buffer = "", text = "";
+      let buffer = "", text = "", toolsSeen = false;
       const ids = new Map<string, string[]>();
-      const dispatch = (data: string) => {
+      const dispatch = (data: string, eventName?: string) => {
         const event = JSON.parse(data);
-        if (event.event === "message.delta" && typeof event.delta === "string") { text += event.delta; onEvent({ kind: "text", delta: event.delta }); }
+        event.event ??= eventName;
+        if (!run.runId && typeof event.run_id === "string") {
+          run.runId = event.run_id;
+          if (run.stopRequested) void this.stopRun(run).catch(() => {});
+        }
+        if ((event.event === "message.delta" || event.event === "assistant.delta") && typeof event.delta === "string") { text += event.delta; onEvent({ kind: "text", delta: event.delta }); }
+        if (event.event === "assistant.completed" && !text && typeof event.content === "string" && event.content) { text += event.content; onEvent({ kind: "text", delta: event.content }); }
         if (event.event === "tool.started") {
-          const name = baseToolName(String(event.tool ?? "Werkzeug")), id = String(event.tool_call_id || crypto.randomUUID());
+          toolsSeen = true;
+          const name = baseToolName(String(event.tool ?? event.tool_name ?? "Werkzeug")), id = String(event.tool_call_id || crypto.randomUUID());
           ids.set(name, [...(ids.get(name) ?? []), id]);
           onEvent({ kind: "tool", id, name, status: "running" });
         }
-        if (event.event === "tool.completed") {
-          const name = baseToolName(String(event.tool ?? "Werkzeug")), queue = ids.get(name) ?? [];
+        if (event.event === "tool.completed" || event.event === "tool.failed") {
+          const name = baseToolName(String(event.tool ?? event.tool_name ?? "Werkzeug")), queue = ids.get(name) ?? [];
           const id = String(event.tool_call_id || queue.shift() || crypto.randomUUID());
           ids.set(name, queue.filter(x => x !== id));
-          onEvent({ kind: "tool", id, name, status: event.error ? "error" : "completed", ...(event.error ? { error: "Hermes-Werkzeug fehlgeschlagen" } : {}) });
+          onEvent({ kind: "tool", id, name, status: event.error || event.event === "tool.failed" ? "error" : "completed", ...(event.error || event.event === "tool.failed" ? { error: "Hermes-Werkzeug fehlgeschlagen" } : {}) });
         }
         if (event.event === "run.completed") {
           if (!text && typeof event.output === "string" && event.output) onEvent({ kind: "text", delta: event.output });
-          terminal = true; onEvent({ kind: "done" });
+          terminal = true;
+          if (!text && !toolsSeen && !(typeof event.output === "string" && event.output)) onEvent({ kind: "error", message: "Hermes hat keine Antwort geliefert" });
+          else onEvent({ kind: "done" });
         } else if (event.event === "run.cancelled") { terminal = true; onEvent({ kind: "done", aborted: true }); }
-        else if (["run.failed", "run.interrupted"].includes(event.event)) { terminal = true; onEvent({ kind: "error", message: "Hermes-Lauf fehlgeschlagen oder unterbrochen" }); }
+        else if (["run.failed", "run.interrupted", "error"].includes(event.event)) { terminal = true; onEvent({ kind: "error", message: "Hermes-Lauf fehlgeschlagen oder unterbrochen" }); }
       };
       for (;;) {
         const chunk = await reader.read();
@@ -121,7 +146,8 @@ export class Hermes {
         while ((end = buffer.indexOf("\n\n")) >= 0) {
           const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
           const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-          if (data) dispatch(data);
+          const eventName = frame.split("\n").find(line => line.startsWith("event:"))?.slice(6).trim();
+          if (data) dispatch(data, eventName);
           if (terminal) { await reader.cancel(); break; }
         }
         if (terminal) break;

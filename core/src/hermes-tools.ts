@@ -24,6 +24,7 @@ export interface HermesToolsOptions {
   /** Ein vom Client abgebrochener Aufruf löst den gemeinsamen Not-Aus aus (POST /stop) */
   stopOnCancel?: boolean;
   timeoutSec?: number;
+  model?: { id: string; baseUrl: string; supportsVision: boolean };
 }
 
 const q = (s: string) => JSON.stringify(s);   // JSON-Strings sind gültiges YAML
@@ -55,8 +56,9 @@ export function mcpEntry(o: HermesToolsOptions = {}) {
 export function managedConfig(o: HermesToolsOptions = {}): string {
   const e = mcpEntry(o);
   const env = Object.entries(e.env).map(([k, v]) => `      ${k}: ${q(v)}`).join("\n");
+  const model = o.model ? `model:\n  default: ${q(o.model.id)}\n${o.model.baseUrl ? `  provider: "custom"\n  base_url: ${q(o.model.baseUrl)}\n  api_key: "${"${JARVIS_HERMES_PROVIDER_KEY}"}"\n` : ""}  supports_vision: ${o.model.supportsVision}\n` : "";
   return `${MARKER}
-mcp_servers:
+${model}mcp_servers:
   ${SERVER}:
     command: ${q(e.command)}
     args: [${e.args.map(q).join(", ")}]

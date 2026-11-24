@@ -26,7 +26,7 @@ export class BackendRuntime {
     const row = id ? this.rows.find(r => r.id === id) : undefined;
     if (id && (!row || row.serverUrl !== this.config.baseUrl)) throw new Error("Hermes-Chat gehört zu einem anderen Server");
     const existing = id && this.clients.get(id); if (existing) return existing;
-    const client = new Hermes({ url: this.config.baseUrl, apiKey: this.store.getKey() ?? "", ...(this.config.provider !== "default" ? { provider: this.config.provider } : {}), ...(this.config.model !== "hermes-agent" ? { model: this.config.model } : {}) });
+    const client = new Hermes({ url: this.config.baseUrl, apiKey: this.store.getKey() ?? "", ...(this.config.modelBaseUrl ? { provider: "custom" } : this.config.provider !== "default" ? { provider: this.config.provider } : {}), ...(this.config.model !== "hermes-agent" ? { model: this.config.model } : {}) });
     if (id) this.clients.set(id, client);
     return client;
   }

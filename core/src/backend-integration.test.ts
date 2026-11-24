@@ -24,8 +24,10 @@ Bun.serve({ hostname: '127.0.0.1', port: Number(process.env.API_SERVER_PORT), as
  const u = new URL(req.url), p = u.pathname;
  if (req.headers.get('authorization') !== 'Bearer test-secret-1234567890') return new Response('', {status: 401});
  if (p === '/v1/capabilities') return Response.json({features:{run_submission:true,run_events_sse:true,run_stop:true}});
+ if (p === '/api/sessions' && req.method === 'GET') return Response.json({data:[]});
  if (p === '/api/sessions' && req.method === 'POST') { const id = 'api_' + (++n); sessions.set(id, []); return Response.json({session:{id}}); }
  if (p.startsWith('/api/sessions/') && p.endsWith('/messages')) {const id = decodeURIComponent(p.split('/')[3]); return Response.json({data:sessions.get(id) || []});}
+ if (p.startsWith('/api/sessions/') && p.endsWith('/chat/stream')) {const id=p.split('/')[3], b=await req.json(); sessions.get(id).push({id:'img'+(++n),role:'user',content:b.message}); sessions.get(id).push({id:'answer'+n,role:'assistant',content:'Bild gesehen'}); return new Response('event: run.started\\ndata: {"run_id":"r-image"}\\n\\nevent: assistant.delta\\ndata: {"delta":"Bild gesehen"}\\n\\nevent: run.completed\\ndata: {}\\n\\n');}
  if (p.startsWith('/api/sessions/') && req.method === 'PATCH') return Response.json({});
  if (p === '/v1/runs' && req.method === 'POST') {const b = await req.json(), id='run_'+(++n); sessions.get(b.session_id).push({id:'m'+n,role:'user',content:b.input}); streams.set(id,{input:b.input, session:b.session_id}); return Response.json({run_id:id});}
  if (p.endsWith('/events')) {const id=p.split('/')[3], run=streams.get(id); return new Response(new ReadableStream({start(c) {run.controller=c; if(run.input !== 'warte') {sessions.get(run.session).push({id:'a'+n,role:'assistant',content:'Hallo'}); c.enqueue(new TextEncoder().encode('data: {"event":"message.delta","delta":"Hallo"}\\n\\ndata: {"event":"run.completed","output":"Hallo"}\\n\\n')); c.close();}}}));}
@@ -45,14 +47,19 @@ Bun.serve({ hostname: '127.0.0.1', port: Number(process.env.API_SERVER_PORT), as
     send({type:"backend_get"}); expect((await wait(m=>m.type==="backend")).active).toBe("opencode");
     send({type:"backend_config",backend:"hermes",config:{provider:"default",model:"hermes-agent",baseUrl:"http://127.0.0.1:1234/v1"}});
     const legacy = await wait(m=>m.type==="backend_saved"); expect(legacy.ok).toBe(false); expect(legacy.error).toContain("serverUrl");
-    send({type:"backend_config",backend:"hermes",config:{provider:"default",model:"hermes-agent",serverUrl:`http://127.0.0.1:${hermesPort}`}}); expect((await wait(m=>m.type==="backend_saved")).ok).toBe(true);
+    send({type:"backend_config",backend:"hermes",config:{provider:"default",model:"hermes-agent",modelSupportsVision:true,serverUrl:`http://127.0.0.1:${hermesPort}`}}); expect((await wait(m=>m.type==="backend_saved")).ok).toBe(true);
     send({type:"backend_secret",backend:"hermes",apiKey:"test-secret-1234567890"}); expect((await wait(m=>m.type==="backend_saved")).ok).toBe(true);
     send({type:"backend_test",backend:"hermes"}); expect((await wait(m=>m.type==="backend_test")).ok).toBe(true);
     send({type:"backend_set",backend:"hermes"}); await wait(m=>m.type==="backend" && m.active==="hermes");
+    expect((await wait(m=>m.type==="state" && m.backend==="hermes")).models[0].id).toBe("hermes/default/hermes-agent");
     send({type:"chat",text:"Hallo",session:null}); const sid = (await wait(m=>m.type==="session" && m.id)).id;
     expect(sid.startsWith("hermes_")).toBe(true); expect((await wait(m=>m.type==="delta" && m.session===sid)).text).toBe("Hallo"); await wait(m=>m.type==="done" && m.session===sid);
+    send({type:"chat",text:"Was ist das?",session:sid,attachments:[{name:"bild.png",mime:"image/png",data:"YQ=="}]});
+    expect((await wait(m=>m.type==="delta" && m.text==="Bild gesehen")).session).toBe(sid); await wait(m=>m.type==="done" && m.session===sid);
     send({type:"backend_set",backend:"opencode"}); await wait(m=>m.type==="backend" && m.active==="opencode");
-    send({type:"open",id:sid}); expect((await wait(m=>m.type==="messages" && m.session===sid)).messages.map((m:any)=>m.text)).toEqual(["Hallo","Hallo"]);
+    send({type:"open",id:sid}); expect((await wait(m=>m.type==="state" && m.backend==="hermes")).model).toBe("hermes/default/hermes-agent"); expect((await wait(m=>m.type==="messages" && m.session===sid)).messages.map((m:any)=>m.text)).toEqual(["Hallo","Hallo","Was ist das?","Bild gesehen"]);
+    send({type:"replace",id:sid,messageID:"m1",text:"Geändert"});
+    expect((await wait(m=>m.type==="error" && m.session===sid)).message).toContain("kein Zurücksetzen");
     send({type:"chat",text:"warte",session:sid}); await wait(m=>m.type==="state" && m.busySessions?.includes(sid));
     await Bun.sleep(200); send({type:"stop",session:sid}); await wait(m=>m.type==="stopped" && m.session===sid);
     expect(JSON.stringify(messages)).not.toContain("test-secret-1234567890");

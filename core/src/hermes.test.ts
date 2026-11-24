@@ -7,9 +7,10 @@ function serve(handler: (req: Request) => Response | Promise<Response>) {
   const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handler }); servers.push(s); return `http://127.0.0.1:${s.port}`;
 }
 const sse = (events: object[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""));
-test("nur feste Loopback-Adressen", () => {
+test("Gateway-Adressen ohne eingebettete Zugangsdaten", () => {
   expect(hermesUrl("http://127.0.0.1:8642/")).toBe("http://127.0.0.1:8642");
-  for (const u of ["http://localhost", "http://example.com", "http://user:pass@127.0.0.1", "http://127.0.0.1/?key=x"]) expect(() => hermesUrl(u)).toThrow();
+  expect(hermesUrl("http://192.168.1.8:8642")).toBe("http://192.168.1.8:8642");
+  for (const u of ["file:///etc/passwd", "http://user:pass@127.0.0.1", "http://127.0.0.1/?key=x"]) expect(() => hermesUrl(u)).toThrow();
 });
 test("Kontext, Text und Werkzeugereignisse", async () => {
   let body: any, auth = "";
@@ -82,4 +83,16 @@ test("Hermes-MCP-Präfix erscheint in Werkzeugereignissen als Jarvis-Name", asyn
   const events: BrainEvent[] = []; await new Hermes({url,apiKey:""}).prompt("s","x","",e=>events.push(e));
   expect(events[0]).toEqual({kind:"tool",id:"t",name:"browser_scan",status:"running"});
   expect(events[1]).toEqual({kind:"tool",id:"t",name:"browser_scan",status:"completed"});
+});
+test("Bildanhang wird als multimodaler Sitzungs-Stream gesendet", async () => {
+  let body: any, path = "";
+  const url = serve(async req => {
+    path = new URL(req.url).pathname; body = await req.json();
+    return new Response('event: run.started\ndata: {"run_id":"r"}\n\nevent: assistant.delta\ndata: {"delta":"Bild gesehen"}\n\nevent: run.completed\ndata: {}\n\n');
+  });
+  const events: BrainEvent[] = [];
+  await new Hermes({url,apiKey:""}).prompt("s", "Was ist das?", "Regeln", e=>events.push(e), [{mime:"image/png",url:"data:image/png;base64,YQ=="}]);
+  expect(path).toBe("/api/sessions/s/chat/stream");
+  expect(body.message).toEqual([{type:"text",text:"Was ist das?"},{type:"image_url",image_url:{url:"data:image/png;base64,YQ=="}}]);
+  expect(events).toEqual([{kind:"text",delta:"Bild gesehen"},{kind:"done"}]);
 });
