@@ -66,3 +66,75 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 - `click` akzeptiert im macOS-Fenster-Modus optional `window` und `scanToken` als Prüfung der Scan-Zuordnung. `click`/`type` antworten mit `point` (Bildschirmpunkt) für die virtuelle Maus im Live-Bild. `ok` beim Klick bestätigt die Übergabe an das Programm. Für eine Aussage über das Ergebnis ist eine Beobachtung danach nötig.
 - Aufnahme-Dienst `tools/uimap-mac/bin/Jarvis Bildschirm.app` (`uimap capture-serve --port 7779`, gestartet von jarvisd über `open`): `windowshot {window}`, `stream_start {window, fps}`, `stream_stop`, `cursor {point, click?}`, `cursor_hide`, `ping`. Er braucht eine eigene Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert Kommandozeilenprogrammen keine Bilder). Bilder kommen als `{event:"frame", window, data, w, h, bounds, title, app}`; jarvisd reicht sie als `frame` mit `tab:"win:<id>"` und `cursor` an die Vorschau weiter.
 - Nicht setzen: `AXEnhancedUserInterface` – Chromium-Programme melden danach statt ihrer Fenster nur noch das Programm-Element (bis zum Neustart).
+
+## Agenten-Backend: OpenCode und Hermes
+
+OpenCode ist der Standard. Der Wechsel legt nur das Backend **neuer Chats** fest;
+vorhandene Chats bleiben ihrem Backend und im Hermes-Fall der Serveradresse
+zugeordnet, auch nach Neustart. Hermes-Chats haben `hermes_`-IDs. Verlauf,
+Öffnen, Umbenennen, Löschen, Projekte und Streaming nutzen diese Zuordnung.
+Textdateien und lesbare PDFs werden als Text übertragen; Bilder werden bei aktivierter
+Bildfähigkeit über den multimodalen Sitzungsstream übergeben. Andere Binärdateien
+und unlesbare PDFs werden abgelehnt. Die installierte Hermes-API kann Sitzungen
+nur mit ihrem vollständigen Verlauf forken, nicht vor einer bestimmten Nachricht;
+Bearbeiten und erneutes Senden werden daher explizit abgelehnt.
+
+### UI ↔ Daemon (WebSocket `/ui`)
+
+- `{type:"backend_get"}` → `{type:"backend", active, backends}`.
+- `{type:"backend_set", backend:"opencode"|"hermes"}` speichert die Auswahl.
+- `{type:"backend_config", backend:"hermes", config:{serverUrl, provider, model, modelBaseUrl?, modelSupportsVision?}}`
+  speichert die Konfiguration. `serverUrl` ist die **Hermes-Gateway-Adresse**;
+  `provider` und `model` wählen einen in Hermes konfigurierten Modellanbieter und
+  dessen Modell. `modelBaseUrl` ist die getrennte HTTP(S)-Adresse eines OpenAI-
+  kompatiblen Modellservers und darf auch im Heimnetz liegen. Ist sie gesetzt,
+  wird Hermes als Anbieter `custom` konfiguriert. `modelSupportsVision` bestätigt
+  die Bildfähigkeit des gewählten Modells. `default` bzw. `hermes-agent`
+  verwenden die Hermes-Vorgabe.
+  OpenCode verwaltet seine Anbieter selbst. Anbieter-URLs und -Schlüssel sind
+  **nicht** die Hermes-Serveradresse und der Hermes-Server-Schlüssel.
+- `{type:"backend_secret", backend:"hermes", target:"server"|"provider", apiKey:string|null}`
+  setzt oder entfernt getrennt den Hermes-Server- bzw. Modellanbieter-Schlüssel.
+  Fehlt `target`, gilt `server`. Antworten enthalten nur `keySet` und `providerKeySet`.
+- `{type:"backend_test", backend}` prüft den gespeicherten Zugang; Antwort
+  `{type:"backend_test", backend, ok, error?, latencyMs?}`. Speichern/Entfernen
+  antwortet mit `{type:"backend_saved", backend, ok, error?}`.
+- `backend.config` enthält für Hermes `serverUrl`, `provider`, `model`,
+  `modelBaseUrl`, `modelSupportsVision`; Änderungen werden während eines aktiven
+  Hermes-Laufs abgelehnt. UI-PR #64 muss die zusätzlichen Anbieter-Felder noch
+  übernehmen. Das Backend behandelt `baseUrl` nicht als Serveradresse.
+
+Gateway- und Modellanbieter-Adressen dürfen HTTP(S)-Netzwerkadressen ohne
+eingebettete Zugangsdaten sein; Redirects zum Gateway werden abgelehnt.
+Ein fremdes Gateway kann konfiguriert und verwendet werden, wird aber nicht von
+Jarvis verwaltet: Seine Werkzeugfreigaben und Not-Aus-Anbindung müssen dort separat
+eingerichtet werden. Ein lokal verwaltetes Gateway kann Modellserver im Heimnetz
+oder Internet nutzen. Bei externen Gateways müssen Modellserver-Adresse und
+Anbieter-Schlüssel direkt auf diesem Gateway eingerichtet werden; Jarvis lehnt
+diese lokalen Einstellungen in diesem Fall ab. Der Server-Schlüssel liegt getrennt in `~/.jarvis3/backend/` (Verzeichnis
+0700, Datei 0600, keine Verschlüsselung oder Schlüsselbundintegration); Windows
+wird derzeit nicht unterstützt. Backend-Nachrichten über fremde Browser-Origins
+werden abgewiesen. Der separate Modellanbieter-Schlüssel wird beim Start über eine Umgebungsvariable
+an Hermes übergeben; im erzeugten YAML steht nur ein Variablenverweis.
+
+Jarvis startet nur seinen **eigenen** Hermes-Gatewayprozess auf der gewählten freien
+Adresse; ein vorhandener Prozess auf dem Port wird nicht übernommen. `setupHome()`
+richtet `HERMES_HOME` ein und verbindet den Jarvis-MCP, das API-Profil verwendet nur
+`platform_toolsets.api_server: [jarvis]`. Der von Jarvis verwaltete Profilordner
+ist standardmäßig `~/.jarvis3/hermes/`; seine automatisch erzeugte `config.yaml`
+wird bei jedem Start erneuert, fremde Konfigurationen werden nicht überschrieben.
+
+SSE-Text und Werkzeugereignisse werden in den bestehenden Jarvis-Stream übersetzt;
+`mcp__jarvis__` wird für die Anzeige entfernt. Stopp/Not-Aus fordert
+`POST /v1/runs/{run_id}/stop` an, der MCP-Abbruch kann umgekehrt `/stop` auslösen.
+Hermes stoppt kooperativ; nach zehn Sekunden ohne terminale Bestätigung wird ein
+Fehler gemeldet und der Lauf kann weiterarbeiten. Die Hermes-Werkzeuge und deren
+Sperren beschreibt `docs/hermes-tools.md`.
+
+Geprüft: Ein echtes lokales Hermes-Gateway verarbeitete Text und Bild über einen
+lokalen simulierten Modellserver; kein echtes Modell wurde dafür heruntergeladen.
+Offen: Die Sicherheitsgrenzen mit einem echten Modell und fremdem Gateway sind
+noch nicht end-to-end geprüft. Netzunterbrechungen und dabei
+unbekannte Laufzustände, Freigabedialoge, Wiederverbindung und Windows
+benötigen weitere Arbeit. Die Modellliste und Live-Modellauswahl zeigen beim Hermes-Chat das konfigurierte
+Hermes-Modell; eine automatische Anbieter-/Modellinventur ist noch nicht implementiert.
