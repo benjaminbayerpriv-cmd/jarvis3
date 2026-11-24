@@ -180,6 +180,7 @@
         <h2>Einstellungen</h2>
         <label class="search set-search"><span data-icon="search"></span><input id="settingsSearch" type="search" placeholder="Einstellungen suchen" aria-label="Einstellungen suchen" autocomplete="off"></label>
         <button type="button" class="set-nav-item active" data-pane="general"><span data-icon="settings"></span>Allgemein</button>
+        <button type="button" class="set-nav-item" data-pane="backend"><span data-icon="sparkles"></span>Backend</button>
         <button type="button" class="set-nav-item" data-pane="voice"><span data-icon="microphone"></span>Sprache und Audio</button>
         <button type="button" class="set-nav-item" data-pane="display"><span data-icon="device-desktop"></span>Darstellung</button>
         <button type="button" class="set-nav-item" data-pane="control"><span data-icon="eye"></span>Steuerung</button>
@@ -200,6 +201,12 @@
           <div class="setting"><div><label for="set-autoChatTitles" id="set-autoChatTitles-label">KI-Titel für Chats</label><p id="set-autoChatTitles-desc">Erstellt nach der ersten Antwort einen Titel zum Thema. Ist die Option aus, verwendet Jarvis Stichwörter.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoChatTitles-label" aria-describedby="set-autoChatTitles-desc" id="set-autoChatTitles" data-daemon="autoChatTitles"></button></div>
           <div class="setting"><div><label for="set-autoProjects" id="set-autoProjects-label">Chats automatisch zuordnen</label><p id="set-autoProjects-desc">Jarvis prüft, ob neue Chats zu einem vorhandenen Projekt passen.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoProjects-label" aria-describedby="set-autoProjects-desc" id="set-autoProjects" data-daemon="autoProjects"></button></div>
           <div class="setting" id="setAutostartRow" hidden><div><label id="setAutostartLabel" for="setAutostart">Beim Anmelden starten</label><p id="setAutostartStatus" role="status">Startet Jarvis im Hintergrund.</p></div><button type="button" class="toggle-lg" role="switch" id="setAutostart" aria-labelledby="setAutostartLabel" aria-describedby="setAutostartStatus" aria-checked="false"></button></div>
+        </section>
+        <section class="set-pane" data-pane="backend" hidden>
+          <p class="set-intro">Welches Backend Jarvis' Antworten erzeugt. <b>OpenCode</b> ist der Standard. Für jedes Backend legst du Anbieter, Modell, Adresse und API-Schlüssel getrennt fest. Sprache, Live-Modus und Computersteuerung bleiben unverändert.</p>
+          <div class="be-banner" id="beBanner" role="status" hidden></div>
+          <div class="setting be-active"><div><label id="beActive-label">Aktives Backend</label><p id="beActive-desc">Gilt für neue Nachrichten und Chats.</p></div><div class="be-seg" id="beSeg" role="radiogroup" aria-labelledby="beActive-label" aria-describedby="beActive-desc"></div></div>
+          <div class="be-cards" id="beCards"></div>
         </section>
         <section class="set-pane" data-pane="voice" hidden>
           <div class="setting"><div><label for="setMic" id="setMic-label">Mikrofon</label><p id="setMic-desc">Eingabegerät für Live-Gespräche und Diktat.</p></div><select id="setMic" aria-describedby="setMic-desc" data-daemon="micDevice"></select></div>
