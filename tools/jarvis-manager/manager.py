@@ -107,39 +107,133 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200,{'message':actions[self.path]()})
         except Exception as e: self.reply(400,{'error':str(e)})
 
+def terminal_ui(url):
+    """ANSI terminal UI with xterm SGR and legacy mouse reporting."""
+    import select, termios, tty
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd) or not sys.stdout.isatty():
+        raise RuntimeError('Ein interaktives Terminal ist erforderlich.')
+    previous = termios.tcgetattr(fd)
+    notice = 'Klicken oder Pfeiltasten und Eingabe verwenden.'
+    selected = 0
+    log_offset = 0
+    view = 'dashboard'
+    click_targets = []
+    buttons = [('Starten', start), ('Beenden', stop), ('Jarvis öffnen', lambda: webbrowser.open('http://127.0.0.1:7777/app/')), ('Installieren', install), ('Web-Manager', lambda: webbrowser.open(url)), ('Protokolle', None), ('Schließen', None)]
+    buffer = b''
+    def draw():
+        nonlocal click_targets
+        size = shutil.get_terminal_size((100, 30)); width, height = size.columns, size.lines
+        click_targets = []
+        def row(y, text='', color=''):
+            if 1 <= y <= height:
+                text = text.replace('\x1b', '?').replace('\r', ' ').replace('\t', '    ')
+                sys.stdout.write(f'\x1b[{y};1H\x1b[2K{color}{text[:max(0,width-1)]}\x1b[0m')
+        s = status()
+        sys.stdout.write('\x1b[H\x1b[2J')
+        row(1, '  J A R V I S   /   MANAGER', '\x1b[1;94m')
+        row(2, '  ' + '─' * max(1, min(width-4, 90)), '\x1b[90m')
+        row(3, '  Jarvis: ' + ('läuft' if s['health'] else 'nicht erreichbar') + '   ·   Sprache: ' + ('bereit' if s['speech'] else 'nicht bereit') + ('   ·   Installation läuft' if s['job'] else ''))
+        row(4, '  Bun: ' + ('bereit' if s['bun'] else 'fehlt') + '   ·   uv: ' + ('bereit' if s['uv'] else 'fehlt') + '   ·   OpenCode: ' + ('bereit' if s['opencode'] else 'fehlt'), '\x1b[90m')
+        x,y=3,6
+        for i,(label,_) in enumerate(buttons):
+            text='[ '+label+' ]'
+            if x + len(text) >= width: x=3; y+=2
+            if y < height-4:
+                sys.stdout.write(f'\x1b[{y};{x}H' + ('\x1b[30;104m' if i==selected else '\x1b[36m') + text + '\x1b[0m')
+                click_targets.append((y,x,x+len(text)-1,i))
+            x += len(text)+2
+        row(y+2, '  '+notice, '\x1b[93m')
+        if view == 'logs':
+            row(y+4, '  PROTOKOLLE  ·  ↑/↓ oder Mausrad zum Blättern', '\x1b[1m')
+            lines = logs().splitlines(); area = max(0,height-y-6)
+            end = max(0,len(lines)-log_offset); start_at=max(0,end-area)
+            for line_num,line in enumerate(lines[start_at:end]): row(y+5+line_num,'  '+line)
+        else:
+            row(y+4, '  Startet und überwacht deinen lokalen Jarvis.', '\x1b[90m')
+            row(y+5, '  Installation lädt bei Bedarf Abhängigkeiten herunter.', '\x1b[90m')
+            row(y+7, '  Web-Manager: '+url, '\x1b[90m')
+        row(height, '  Maus: klicken  ·  Tastatur: ←/→ + Enter  ·  Q: schließen', '\x1b[90m')
+        sys.stdout.flush()
+    def activate(i):
+        nonlocal notice, view, log_offset
+        label,fn = buttons[i]
+        if label == 'Schließen': return False
+        if label == 'Protokolle': view = 'dashboard' if view == 'logs' else 'logs'; log_offset=0
+        else:
+            try:
+                result=fn()
+                notice = result if isinstance(result,str) else ('Im Browser geöffnet.' if result else 'Browser konnte nicht geöffnet werden.')
+            except Exception as e: notice=str(e)
+        return True
+    def mouse(button,x,y):
+        nonlocal selected,log_offset
+        if button & 64:
+            if view == 'logs': log_offset=max(0,log_offset+(3 if (button & 1)==0 else -3))
+            return True
+        if button & 3: return True
+        for cy,x1,x2,i in click_targets:
+            if y==cy and x1<=x<=x2: selected=i; return activate(i)
+        return True
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write('\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h'); sys.stdout.flush()
+        running=True; last=0
+        while running:
+            if time.monotonic()-last>2:
+                draw(); last=time.monotonic()
+            ready,_,_=select.select([fd],[],[],.1)
+            if not ready: continue
+            buffer += os.read(fd,1024)
+            while buffer:
+                if buffer.startswith(b'\x1b[<'):
+                    import re
+                    match=re.match(rb'\x1b\[<(\d+);(\d+);(\d+)([Mm])',buffer)
+                    if not match: break
+                    button,x,y=map(int,match.groups()[:3]); buffer=buffer[match.end():]
+                    if match.group(4)==b'M': running=mouse(button,x,y)
+                elif buffer.startswith(b'\x1b[M'):
+                    if len(buffer)<6: break
+                    running=mouse(buffer[3]-32,buffer[4]-32,buffer[5]-32); buffer=buffer[6:]
+                elif buffer.startswith(b'\x1b['):
+                    if len(buffer)<3: break
+                    key=buffer[2]; buffer=buffer[3:]
+                    if key in (67,66):
+                        if key==66 and view=='logs': log_offset=max(0,log_offset-3)
+                        else: selected=(selected+1)%len(buttons)
+                    elif key in (68,65):
+                        if key==65 and view=='logs': log_offset+=3
+                        else: selected=(selected-1)%len(buttons)
+                else:
+                    key=buffer[:1]; buffer=buffer[1:]
+                    if key in (b'q',b'Q',b'\x03'): running=False
+                    elif key in (b'\r',b'\n'): running=activate(selected)
+                if not running: break
+            draw(); last=time.monotonic()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        sys.stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l'); sys.stdout.flush()
+
+def windows_ui(url):
+    while True:
+        os.system('cls')
+        s=status()
+        print('JARVIS MANAGER\n')
+        print('Jarvis:', 'läuft' if s['health'] else 'nicht erreichbar', '| Sprache:', 'bereit' if s['speech'] else 'nicht bereit')
+        print('\n1 Starten  2 Beenden  3 Jarvis öffnen  4 Installieren  5 Web-Manager  6 Protokolle  0 Schließen')
+        choice=input('Auswahl: ').strip()
+        if choice=='0': break
+        actions={'1':start,'2':stop,'3':lambda:webbrowser.open('http://127.0.0.1:7777/app/'),'4':install,'5':lambda:webbrowser.open(url),'6':logs}
+        try: print(actions[choice]())
+        except Exception as e: print(e)
+        input('Eingabetaste zum Fortfahren …')
+
 def main():
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
     url=f'http://127.0.0.1:{server.server_port}/'
     threading.Thread(target=server.serve_forever,daemon=True).start()
-    # Tk ist auf den meisten Rechnern vorhanden; falls nicht, ist dieselbe Oberfläche im Browser nutzbar.
     try:
-        import tkinter as tk
-        from tkinter import scrolledtext
-        app=tk.Tk(); app.title('Jarvis Manager'); app.geometry('860x650')
-        title=tk.Label(app,text='Jarvis Manager',font=('Arial',22,'bold')); title.pack(pady=(18,4))
-        state=tk.Label(app,text='Status wird geladen …'); state.pack(pady=5)
-        notice=tk.Label(app,text='',wraplength=800); notice.pack(pady=4)
-        row=tk.Frame(app); row.pack(pady=8)
-        output=scrolledtext.ScrolledText(app,wrap='word',height=20); output.pack(fill='both',expand=True,padx=18,pady=12)
-        def run_action(fn):
-            def work():
-                try: text=fn()
-                except Exception as e: text=str(e)
-                app.after(0,lambda:notice.config(text=text))
-            threading.Thread(target=work,daemon=True).start()
-        def refresh_logs():
-            output.delete('1.0','end'); output.insert('end',logs()); output.see('end')
-        for label, fn in [('Starten',lambda:run_action(start)),('Beenden',lambda:run_action(stop)),('Jarvis öffnen',lambda:webbrowser.open('http://127.0.0.1:7777/app/')),('Voraussetzungen installieren',lambda:run_action(install)),('Web-Manager',lambda:webbrowser.open(url)),('Protokoll aktualisieren',refresh_logs)]: tk.Button(row,text=label,command=fn).pack(side='left',padx=2)
-        def refresh():
-            def work():
-                s=status(); text=('Jarvis: läuft' if s['health'] else 'Jarvis: aus')+('  ·  Sprache: bereit' if s['speech'] else '  ·  Sprache: nicht bereit')+('  ·  Installation läuft' if s['job'] else '')
-                try: app.after(0,lambda:state.config(text=text))
-                except RuntimeError: pass
-            threading.Thread(target=work,daemon=True).start(); app.after(3000,refresh)
-        refresh_logs(); refresh(); app.mainloop()
-    except (ImportError, Exception) as e:
-        print('Grafisches Fenster nicht verfügbar:',e); print('Manager im Browser:',url); webbrowser.open(url)
-        try: threading.Event().wait()
-        except KeyboardInterrupt: pass
+        if os.name == 'nt': windows_ui(url)
+        else: terminal_ui(url)
     finally: server.shutdown(); server.server_close()
 if __name__=='__main__': main()
