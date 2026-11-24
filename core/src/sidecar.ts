@@ -2,7 +2,7 @@
 // Vorher startete ihn nur die Tauri-Hülle (oder ein Mensch im Terminal); fiel er aus oder hing er, blieb Jarvis stumm und taub,
 // ohne dass es jemand merkte. Der Sidecar läuft abgekoppelt (detached) weiter, wenn jarvisd neu startet.
 import { connect } from "node:net";
-import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const PORT = 7778;
@@ -56,7 +56,7 @@ export class SidecarSupervisor {
       if (!this.spawnViaLaunchd()) {
         const fd = openSync(join(this.home, "sidecar.log"), "a");
         const proc = Bun.spawn(["uv", "run", "--project", "speech", "python", "-m", "jarvis_speech"],
-          { cwd: this.root, stdin: "ignore", stdout: fd, stderr: fd, detached: true } as any);
+          { cwd: this.root, env: { ...process.env, ...this.modelEnvironment() }, stdin: "ignore", stdout: fd, stderr: fd, detached: true } as any);
         proc.unref?.();
         closeSync(fd);
       }
@@ -73,13 +73,24 @@ export class SidecarSupervisor {
    * lautlos nur Nullen: Jarvis "hört" nichts, obwohl alles läuft. Gemessen: dasselbe Python direkt unter launchd = Pegel 0,05, als
    * Kind von bun = exakt 0,0. Darum startet der Sidecar hier als eigener launchd-Auftrag direkt mit dem Python der Umgebung.
    */
+  private modelEnvironment(): Record<string, string> {
+    try { const dir = JSON.parse(readFileSync(join(this.home, "dependencies.json"), "utf8")).modelDir;
+      if (typeof dir === "string" && dir) return { HF_HOME: join(dir, "huggingface"), SUPERTONIC_CACHE_DIR: join(dir, "supertonic3") };
+    } catch {}
+    return {};
+  }
+
   private spawnViaLaunchd(): boolean {
     if (process.platform !== "darwin") return false;
     const python = join(process.env.UV_PROJECT_ENVIRONMENT || join(this.root, "speech", ".venv"), "bin", "python"); // die Umgebung kann außerhalb des Checkouts liegen
     if (!existsSync(python)) return false;
     try {
-      Bun.spawnSync(["launchctl", "remove", LABEL]);
+      // Ein bereits startender Dienst kann noch Modelle laden und hat dann keinen offenen Port.
+      // Nicht beenden: sonst beginnen parallele oder wiederholte Downloads.
+      const existing = Bun.spawnSync(["launchctl", "print", `gui/${process.getuid?.()}/${LABEL}`]);
+      if (existing.exitCode === 0) return true;
       const r = Bun.spawnSync(["launchctl", "submit", "-l", LABEL, "-o", join(this.home, "sidecar.log"), "-e", join(this.home, "sidecar.log"), "--",
+        "/usr/bin/env", ...Object.entries(this.modelEnvironment()).map(([key, value]) => `${key}=${value}`),
         "/bin/sh", "-c", 'cd "$1" && exec "$2" -m jarvis_speech', "sh", join(this.root, "speech"), python]);
       return r.exitCode === 0;
     } catch { return false; }
