@@ -11,11 +11,11 @@ export function hermesUrl(value: string): string {
   return u.toString().replace(/\/$/, "");
 }
 
-type Active = { runId?: string; stopRequested: boolean; controller: AbortController; finished: Promise<void>; finish: () => void };
+type Active = { runId?: string; stopRequested: boolean; controller: AbortController; finished: Promise<void>; finish: () => void; stopping?: Promise<void> };
 
 export class Hermes {
   private active = new Map<string, Active>();
-  constructor(private config: HermesConfig) { hermesUrl(config.url); }
+  constructor(private config: HermesConfig, private stopWaitMs = 10000) { hermesUrl(config.url); }
 
   private async request(path: string, init: RequestInit = {}) {
     const r = await fetch(hermesUrl(this.config.url) + path, {
@@ -26,12 +26,45 @@ export class Hermes {
     return r;
   }
 
+  /** Hermes-API-Sitzungen sind vom OpenCode-Verlauf getrennt. */
+  async createSession(title = "Jarvis"): Promise<string> {
+    const r = await this.request("/api/sessions", { method: "POST", signal: AbortSignal.timeout(5000), body: JSON.stringify({ title }) });
+    const data = await r.json() as { session?: { id?: unknown } };
+    if (typeof data.session?.id !== "string" || !data.session.id) throw new Error("Hermes lieferte keine Sitzungs-ID");
+    return data.session.id;
+  }
+  async messages(session: string): Promise<unknown[]> {
+    const messages: unknown[] = [];
+    for (let offset = 0; offset <= 10000; offset += 500) {
+      const r = await this.request(`/api/sessions/${encodeURIComponent(session)}/messages?limit=500&order=oldest&offset=${offset}`, { signal: AbortSignal.timeout(5000) });
+      const data = await r.json() as { data?: unknown };
+      if (!Array.isArray(data.data)) throw new Error("Hermes lieferte keinen gültigen Verlauf");
+      messages.push(...data.data);
+      if (data.data.length < 500) return messages;
+    }
+    throw new Error("Hermes-Verlauf ist zu groß");
+  }
+  async renameSession(session: string, title: string) {
+    await this.request(`/api/sessions/${encodeURIComponent(session)}`, { method: "PATCH", signal: AbortSignal.timeout(5000), body: JSON.stringify({ title }) });
+  }
+  async deleteSession(session: string) {
+    await this.request(`/api/sessions/${encodeURIComponent(session)}`, { method: "DELETE", signal: AbortSignal.timeout(5000) });
+  }
+
+  private stopRun(run: Active) {
+    if (!run.runId) return Promise.resolve();
+    return run.stopping ??= this.request(`/v1/runs/${encodeURIComponent(run.runId)}/stop`, { method: "POST", signal: AbortSignal.timeout(5000) }).then(() => {});
+  }
+
   async abort(session: string) {
     const run = this.active.get(session);
     if (!run) return;
     run.stopRequested = true;
-    if (run.runId) await this.request(`/v1/runs/${encodeURIComponent(run.runId)}/stop`, { method: "POST" });
-    await run.finished;
+    if (run.runId) await this.stopRun(run);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([run.finished, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Hermes hat den Stopp noch nicht bestätigt")), this.stopWaitMs); })]);
+    } finally { if (timer) clearTimeout(timer); }
   }
 
   async prompt(session: string, input: string, instructions: string, onEvent: (event: BrainEvent) => void) {
@@ -42,12 +75,12 @@ export class Hermes {
     this.active.set(session, run);
     let terminal = false;
     try {
-      const response = await this.request("/v1/runs", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+      const response = await this.request("/v1/runs", { method: "POST", signal: AbortSignal.timeout(15000), headers: { "Idempotency-Key": crypto.randomUUID() },
         body: JSON.stringify({ input, session_id: session, instructions, ...(this.config.provider ? { provider: this.config.provider } : {}), ...(this.config.model ? { model: this.config.model } : {}) }) });
       const result = await response.json() as { run_id?: unknown };
       if (typeof result.run_id !== "string" || !result.run_id) throw new Error("Hermes lieferte keine Lauf-ID");
       run.runId = result.run_id;
-      if (run.stopRequested) await this.request(`/v1/runs/${encodeURIComponent(run.runId)}/stop`, { method: "POST" });
+      if (run.stopRequested) await this.stopRun(run);
       const stream = await this.request(`/v1/runs/${encodeURIComponent(run.runId)}/events`, { signal: run.controller.signal });
       if (!stream.body) throw new Error("Hermes lieferte keinen Ereignisstrom");
       const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -88,7 +121,7 @@ export class Hermes {
       }
       if (!terminal) throw new Error("Hermes-Ereignisstrom ohne Laufende beendet");
     } catch (error) {
-      onEvent({ kind: "error", message: error instanceof Error ? error.message : "Hermes-Anfrage fehlgeschlagen" });
+      onEvent({ kind: "error", message: error instanceof Error && /^(Hermes-|Hermes )/.test(error.message) ? error.message : "Hermes-Anfrage oder Ereignisstrom fehlgeschlagen" });
     } finally {
       this.active.delete(session); run.finish();
     }

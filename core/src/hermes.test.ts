@@ -45,3 +45,33 @@ test("Stopp vor Lauf-ID wird nachgeholt", async () => {
   const prompt = h.prompt("s", "x", "", e => events.push(e)); const stop = h.abort("s"); release(); await Promise.all([prompt, stop]);
   expect(stopped).toBe(true); expect(events).toEqual([{ kind: "done", aborted: true }]);
 });
+test("Sitzungsverwaltung nutzt ausschließlich Hermes-API und kodiert IDs", async () => {
+  const requests: { path: string; method: string; body?: any }[] = [];
+  const url = serve(async req => {
+    const path = new URL(req.url).pathname;
+    requests.push({ path, method: req.method, ...(req.method === "POST" || req.method === "PATCH" ? { body: await req.json() } : {}) });
+    if (req.method === "POST") return Response.json({ session: { id: "h/a" } });
+    if (path.endsWith("/messages")) return Response.json({ data: [{ role: "user", content: "Frage" }] });
+    return Response.json({ ok: true });
+  });
+  const h = new Hermes({ url, apiKey: "" }); const id = await h.createSession("Titel");
+  expect(id).toBe("h/a"); expect(await h.messages(id)).toEqual([{ role: "user", content: "Frage" }]);
+  await h.renameSession(id, "Neu"); await h.deleteSession(id);
+  expect(requests).toEqual([{ path: "/api/sessions", method: "POST", body: { title: "Titel" } },
+    { path: "/api/sessions/h%2Fa/messages", method: "GET" }, { path: "/api/sessions/h%2Fa", method: "PATCH", body: { title: "Neu" } },
+    { path: "/api/sessions/h%2Fa", method: "DELETE" }]);
+});
+test("ausbleibende Stoppbestätigung wird gemeldet, Lauf bleibt beobachtet", async () => {
+  let started!: () => void; const ready = new Promise<void>(r => { started = r; });
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const url = serve(req => {
+    if (req.url.endsWith("/v1/runs")) return Response.json({ run_id: "r" });
+    if (req.url.endsWith("/stop")) return Response.json({ status: "stopping" });
+    return new Response(new ReadableStream<Uint8Array>({ start(c) { streamController = c; c.enqueue(new TextEncoder().encode(": open\n\n")); started(); } }));
+  });
+  const h = new Hermes({ url, apiKey: "" }, 30), events: BrainEvent[] = [];
+  const running = h.prompt("s", "x", "", e => events.push(e)); await ready;
+  await expect(h.abort("s")).rejects.toThrow("Stopp noch nicht bestätigt");
+  streamController.enqueue(new TextEncoder().encode('data: {"event":"run.cancelled"}\n\n'));
+  await running; expect(events).toEqual([{ kind: "done", aborted: true }]);
+});

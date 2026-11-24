@@ -74,13 +74,17 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 Er nimmt `{url, apiKey, provider?, model?}` und übergibt beim Lauf `input`,
 `session_id` und `instructions`. Hermes verwaltet den Kontext der API-Sitzung.
 SSE-Text, Werkzeugstart/-ende und Laufende werden auf Jarvis' `BrainEvent`
-abgebildet. `abort(session)` fordert `/v1/runs/{run_id}/stop` an und wartet
-auf ein terminales Ereignis; Hermes stoppt kooperativ, nicht zwangsläufig sofort.
+abgebildet. `abort(session)` fordert `/v1/runs/{run_id}/stop` an und wartet bis zu zehn Sekunden
+auf ein terminales Ereignis; Hermes stoppt kooperativ, nicht zwangsläufig sofort. Bei
+Zeitüberschreitung wird ein Fehler gemeldet; der Lauf kann weiterarbeiten.
 Die URL ist auf HTTP mit fester Loopback-IP beschränkt, Redirects sind gesperrt;
 HTTP-Fehler enthalten keine Server-Antwort oder Schlüssel.
 
-**Noch keine UI-Schnittstelle:** Es gibt weder Agentenumschaltung noch
-Einstellungen oder Schlüsselspeicherung. Der Adapter ist nicht mit Chat,
+**Noch keine UI-Schnittstelle:** Es gibt weder Agentenumschaltung noch aktive
+Einstellungen oder Schlüsselspeicherung im Daemon. Ein noch nicht eingebundener
+`BackendStore` kann die Hermes-Serveradresse und den Server-API-Schlüssel getrennt
+unter `~/.jarvis3/backend/` mit Unix-Dateirechten 0700/0600 ablegen. Das ist keine
+Verschlüsselung oder Schlüsselbundintegration; Windows wird abgelehnt. Der Adapter ist nicht mit Chat,
 Verlauf, Projekten, Sprache oder Not-Aus verbunden und startet keinen Server.
 Vor Freischaltung müssen insbesondere folgende Fragen im Code gelöst und
 end-to-end geprüft werden:
@@ -97,3 +101,13 @@ end-to-end geprüft werden:
 - Stopp während Verbindungsabbruch, Wiederverbindung/Statusabfrage, Freigaben,
   Zeitlimits und unbekannte Laufzustände sowie Bildanhänge sind noch offen.
   Der jetzige Adapter darf deshalb noch nicht produktiv verwendet werden.
+
+### Abgleich mit UI-PR #64
+
+Der UI-Entwurf bezeichnet `baseUrl` und `apiKey` als Adresse und Schlüssel des
+Modellanbieters. Für die native Runs-API sind dies stattdessen die Adresse und
+der API-Schlüssel des **Hermes-Servers**; Anbieterzugänge verwaltet Hermes selbst.
+Beides darf nicht verwechselt oder stillschweigend als funktionsfähig dargestellt
+werden. Die UI muss diese getrennten Konfigurationen ausdrücklich abbilden.
+Hermes' `GET /v1/toolsets` lässt standardmäßig eingebundene MCP-Server bei der
+Aufzählung aus; diese Antwort allein belegt daher keine Werkzeugisolation.
