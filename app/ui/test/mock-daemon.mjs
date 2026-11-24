@@ -1,10 +1,11 @@
 // Mock-jarvisd nur für Tests der Backend-Einstellungen. Ersetzt core nicht: liefert die Oberfläche unter /app/ und spricht über /ui
-// den Vertrag aus PR #63 (docs/protocol.md „Agenten-Backend“; Formen siehe ../backends.js): Hermes-config {serverUrl, provider, model},
-// nur Hermes konfigurierbar, Serveradresse = HTTP-Loopback-IP ohne Zugangsdaten. Schlüssel werden nur im Speicher
+// den Vertrag aus PR #63 (docs/protocol.md „Agenten-Backend“, geprüft gegen core/src/backend-config.ts und index.ts): Hermes-config
+// {serverUrl, provider, model, modelBaseUrl, modelSupportsVision}, nur Hermes konfigurierbar, getrennte Schlüssel (target server|provider);
+// bei fremdem Gateway werden Modellserver-Adresse und Anbieter-Schlüssel abgelehnt. Schlüssel werden nur im Speicher
 // gehalten, nie zurückgesendet und nie protokolliert (redact). `legacy: true` verhält sich wie ein Daemon ohne Backend-Wechsel.
 //   bun app/ui/test/mock-daemon.mjs [--port 7791] [--legacy]
 import { join } from "node:path";
-import { redact } from "../backends.js";
+import { isManagedGateway, redact } from "../backends.js";
 
 const UI = join(import.meta.dir, "..");
 
@@ -13,11 +14,12 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     active: "opencode",
     backends: {
       opencode: { status: "ready", config: { provider: "opencode", model: "opencode/big-pickle", baseUrl: "" }, secret: null },
-      hermes: { status: "ready", config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642" }, secret: null },
+      hermes: { status: "ready", config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642", modelBaseUrl: "", modelSupportsVision: false }, secret: null, providerSecret: null },
     },
   };
   const view = () => ({ type: "backend", active: store.active, backends: Object.fromEntries(Object.entries(store.backends).map(([id, b]) =>
-    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(id === "hermes" ? { providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "nous", label: "Nous (in Hermes eingerichtet)", needsKey: true }] } : {}) }])) });
+    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
+      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] } : {}) }])) });
   const sockets = new Set();
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
 
@@ -55,14 +57,20 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
           case "backend_config":
             if (!b || !m.config) return;
             if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend verwaltet seine Anbieter selbst" })); break; }
-            if (!/^http:\/\/(127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?\/?$/.test(String(m.config.serverUrl ?? ""))) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Serveradresse muss eine feste HTTP-Loopback-IP sein" })); break; }
-            b.config = { serverUrl: String(m.config.serverUrl).replace(/\/+$/, ""), provider: String(m.config.provider ?? ""), model: String(m.config.model ?? "") };
+            const net = v => { try { const u = new URL(String(v)); return /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } };
+            if (!net(m.config.serverUrl)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Hermes-Gateway-Adresse ungültig" })); break; }
+            const mb = m.config.modelBaseUrl ?? b.config.modelBaseUrl;
+            if (mb && !net(mb)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Modellanbieter-Adresse ungültig" })); break; }
+            if (mb && !isManagedGateway(m.config.serverUrl)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Hermes: Bei externem Gateway muss der Modellanbieter dort konfiguriert werden; Modellserver-Adresse hier leer lassen." })); break; }
+            b.config = { serverUrl: String(m.config.serverUrl).replace(/\/+$/, ""), provider: mb ? "custom" : String(m.config.provider ?? ""), model: String(m.config.model ?? ""), modelBaseUrl: String(mb ?? "").replace(/\/+$/, ""), modelSupportsVision: m.config.modelSupportsVision === true };
             b.status = "ready";
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_secret":
             if (!b) return;
             if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend hat hier keinen Server-Schlüssel" })); break; }
-            b.secret = m.apiKey === null ? null : String(m.apiKey || "") || null;
+            if (m.target !== undefined && !["server", "provider"].includes(m.target)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Ungültiger Schlüsseltyp" })); break; }
+            if (m.target === "provider" && !isManagedGateway(b.config.serverUrl)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Hermes: Der Modellanbieter-Schlüssel muss am externen Gateway eingerichtet werden." })); break; }
+            { const v = m.apiKey === null ? null : String(m.apiKey || "") || null; if (m.target === "provider") b.providerSecret = v; else b.secret = v; }
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_test": {
             if (!b) return;

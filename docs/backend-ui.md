@@ -1,23 +1,37 @@
 # Backend-Wechsel in der Oberfläche (Einstellungen → Backend)
 
-Die Oberfläche folgt dem Daemon-Vertrag aus PR #63 (`docs/protocol.md`, Abschnitt „Agenten-Backend: OpenCode und Hermes“). Die Formen stehen in `app/ui/backends.js`; getestet in `app/ui/backends.test.js` und gegen `app/ui/test/mock-daemon.mjs`.
+Die Oberfläche folgt dem Daemon-Vertrag aus PR #63 (`docs/protocol.md`, „Agenten-Backend: OpenCode und Hermes“), **geprüft gegen den Code** (`core/src/backend-config.ts`, `hermes.ts`, Handler in `index.ts`). Formen: `app/ui/backends.js`. Tests: `app/ui/backends.test.js`, `app/ui/test/mock-daemon.test.js`; Vertragsprüfung gegen den echten Daemon: `app/ui/test/real-daemon-check.ts`.
 
-## Begriffe (bewusst getrennt)
+## Felder (bewusst getrennt)
 
-| Feld | Bedeutung |
+| Feld (Nachricht) | Bedeutung |
 | --- | --- |
-| Hermes-Serveradresse (`serverUrl`) | Adresse des Hermes-Gateways. Nur `http://` mit fester Loopback-IP (`127.x.x.x`, `[::1]`), ohne Zugangsdaten, kein Hostname wie `localhost`. |
-| Hermes-Server-Schlüssel (`backend_secret`) | Schlüssel des Hermes-Servers. Antworten enthalten nur `keySet`. |
-| Modellanbieter in Hermes (`provider`), Modell (`model`) | Wählen einen **in Hermes** eingerichteten Anbieter; `default` / `hermes-agent` = Hermes-Vorgabe. Anbieter-Adressen und -Schlüssel werden hier nicht gespeichert. |
+| Hermes-Serveradresse (`serverUrl`) | Adresse des Hermes-**Gateways**: `http://` oder `https://`, auch im Netzwerk; ohne Zugangsdaten, Query oder `#`. |
+| Hermes-Server-Schlüssel (`backend_secret`, `target:"server"`) | Schlüssel des Gateways. |
+| Modellanbieter in Hermes (`provider`), Modell (`model`) | Anbieter aus `providers` des Daemons (`default`, `custom`); `default`/`hermes-agent` = Hermes-Vorgabe. |
+| Modellserver-Adresse (`modelBaseUrl`, optional) | **Getrennt vom Gateway:** OpenAI-kompatibler Server für lokale Modelle (LM Studio, Ollama, vLLM), auch im Heimnetz. Gesetzt → Hermes nutzt den Anbieter `custom`. Leer („“) löscht sie. |
+| Modellanbieter-Schlüssel (`target:"provider"`) | Schlüssel des Modellservers; getrennt vom Server-Schlüssel. |
+| Modell versteht Bilder (`modelSupportsVision`) | Bestätigung der Bildfähigkeit; nur dann werden Bilder an Hermes übergeben. |
 
-OpenCode verwaltet seine Anbieter selbst: Die Karte zeigt nur den Zustand, es gibt keine Felder, kein `backend_config`, kein `backend_secret`. `baseUrl` aus der OpenCode-Konfiguration wird nie als Hermes-Serveradresse gelesen.
+Antworten tragen nur `keySet` und `providerKeySet` (Ja/Nein). OpenCode verwaltet seine Anbieter selbst: Die Karte zeigt nur den Zustand, es gibt kein `backend_config`/`backend_secret` dafür; `baseUrl` aus der OpenCode-Konfiguration wird nie als Hermes-Adresse gelesen.
+
+## Verwaltetes und fremdes Gateway
+
+`isManagedGateway` spiegelt `managedGateway` im Daemon: `http://` auf `127.0.0.1`, `[::1]` oder `localhost`, Pfad `/`. Dann startet Jarvis das Gateway selbst und Modellserver-Adresse und Anbieter-Schlüssel gelten.
+
+Jedes andere Gateway (Heimnetz oder Internet) kann konfiguriert werden, wird aber **nicht von Jarvis verwaltet**: Werkzeugfreigaben, Not-Aus, Modellanbieter und dessen Schlüssel müssen dort eingerichtet werden. Die Oberfläche sperrt dafür Modellserver-Adresse und Anbieter-Schlüssel (der Daemon lehnt sie ebenfalls ab) und zeigt einen Hinweis. `http://` über das Internet wird als unverschlüsselt gewarnt.
 
 ## Verhalten
 
-* Wechsel gilt nur für **neue** Chats; vorhandene bleiben bei ihrem Backend.
-* Während eines laufenden Hermes-Laufs sind die Hermes-Felder gesperrt (der Daemon lehnt Änderungen dann ab); Fehlermeldungen des Daemons erscheinen in der Karte.
-* Der Schlüssel steht nur im Passwortfeld, geht einmal in `backend_secret` und wird sofort aus dem Feld gelöscht, auch beim Verlassen des Bereichs.
+* Wechsel gilt nur für **neue** Chats.
+* Während eines Hermes-Laufs sind die Hermes-Felder gesperrt (der Daemon lehnt Änderungen ab); Daemon-Fehler erscheinen in der Karte.
+* Schlüssel stehen nur in Passwortfeldern, gehen je einmal in `backend_secret` und werden sofort aus dem Feld gelöscht, auch beim Verlassen des Bereichs. Entfernen braucht zwei Klicks.
 
 ## Schlüsselablage: was zutrifft
 
-Der Hinweis in der Oberfläche nennt nur den tatsächlichen Stand: Datei in `~/.jarvis3/backend/` (Verzeichnis 0700, Datei 0600), geschützt durch Dateirechte, **nicht verschlüsselt**, **kein** Schlüsselbund, Windows **noch nicht** unterstützt. Ändert sich die Ablage in core, muss `KEY_STORAGE_NOTE` in `backends.js` mitgeändert werden.
+Dateien in `~/.jarvis3/backend/` (Verzeichnis 0700, Datei 0600), geschützt durch Dateirechte, **nicht verschlüsselt**, kein Schlüsselbund, Windows noch nicht unterstützt. Der Modellanbieter-Schlüssel wird Hermes beim Start über eine Umgebungsvariable übergeben; im erzeugten YAML steht nur ein Verweis. Das haben `real-daemon-check.ts` (Rechte 600, kein Schlüsselwert im YAML oder in Nachrichten) bestätigt. Ändert sich die Ablage in core, müssen `KEY_STORAGE_NOTE`/`PROVIDER_KEY_NOTE` in `backends.js` mitgeändert werden.
+
+## Vertragsprüfung
+
+* `bun test app/ui`: Logik und Mock-Daemon.
+* `JARVIS_CORE=<core mit PR #63> bun app/ui/test/real-daemon-check.ts`: startet den echten `index.ts` mit isoliertem `HOME`, Fake-OpenCode und Fake-Hermes (alles lokal, keine Downloads) und prüft Konfiguration, beide Schlüssel, Test, fremdes Gateway, Ablehnungen und Geheimnisfreiheit.
