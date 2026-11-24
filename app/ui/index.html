@@ -181,6 +181,7 @@
         <label class="search set-search"><span data-icon="search"></span><input id="settingsSearch" type="search" placeholder="Einstellungen suchen" aria-label="Einstellungen suchen" autocomplete="off"></label>
         <button type="button" class="set-nav-item active" data-pane="general"><span data-icon="settings"></span>Allgemein</button>
         <button type="button" class="set-nav-item" data-pane="backend"><span data-icon="sparkles"></span>Backend</button>
+        <button type="button" class="set-nav-item" data-pane="dependencies"><span data-icon="file"></span>Abhängigkeiten</button>
         <button type="button" class="set-nav-item" data-pane="voice"><span data-icon="microphone"></span>Sprache und Audio</button>
         <button type="button" class="set-nav-item" data-pane="display"><span data-icon="device-desktop"></span>Darstellung</button>
         <button type="button" class="set-nav-item" data-pane="control"><span data-icon="eye"></span>Steuerung</button>
@@ -207,6 +208,12 @@
           <div class="be-banner" id="beBanner" role="status" hidden></div>
           <div class="setting be-active"><div><label id="beActive-label">Aktives Backend</label><p id="beActive-desc">Gilt für neue Nachrichten und Chats.</p></div><div class="be-seg" id="beSeg" role="radiogroup" aria-labelledby="beActive-label" aria-describedby="beActive-desc"></div></div>
           <div class="be-cards" id="beCards"></div>
+        </section>
+        <section class="set-pane" data-pane="dependencies" hidden>
+          <p class="set-intro">Projektpakete installieren und den Speicherort für Sprachmodelle festlegen. Der Download kann groß sein.</p>
+          <div class="setting"><div><label>Voraussetzungen</label><p id="deps-tools">Status wird geladen …</p></div><button type="button" id="deps-install">Projektpakete installieren</button></div>
+          <div class="setting"><div><label for="deps-dir">Speicherort für Sprachmodelle</label><p>Absoluter Ordnerpfad; leer lässt den Standard bestehen. Vorhandene Dateien werden nicht verschoben. Nach dem Ändern Sprachdienst neu starten.</p></div><div><input id="deps-dir" type="text" placeholder="Systemstandard" aria-label="Speicherort für Sprachmodelle"><button type="button" id="deps-save">Speichern</button></div></div>
+          <p class="set-intro" id="deps-status" role="status"></p>
         </section>
         <section class="set-pane" data-pane="voice" hidden>
           <div class="setting"><div><label for="setMic" id="setMic-label">Mikrofon</label><p id="setMic-desc">Eingabegerät für Live-Gespräche und Diktat.</p></div><select id="setMic" aria-describedby="setMic-desc" data-daemon="micDevice"></select></div>

@@ -86,6 +86,11 @@ let runningKey = "";
 function handle(m) {
   if (CHAT_EVENTS.has(m.type) && m.session !== undefined && m.session !== currentSession) return;
   switch (m.type) {
+    case "deps_status":
+      $("#deps-tools").textContent = `Bun: ${m.bun ? "vorhanden" : "fehlt"} · uv: ${m.uv ? "vorhanden" : "fehlt"} · OpenCode: ${m.opencode ? "vorhanden" : "fehlt"}`;
+      if (document.activeElement !== $("#deps-dir")) $("#deps-dir").value = m.modelDir || "";
+      $("#deps-status").textContent = m.error || m.message || "";
+      break;
     case "state":
       Object.assign(state, m); renderState(); renderSettingsState();
       { const key = (m.busySessions || []).join(","); if (key !== runningKey) { runningKey = key; send({ type: "history" }); } } // Lauf-Markierung in der Seitenleiste
@@ -1590,6 +1595,7 @@ function fillModelSelect(sel, selected) {
 }
 
 function fillDeviceSelect(sel, devices, selected) {
+  if (!state.speech || !devices) { sel.replaceChildren(new Option("Sprachmodul startet oder ist nicht verfügbar", "")); delete sel.dataset.key; return; }
   const list = devices ?? [];
   const key = JSON.stringify([selected, list.map(device => [device.id, device.name])]);
   if (sel.dataset.key !== key) {
@@ -1871,7 +1877,7 @@ async function runSlash(text) {
 
 // ---------- Große Einstellungen ----------
 const backendPanel = initBackendPanel({ root: document.querySelector("#settingsDialog .set-pane[data-pane=backend]"), send, isBusy: () => state.busy });
-const PANES = { general: "Allgemein", backend: "Backend", voice: "Sprache und Audio", display: "Darstellung", control: "Steuerung", privacy: "Datenschutz", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
+const PANES = { dependencies: "Abhängigkeiten", general: "Allgemein", backend: "Backend", voice: "Sprache und Audio", display: "Darstellung", control: "Steuerung", privacy: "Datenschutz", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
 let extState = null;
 function showSettingsPane(name) {
   $("#settingsSearch").value = "";
@@ -1887,8 +1893,11 @@ function showSettingsPane(name) {
   if (name === "backend") backendPanel.show(); else backendPanel.hide();   // Schlüsselfeld beim Verlassen leeren
   if (name === "general") void refreshAutostart();
   if (name === "usage") requestUsage();
+  if (name === "dependencies") send({ type: "deps_get" });
   if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
 }
+$("#deps-install").onclick = () => { $("#deps-status").textContent = "Installation wird gestartet …"; send({type:"deps_install"}); };
+$("#deps-save").onclick = () => send({type:"deps_save", modelDir:$("#deps-dir").value});
 document.querySelectorAll(".set-nav-item").forEach(b => { b.onclick = () => showSettingsPane(b.dataset.pane); });
 $("#closeSettings").onclick = () => $("#settingsDialog").close();
 $("#settingsDialog").addEventListener("close", () => backendPanel.hide());

@@ -1,6 +1,6 @@
 // jarvisd – Kern-Daemon. UI (Tauri) und Chrome-Erweiterung verbinden sich hierher.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import { OpenCode, listModels, type ModelInfo, type BrainEvent, type PromptImage } from "./opencode";
@@ -132,6 +132,7 @@ const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const 
 type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
+let dependenciesInstallRunning = false;
 const effectiveBackend = () => session ? (isHermes(session) ? "hermes" : "opencode") : (backendRuntime?.active ?? "opencode");
 const hermesModelId = () => `hermes/${backendRuntime?.config.provider ?? "default"}/${backendRuntime?.config.model ?? "hermes-agent"}`;
 const state = () => {
@@ -1582,6 +1583,38 @@ function trustedUiOrigin(origin: string | null) {
 async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
       const msg = JSON.parse(raw);
+      if (typeof msg.type === "string" && msg.type.startsWith("deps_")) {
+        if (!ws.data.trusted) { ws.send(JSON.stringify({type:"deps_status", error:"Nicht vertrauenswürdiger Ursprung"})); return; }
+        const configFile = join(HOME, "dependencies.json");
+        const current = () => { try { return JSON.parse(readFileSync(configFile, "utf8")); } catch { return {}; } };
+        const reply = (extra: object = {}) => ws.send(JSON.stringify({type:"deps_status", modelDir: current().modelDir || "", bun: !!Bun.which("bun"), uv: !!Bun.which("uv"), opencode: !!Bun.which("opencode"), ...extra}));
+        if (msg.type === "deps_get") { reply(); return; }
+        if (msg.type === "deps_save") {
+          const dir = typeof msg.modelDir === "string" ? msg.modelDir.trim() : "";
+          if (dir && !isAbsolute(dir)) { reply({error:"Bitte einen absoluten Pfad angeben."}); return; }
+          try { if (dir) mkdirSync(dir, {recursive:true}); writeFileSync(configFile, JSON.stringify({modelDir:dir}, null, 2)); reply({message:"Gespeichert. Der neue Speicherort gilt nach Neustart des Sprachdienstes; vorhandene Dateien werden nicht verschoben."}); }
+          catch (e) { reply({error:String(e)}); }
+          return;
+        }
+        if (msg.type === "deps_install") {
+          if (dependenciesInstallRunning) { reply({error:"Eine Installation läuft bereits."}); return; }
+          const bun = Bun.which("bun"), uv = Bun.which("uv");
+          if (!bun || !uv) { reply({error:"Bun und uv müssen zuerst installiert sein."}); return; }
+          dependenciesInstallRunning = true;
+          reply({message:"Installation gestartet. Details stehen in ~/.jarvis3/dependencies.log."});
+          void (async () => { try {
+            const log = Bun.file(join(HOME,"dependencies.log"));
+            const a = Bun.spawn([bun,"install","--cwd",join(ROOT,"core")], {cwd:ROOT, stdout:"pipe", stderr:"pipe"});
+            const [ao,ae] = await Promise.all([new Response(a.stdout).text(),new Response(a.stderr).text()]);
+            const ac=await a.exited; let output=ao+ae; if(ac!==0) throw Error(output);
+            const b=Bun.spawn([uv,"sync","--project",join(ROOT,"speech")], {cwd:ROOT,stdout:"pipe",stderr:"pipe"});
+            const [bo,be]=await Promise.all([new Response(b.stdout).text(),new Response(b.stderr).text()]); const bc=await b.exited; output+=bo+be;
+            await Bun.write(log,output); if(bc!==0) throw Error("Installation fehlgeschlagen; siehe dependencies.log");
+            reply({message:"Projektabhängigkeiten installiert."});
+          } catch(e) { reply({error:String(e).slice(0,500)}); } finally { dependenciesInstallRunning = false; } })(); return;
+        }
+        return;
+      }
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
       if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
       if (typeof msg.type === "string" && msg.type.startsWith("backend_")) {
