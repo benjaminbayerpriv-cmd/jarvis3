@@ -5,16 +5,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { recordError } from "./errorlog";
 import { readFileSync, unlinkSync } from "node:fs";
+import { applyToolHints, callContext } from "./mcp-hints";
 
 const JARVISD = process.env.JARVISD_URL ?? "http://127.0.0.1:7777";
 const server = new McpServer({ name: "jarvis", version: "0.1.0" });
 
 async function call(target: "desktop" | "browser", cmd: Record<string, unknown>) {
+  const signal = callContext.getStore()?.signal;     // Abbruch des MCP-Clients (z. B. Hermes: Nutzer stoppt den Lauf)
   try {
     const r = await fetch(`${JARVISD}/tool`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ target, cmd }) });
+      body: JSON.stringify({ target, cmd }), signal });
     return (await r.json()) as Record<string, any>;
-  } catch (error) { // jarvisd nicht erreichbar: direkt ins Fehler-Log schreiben (gleiche Dateien)
+  } catch (error) {
+    if (signal?.aborted) return { ok: false, error: "abgebrochen" };
+    // jarvisd nicht erreichbar: direkt ins Fehler-Log schreiben (gleiche Dateien)
     recordError({ category: "daemon", source: "mcp/call", message: `jarvisd nicht erreichbar: ${(error as Error)?.message ?? error}`, context: { target, cmd, url: JARVISD } });
     return { ok: false, error: "jarvisd nicht erreichbar" };
   }
@@ -241,5 +245,14 @@ server.tool("error_report", "Meldet einen Fehler ins zentrale Fehler-Log, wenn e
       return text(`Fehler ${e?.id ?? "?"} gespeichert (ohne Screenshot, jarvisd nicht erreichbar).`);
     }
   });
+
+// Annotationen (readOnlyHint …) und Abbruch-Weitergabe für MCP-Clients wie Hermes. JARVIS_STOP_ON_CANCEL=1: ein vom Client abgebrochener Aufruf löst
+// den gemeinsamen Not-Aus von jarvisd aus (POST /stop), damit keine halbe Aktion weiterläuft.
+// JARVIS_MCP_ERRORS=text|flag erzwingt, wie Fehler gemeldet werden; ohne Angabe richtet sich der Server nach dem Client (Hermes: als Text).
+const clientIsHermes = () => /^hermes/i.test((server.server as unknown as { getClientVersion?: () => { name?: string } | undefined }).getClientVersion?.()?.name ?? "");
+applyToolHints(server, {
+  onCancel: process.env.JARVIS_STOP_ON_CANCEL === "1" ? () => { void fetch(`${JARVISD}/stop`, { method: "POST" }).catch(() => {}); } : undefined,
+  errorsAsText: () => process.env.JARVIS_MCP_ERRORS === "text" || (process.env.JARVIS_MCP_ERRORS !== "flag" && clientIsHermes()),
+});
 
 await server.connect(new StdioServerTransport());
