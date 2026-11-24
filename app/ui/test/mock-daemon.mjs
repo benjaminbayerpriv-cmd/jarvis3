@@ -1,5 +1,6 @@
-// Mock-jarvisd nur für Tests der Backend-Einstellungen (ANNAHME-BACKEND, Formen siehe ../backends.js). Ersetzt core nicht:
-// liefert die Oberfläche unter /app/ und spricht über /ui die vorgeschlagene Backend-Schnittstelle. Schlüssel werden nur im Speicher
+// Mock-jarvisd nur für Tests der Backend-Einstellungen. Ersetzt core nicht: liefert die Oberfläche unter /app/ und spricht über /ui
+// den Vertrag aus PR #63 (docs/protocol.md „Agenten-Backend“; Formen siehe ../backends.js): Hermes-config {serverUrl, provider, model},
+// nur Hermes konfigurierbar, Serveradresse = HTTP-Loopback-IP ohne Zugangsdaten. Schlüssel werden nur im Speicher
 // gehalten, nie zurückgesendet und nie protokolliert (redact). `legacy: true` verhält sich wie ein Daemon ohne Backend-Wechsel.
 //   bun app/ui/test/mock-daemon.mjs [--port 7791] [--legacy]
 import { join } from "node:path";
@@ -12,11 +13,11 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     active: "opencode",
     backends: {
       opencode: { status: "ready", config: { provider: "opencode", model: "opencode/big-pickle", baseUrl: "" }, secret: null },
-      hermes: { status: "unsupported", config: { provider: "", model: "", baseUrl: "" }, secret: null },
+      hermes: { status: "ready", config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642" }, secret: null },
     },
   };
   const view = () => ({ type: "backend", active: store.active, backends: Object.fromEntries(Object.entries(store.backends).map(([id, b]) =>
-    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(id === "hermes" ? { models: ["hermes-3-llama-3.1-70b", "hermes-4-405b"] } : {}) }])) });
+    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(id === "hermes" ? { providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "nous", label: "Nous (in Hermes eingerichtet)", needsKey: true }] } : {}) }])) });
   const sockets = new Set();
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
 
@@ -49,22 +50,24 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
           case "backend_get": ws.send(JSON.stringify(view())); break;
           case "backend_set":
             if (!b) return;
-            if (!b.config.provider && m.backend === "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: "hermes", ok: false, error: "Hermes ist noch nicht eingerichtet" })); break; }
+            if (m.backend === "hermes" && !b.config.serverUrl) { ws.send(JSON.stringify({ type: "backend_saved", backend: "hermes", ok: false, error: "Hermes ist noch nicht eingerichtet" })); break; }
             store.active = m.backend; broadcast(view()); break;
           case "backend_config":
             if (!b || !m.config) return;
-            b.config = { provider: String(m.config.provider ?? ""), model: String(m.config.model ?? ""), baseUrl: String(m.config.baseUrl ?? "") };
+            if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend verwaltet seine Anbieter selbst" })); break; }
+            if (!/^http:\/\/(127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?\/?$/.test(String(m.config.serverUrl ?? ""))) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Serveradresse muss eine feste HTTP-Loopback-IP sein" })); break; }
+            b.config = { serverUrl: String(m.config.serverUrl).replace(/\/+$/, ""), provider: String(m.config.provider ?? ""), model: String(m.config.model ?? "") };
             b.status = "ready";
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_secret":
             if (!b) return;
+            if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend hat hier keinen Server-Schlüssel" })); break; }
             b.secret = m.apiKey === null ? null : String(m.apiKey || "") || null;
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_test": {
             if (!b) return;
-            const url = b.config.baseUrl;
-            const ok = url.includes(`127.0.0.1:${server.port}`) || b.config.provider === "opencode";
-            setTimeout(() => ws.send(JSON.stringify({ type: "backend_test", backend: m.backend, ok, latencyMs: 42, ...(ok ? { models: ["modell-a", "modell-b"] } : { error: "Verbindung abgelehnt" }) })), 150);
+            const ok = String(b.config.serverUrl ?? "").includes(`127.0.0.1:${server.port}`);
+            setTimeout(() => ws.send(JSON.stringify({ type: "backend_test", backend: m.backend, ok, ...(ok ? { latencyMs: 42 } : { error: "Verbindung abgelehnt" }) })), 150);
             break;
           }
         }

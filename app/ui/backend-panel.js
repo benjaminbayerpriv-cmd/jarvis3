@@ -1,8 +1,8 @@
-// Einstellungen → Backend: OpenCode oder Hermes wählen, je Backend Anbieter, Modell, Adresse und API-Schlüssel einstellen.
-// Reine Oberfläche; die Nachrichtenformen stehen in backends.js (ANNAHME-BACKEND, bis core sie bestätigt).
+// Einstellungen → Backend: OpenCode oder Hermes wählen; für Hermes Serveradresse, Server-Schlüssel, Modellanbieter und Modell.
+// OpenCode verwaltet seine Anbieter selbst und zeigt hier nur seinen Zustand. Reine Oberfläche; Nachrichtenformen in backends.js.
 // Sicherheit: Der Schlüssel liegt nur in einem Passwortfeld, geht nur in `backend_secret` an jarvisd und wird danach aus dem Feld
 // gelöscht (auch beim Wechsel des Bereichs und beim Schließen). Er steht in keinem Attribut, keinem Speicher und keinem Protokoll.
-import { BACKEND_IDS, BACKENDS, configOf, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
+import { BACKEND_IDS, BACKENDS, DEFAULT_SERVER_URL, KEY_STORAGE_NOTE, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -10,7 +10,6 @@ const el = (tag, props = {}, ...children) => {
   return node;
 };
 const STATUS_TEXT = { ready: "Bereit", connecting: "Verbindet …", error: "Fehler", unsupported: "Nicht verfügbar" };
-const NETWORK_TEXT = { lokal: "Dieser Rechner", heimnetz: "Heimnetz", extern: "Internet" };
 const SUPPORT_WAIT_MS = 2500;
 
 export function initBackendPanel({ root, send, isBusy = () => false }) {
@@ -53,37 +52,41 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     f.active = el("span", { className: "ext-chip ok", textContent: "Aktiv", hidden: true });
     const head = el("div", { className: "be-head" }, el("div", { className: "be-title" }, title, el("p", { textContent: meta.tagline })), f.status, f.active);
 
-    f.provider = el("select", { id: `be-${id}-provider`, name: `be-provider-${id}` });
-    f.model = el("input", { id: `be-${id}-model`, type: "text", name: `be-model-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", placeholder: "Modellname" });
-    f.models = el("datalist", { id: `be-${id}-models` });
-    f.model.setAttribute("list", f.models.id);
-    f.baseUrl = el("input", { id: `be-${id}-baseUrl`, type: "text", name: `be-url-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", inputMode: "url", placeholder: "http://192.168.1.20:11434/v1" });
-    f.urlHint = el("span", { className: "be-hint", id: `be-${id}-baseUrl-hint` });
-    f.network = el("span", { className: "ext-chip be-net", hidden: true });
-    f.apiKey = el("input", { id: `be-${id}-apiKey`, type: "password", name: `be-secret-${id}-${nameSuffix}`, autocomplete: "new-password", spellcheck: false, autocapitalize: "off", placeholder: "Neuen Schlüssel eingeben" });
+    const cfgd = meta.configurable;
+    const empty = { serverUrl: "", provider: "", model: "" };
+    if (!cfgd) {
+      f.info = el("p", { className: "be-result", id: `be-${id}-info`, textContent: "OpenCode verwaltet Anbieter, Modell und Zugänge selbst. Dieser Bereich speichert dafür nichts." });
+      const card = el("section", { className: "be-card" }, head, el("div", { className: "be-body" }, f.info));
+      card.dataset.backend = id; card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
+      return { id, card, f, draft: { ...empty }, baseline: { ...empty }, removeArmed: 0, testing: false, saving: false };
+    }
+    f.serverUrl = el("input", { id: `be-${id}-serverUrl`, type: "text", name: `be-url-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", inputMode: "url", placeholder: DEFAULT_SERVER_URL });
+    f.urlHint = el("span", { className: "be-hint", id: `be-${id}-serverUrl-hint` });
+    f.apiKey = el("input", { id: `be-${id}-apiKey`, type: "password", name: `be-secret-${id}-${nameSuffix}`, autocomplete: "new-password", spellcheck: false, autocapitalize: "off", placeholder: "Neuen Server-Schlüssel eingeben" });
     for (const a of ["data-lpignore", "data-1p-ignore", "data-form-type"]) f.apiKey.setAttribute(a, a === "data-form-type" ? "other" : "true");
     f.keyState = el("span", { className: "be-keystate", id: `be-${id}-apiKey-state`, role: "status" });
     f.keyRemove = el("button", { type: "button", className: "chip-btn", textContent: "Entfernen" });
+    f.provider = el("select", { id: `be-${id}-provider`, name: `be-provider-${id}` });
+    f.model = el("input", { id: `be-${id}-model`, type: "text", name: `be-model-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", placeholder: "hermes-agent" });
     f.save = el("button", { type: "button", className: "chip-btn be-primary", textContent: "Speichern" });
     f.test = el("button", { type: "button", className: "chip-btn", textContent: "Verbindung testen" });
     f.reset = el("button", { type: "button", className: "chip-btn", textContent: "Zurücksetzen" });
     f.result = el("p", { className: "be-result", role: "status", id: `be-${id}-result` });
-    for (const k of ["provider", "model", "baseUrl", "apiKey"]) f[k].setAttribute("aria-describedby", `be-${id}-${k}-desc`);
-    const urlWrap = el("div", { className: "be-field" }, f.baseUrl, f.network);
+    for (const k of ["serverUrl", "apiKey", "provider", "model"]) f[k].setAttribute("aria-describedby", `be-${id}-${k}-desc`);
     const keyWrap = el("div", { className: "be-field" }, f.apiKey, f.keyRemove);
     const body = el("div", { className: "be-body" },
-      row(id, "provider", "Anbieter", "Woher das Modell kommt.", f.provider),
-      row(id, "model", "Modell", "Name des Modells beim Anbieter.", el("div", { className: "be-field" }, f.model, f.models)),
-      row(id, "baseUrl", "Adresse", "Leer lassen für die Standardadresse des Anbieters. Für einen Rechner im Heimnetz die Adresse samt Port eintragen.", urlWrap, f.urlHint),
-      row(id, "apiKey", "API-Schlüssel", "Wird verschlüsselt im Daemon gespeichert und nie wieder angezeigt.", keyWrap, f.keyState));
+      row(id, "serverUrl", "Hermes-Serveradresse", "Adresse des Hermes-Gateways, das Jarvis startet bzw. nutzt. Nur http:// mit fester Loopback-IP (127.0.0.1 oder [::1]), ohne Zugangsdaten.", f.serverUrl, f.urlHint),
+      row(id, "apiKey", "Hermes-Server-Schlüssel", KEY_STORAGE_NOTE, keyWrap, f.keyState),
+      row(id, "provider", "Modellanbieter in Hermes", "Ein in Hermes eingerichteter Anbieter. Dessen Adresse und Schlüssel richtest du in Hermes' Profil ein; sie werden hier nicht gespeichert.", f.provider),
+      row(id, "model", "Modell", "Modell dieses Anbieters. „hermes-agent“ verwendet die Hermes-Vorgabe.", f.model));
     const actions = el("div", { className: "be-actions" }, f.save, f.test, f.reset, f.result);
     const card = el("section", { className: "be-card" }, head, body, actions);
     card.dataset.backend = id;
     card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
 
-    const c = { id, card, f, draft: { provider: "", model: "", baseUrl: "" }, baseline: { provider: "", model: "", baseUrl: "" }, removeArmed: 0, testing: false, saving: false };
-    f.provider.onchange = () => { providerChanged(c); update(c); };
-    for (const k of ["model", "baseUrl"]) f[k].oninput = () => { c.draft[k] = f[k].value; update(c); };
+    const c = { id, card, f, draft: { ...empty }, baseline: { ...empty }, removeArmed: 0, testing: false, saving: false };
+    f.provider.onchange = () => { c.draft.provider = f.provider.value; update(c); };
+    for (const k of ["model", "serverUrl"]) f[k].oninput = () => { c.draft[k] = f[k].value; update(c); };
     f.apiKey.oninput = () => update(c);
     f.save.onclick = () => save(c);
     f.test.onclick = () => test(c);
@@ -101,55 +104,48 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     c.f.provider.value = keep;
   }
   function fill(c) {
-    const b = model.backends[c.id];
+    if (!c.f.provider) return;
     providerOptions(c);
     c.f.model.value = c.draft.model;
-    c.f.baseUrl.value = c.draft.baseUrl;
-    c.f.models.replaceChildren(...b.models.map(m => el("option", { value: m.id, label: m.label })));
-  }
-  function providerChanged(c) {
-    const list = model.backends[c.id].providers;
-    const prev = list.find(p => p.id === c.draft.provider), next = list.find(p => p.id === c.f.provider.value);
-    c.draft.provider = c.f.provider.value;
-    // Adresse mit der Voreinstellung des neuen Anbieters füllen, solange der Nutzer keine eigene eingetragen hat
-    if (next && (!c.draft.baseUrl || c.draft.baseUrl === prev?.url)) { c.draft.baseUrl = next.url; c.f.baseUrl.value = next.url; }
+    c.f.serverUrl.value = c.draft.serverUrl;
   }
 
   function update(c) {
     const b = model.backends[c.id], f = c.f;
+    const done = () => {
+      f.status.textContent = STATUS_TEXT[b.status] ?? b.status;
+      f.status.className = "ext-chip " + (b.status === "ready" ? "ok" : b.status === "error" ? "bad" : "");
+      f.status.title = b.error || "";
+      f.active.hidden = model.active !== c.id;
+      c.card.classList.toggle("is-active", model.active === c.id);
+      c.card.toggleAttribute("data-disabled", !supported);
+    };
+    if (!b.configurable) return done();
     const keyTyped = f.apiKey.value.length > 0;
-    const v = validateConfig(c.id, c.draft, { keySet: b.keySet, keyTyped });
+    const v = validateConfig(c.draft);
     const dirty = !sameConfig(c.draft, c.baseline) || keyTyped;
-    const enabled = supported && !c.saving;
-    for (const k of ["provider", "model", "baseUrl", "apiKey"]) { f[k].disabled = !enabled; }
+    const locked = isBusy() && model.active === c.id;       // der Daemon lehnt Änderungen während eines Hermes-Laufs ab
+    const enabled = supported && !c.saving && !locked;
+    for (const k of ["serverUrl", "apiKey", "provider", "model"]) f[k].disabled = !enabled;
     f.save.disabled = !enabled || !dirty || !v.valid;
-    f.test.disabled = !supported || dirty || c.testing || !c.baseline.provider || b.status === "unsupported";
-    f.test.title = dirty ? "Erst speichern, dann testen." : "";
+    f.test.disabled = !supported || dirty || c.testing || !c.baseline.serverUrl || b.status === "unsupported";
+    f.test.title = locked ? "Während eines laufenden Hermes-Laufs nicht änderbar." : dirty ? "Erst speichern, dann testen." : "";
     f.reset.disabled = !enabled || !dirty;
     f.keyRemove.hidden = !b.keySet;
     f.keyRemove.disabled = !enabled;
     f.keyState.textContent = keyTyped ? "Wird beim Speichern ersetzt." : keyStatus(b.keySet);
     f.keyState.dataset.set = String(b.keySet);
-    const fieldError = (input, text) => { input.setAttribute("aria-invalid", String(!!text)); };
     const show = dirty || c.touched;      // Fehler erst zeigen, wenn der Nutzer etwas geändert hat
-    fieldError(f.model, show && v.errors.model); fieldError(f.baseUrl, show && v.errors.baseUrl); fieldError(f.provider, show && v.errors.provider);
-    f.urlHint.textContent = show && v.errors.baseUrl ? v.errors.baseUrl : v.hints.baseUrl ?? "";
-    f.urlHint.classList.toggle("bad", !!(show && v.errors.baseUrl) || v.hints.baseUrl?.startsWith("Unverschlüsselt"));
-    f.network.hidden = !v.hints.network; f.network.textContent = NETWORK_TEXT[v.hints.network] ?? "";
-    f.network.classList.toggle("bad", v.hints.network === "extern" && /^http:/i.test(c.draft.baseUrl));
-    // Status
-    f.status.textContent = STATUS_TEXT[b.status] ?? b.status;
-    f.status.className = "ext-chip " + (b.status === "ready" ? "ok" : b.status === "error" ? "bad" : "");
-    f.status.title = b.error || "";
-    f.active.hidden = model.active !== c.id;
-    c.card.classList.toggle("is-active", model.active === c.id);
-    c.card.toggleAttribute("data-disabled", !supported);
-    if (b.error && b.status === "error" && !c.f.result.textContent) c.f.result.textContent = b.error;
+    for (const k of ["serverUrl", "provider", "model"]) f[k].setAttribute("aria-invalid", String(!!(show && v.errors[k])));
+    f.urlHint.textContent = show && v.errors.serverUrl ? v.errors.serverUrl : locked ? "Gesperrt, solange Hermes antwortet." : "";
+    f.urlHint.classList.toggle("bad", !!(show && v.errors.serverUrl));
+    done();
+    if (b.error && b.status === "error" && !f.result.textContent) f.result.textContent = b.error;
   }
 
   // ----- Aktionen -----
   function save(c) {
-    const v = validateConfig(c.id, c.draft, { keySet: model.backends[c.id].keySet, keyTyped: c.f.apiKey.value.length > 0 });
+    const v = validateConfig(c.draft);
     c.touched = true;
     if (!v.valid) { update(c); return; }
     c.saving = true; c.f.result.textContent = "Speichert …"; c.f.result.className = "be-result";
@@ -197,7 +193,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       return;
     }
     const act = model.backends[model.active];
-    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Adresse und Schlüssel.`; return; }
+    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Serveradresse und Server-Schlüssel.`; return; }
     if (isBusy()) { banner.hidden = false; banner.className = "be-banner"; banner.textContent = "Es läuft gerade eine Antwort. Ein Wechsel gilt für neue Nachrichten; laufende Chats bleiben bei ihrem Backend."; return; }
     banner.hidden = true;
   }
@@ -209,6 +205,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     model = next;
     for (const id of BACKEND_IDS) {
       const c = cards.get(id), cfg = next.backends[id].config;
+      if (!next.backends[id].configurable) continue;
       const dirty = !sameConfig(c.draft, c.baseline);
       c.baseline = { ...cfg };
       if (!dirty || initial) { c.draft = { ...cfg }; fill(c); } else providerOptions(c);
@@ -219,24 +216,21 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
   function handle(m) {
     if (m.type === "backend") {
       supported = true; waiting = false; clearTimeout(waitTimer); switching = false;
-      adopt(normalizeBackendState(m), { initial: !cards.get("opencode").touched && !cards.get("hermes").touched });
+      adopt(normalizeBackendState(m), { initial: !cards.get("hermes").touched });
       render();
     } else if (m.type === "backend_saved") {
-      const c = cards.get(m.backend); if (!c) return;
+      const c = cards.get(m.backend); if (!c?.f.save) return;
       c.saving = false;
       c.f.result.className = "be-result " + (m.ok ? "ok" : "bad");
       c.f.result.textContent = m.ok ? "Gespeichert." : `Nicht gespeichert${m.error ? `: ${String(m.error).slice(0, 300)}` : "."}`;
       if (m.ok) c.touched = false;
+      if (!c.f.provider) return;
       update(c);
     } else if (m.type === "backend_test") {
-      const c = cards.get(m.backend); if (!c) return;
+      const c = cards.get(m.backend); if (!c?.f.test) return;
       c.testing = false;
       c.f.result.className = "be-result " + (m.ok ? "ok" : "bad");
       c.f.result.textContent = m.ok ? `Verbindung steht${Number.isFinite(m.latencyMs) ? ` (${Math.round(m.latencyMs)} ms)` : ""}.` : `Keine Verbindung${m.error ? `: ${String(m.error).slice(0, 300)}` : "."}`;
-      if (m.ok && Array.isArray(m.models) && m.models.length) {
-        const merged = normalizeBackendState({ active: model.active, backends: { [m.backend]: { ...model.backends[m.backend], models: m.models } } });
-        model.backends[m.backend].models = merged.backends[m.backend].models; fill(c);
-      }
       update(c);
     }
   }
@@ -252,7 +246,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
   }
   function hide() {
     clearTimeout(waitTimer);
-    for (const c of cards.values()) { c.f.apiKey.value = ""; clearTimeout(c.removeArmed); c.removeArmed = 0; c.f.keyRemove.textContent = "Entfernen"; }
+    for (const c of cards.values()) { if (!c.f.apiKey) continue; c.f.apiKey.value = ""; clearTimeout(c.removeArmed); c.removeArmed = 0; c.f.keyRemove.textContent = "Entfernen"; }
   }
 
   buildSegment();

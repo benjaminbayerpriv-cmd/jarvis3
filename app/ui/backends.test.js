@@ -1,62 +1,64 @@
 import { test, expect } from "bun:test";
-import { BACKENDS, classifyHost, configOf, keyStatus, msgConfig, msgSecret, normalizeBackendState, redact, sameConfig, validateConfig } from "./backends.js";
+import { BACKENDS, KEY_STORAGE_NOTE, configOf, isLoopbackIp, keyStatus, msgConfig, msgSecret, normalizeBackendState, redact, sameConfig, validateConfig } from "./backends.js";
 
-test("Ohne Angaben ist OpenCode aktiv (Standard) und Hermes als nicht unterstützt markiert", () => {
+test("Ohne Angaben ist OpenCode aktiv und Hermes als nicht unterstützt markiert", () => {
   const s = normalizeBackendState(undefined);
   expect(s.active).toBe("opencode");
-  expect(s.backends.opencode.status).toBe("unsupported");
+  expect(s.backends.hermes.status).toBe("unsupported");
   expect(s.backends.hermes.keySet).toBe(false);
   expect(s.backends.hermes.providers).toEqual(BACKENDS.hermes.providers);
+  expect(s.backends.opencode.configurable).toBe(false);
 });
 
-test("Zustand wird tolerant gelesen, unbekannte Werte fallen auf sichere Standards", () => {
-  const s = normalizeBackendState({ active: "hermes", backends: {
-    hermes: { status: "ready", config: { provider: "local", model: " hermes-3 ", baseUrl: "http://192.168.1.20:11434/v1" }, keySet: true, models: ["a", { id: "b", label: "B" }, { nope: 1 }] },
-    opencode: { status: "kaputt", config: null } } });
-  expect(s.active).toBe("hermes");
-  expect(s.backends.hermes.config.model).toBe("hermes-3");
+test("Echte Daemon-Nachricht (PR #63): serverUrl, provider, model getrennt; baseUrl wird nie Serveradresse", () => {
+  const s = normalizeBackendState({ type: "backend", active: "hermes", backends: {
+    opencode: { label: "OpenCode", status: "ready", config: { provider: "opencode", model: "x", baseUrl: "" }, keySet: true },
+    hermes: { label: "Hermes", status: "ready", keySet: true, config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642", baseUrl: "https://openrouter.ai/api/v1" },
+      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }] } } });
+  expect(s.backends.hermes.config).toEqual({ serverUrl: "http://127.0.0.1:8642", provider: "default", model: "hermes-agent" });
   expect(s.backends.hermes.keySet).toBe(true);
-  expect(s.backends.hermes.models).toEqual([{ id: "a", label: "a" }, { id: "b", label: "B" }]);
-  expect(s.backends.opencode.status).toBe("ready");
+  expect(s.backends.opencode.keySet).toBe(false);                  // OpenCode hat hier keinen Schlüssel
+  expect(s.backends.opencode.config.serverUrl).toBe("");
+  const only = normalizeBackendState({ backends: { hermes: { status: "ready", config: { baseUrl: "http://10.0.0.5:11434/v1" } } } });
+  expect(only.backends.hermes.config.serverUrl).toBe("");
   expect(normalizeBackendState({ active: "gibtsnicht" }).active).toBe("opencode");
-  expect(normalizeBackendState({ backends: { hermes: { keySet: "ja" } } }).backends.hermes.keySet).toBe(false);   // nur echtes true zählt
+  expect(normalizeBackendState({ backends: { hermes: { keySet: "ja" } } }).backends.hermes.keySet).toBe(false);
 });
 
-test("Adressen: lokal, Heimnetz oder extern", () => {
-  expect(classifyHost("localhost")).toBe("lokal");
-  expect(classifyHost("127.0.0.1")).toBe("lokal");
-  expect(classifyHost("[::1]")).toBe("lokal");
-  expect(classifyHost("192.168.178.20")).toBe("heimnetz");
-  expect(classifyHost("172.20.1.5")).toBe("heimnetz");
-  expect(classifyHost("172.40.1.5")).toBe("extern");
-  expect(classifyHost("benjaminspc.fritz.box")).toBe("heimnetz");
-  expect(classifyHost("mac-mini")).toBe("heimnetz");
-  expect(classifyHost("openrouter.ai")).toBe("extern");
+test("Loopback-IP: nur 127.x und ::1, keine Hostnamen", () => {
+  expect(isLoopbackIp("127.0.0.1")).toBe(true);
+  expect(isLoopbackIp("127.1.2.3")).toBe(true);
+  expect(isLoopbackIp("[::1]")).toBe(true);
+  for (const h of ["localhost", "192.168.1.5", "10.0.0.1", "127.0.0.300", "example.com", ""]) expect(isLoopbackIp(h)).toBe(false);
 });
 
-test("Prüfung: Pflichtfelder, Adresse, Warnung bei unverschlüsseltem Internet, keine Zugangsdaten in der Adresse", () => {
-  expect(validateConfig("hermes", { provider: "", model: "", baseUrl: "" }).errors).toEqual({ provider: "Anbieter wählen.", model: "Modell eintragen." });
-  const ok = validateConfig("hermes", { provider: "local", model: "hermes-3", baseUrl: "http://192.168.1.20:11434/v1" });
-  expect(ok.valid).toBe(true);
-  expect(ok.hints.network).toBe("heimnetz");
-  expect(validateConfig("hermes", { provider: "custom", model: "m", baseUrl: "ftp://x" }).errors.baseUrl).toContain("http");
-  expect(validateConfig("hermes", { provider: "custom", model: "m", baseUrl: "kein url" }).valid).toBe(false);
-  expect(validateConfig("hermes", { provider: "custom", model: "m", baseUrl: "http://api.example.com/v1" }).hints.baseUrl).toContain("Unverschlüsselt");
-  expect(validateConfig("hermes", { provider: "custom", model: "m", baseUrl: "https://user:pw@api.example.com" }).errors.baseUrl).toContain("Schlüsselfeld");
-  expect(validateConfig("hermes", { provider: "local", model: "m", baseUrl: "" }).errors.baseUrl).toContain("lokalen");   // lokaler Anbieter braucht eine Adresse
-  expect(validateConfig("hermes", { provider: "nous", model: "m", baseUrl: "" }).hints.apiKey).toContain("Schlüssel");
-  expect(validateConfig("hermes", { provider: "nous", model: "m", baseUrl: "" }, { keySet: true }).hints.apiKey).toBeUndefined();
+test("Prüfung: Serveradresse muss HTTP-Loopback-IP ohne Zugangsdaten sein", () => {
+  const ok = { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642" };
+  expect(validateConfig(ok).valid).toBe(true);
+  expect(validateConfig({ ...ok, serverUrl: "http://[::1]:8642" }).valid).toBe(true);
+  expect(validateConfig({ provider: "", model: "", serverUrl: "" }).errors).toEqual({
+    provider: "Modellanbieter wählen.", model: expect.stringContaining("Modell"), serverUrl: expect.stringContaining("Serveradresse") });
+  for (const serverUrl of ["https://127.0.0.1:8642", "http://localhost:8642", "http://192.168.1.20:8642", "http://hermes.example.com", "ftp://127.0.0.1", "kein url"])
+    expect(validateConfig({ ...ok, serverUrl }).valid).toBe(false);
+  expect(validateConfig({ ...ok, serverUrl: "http://user:pw@127.0.0.1:8642" }).errors.serverUrl).toContain("Schlüsselfeld");
 });
 
-test("Nachrichten: Einstellungen tragen nie einen Schlüssel, der Schlüssel geht separat und wird nie angezeigt", () => {
-  const m = msgConfig("hermes", { provider: "nous", model: " m ", baseUrl: "https://x.test/v1/", apiKey: "sk-geheim-1234567890abcd" });
-  expect(m).toEqual({ type: "backend_config", backend: "hermes", config: { provider: "nous", model: "m", baseUrl: "https://x.test/v1" } });
-  expect(JSON.stringify(m)).not.toContain("geheim");
+test("Nachrichten: Konfiguration trägt serverUrl/provider/model, nie einen Schlüssel; Schlüssel geht separat", () => {
+  const m = msgConfig("hermes", { serverUrl: "http://127.0.0.1:8642/", provider: "default", model: " hermes-agent ", apiKey: "sk-geheim-1234567890abcd", baseUrl: "https://x" });
+  expect(m).toEqual({ type: "backend_config", backend: "hermes", config: { serverUrl: "http://127.0.0.1:8642", provider: "default", model: "hermes-agent" } });
+  expect(JSON.stringify(m)).not.toMatch(/geheim|baseUrl/);
   expect(msgSecret("hermes", "abc")).toEqual({ type: "backend_secret", backend: "hermes", apiKey: "abc" });
   expect(msgSecret("hermes", null).apiKey).toBeNull();
+  expect(sameConfig({ serverUrl: "http://127.0.0.1:8642/", provider: "a", model: "b" }, { serverUrl: "http://127.0.0.1:8642", provider: "a", model: "b" })).toBe(true);
+  expect(configOf({ serverUrl: "", provider: "a", model: "b", extra: 1 })).toEqual({ serverUrl: "", provider: "a", model: "b" });
+});
+
+test("Schlüsselhinweis nennt nur tatsächliche Eigenschaften: Dateirechte, nicht verschlüsselt, kein Windows", () => {
+  expect(KEY_STORAGE_NOTE).toContain("Dateirechte");
+  expect(KEY_STORAGE_NOTE).toContain("nicht verschlüsselt");
+  expect(KEY_STORAGE_NOTE).toContain("Windows wird noch nicht unterstützt");
+  expect(KEY_STORAGE_NOTE).not.toMatch(/(?<!nicht )verschlüsselt gespeichert|Schlüsselbund|Keychain/i);
   expect(keyStatus(true)).not.toMatch(/sk-|\d{4}/);
-  expect(sameConfig({ provider: "a", model: "b", baseUrl: "http://x/" }, { provider: "a", model: "b", baseUrl: "http://x" })).toBe(true);
-  expect(configOf({ provider: "a", model: "b", baseUrl: "", extra: 1 })).toEqual({ provider: "a", model: "b", baseUrl: "" });
 });
 
 test("redact entfernt Schlüssel aus Objekten und Texten", () => {

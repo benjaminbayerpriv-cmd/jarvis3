@@ -20,7 +20,7 @@ test("Schnittstelle: Zustand, Speichern, Schlüssel bleibt verborgen, Test, Wech
     const key = "sk-or-v1-SEHR-GEHEIM-0123456789abcdef";
     const got = await talk(mock.port, [
       msgGet(),
-      msgConfig("hermes", { provider: "local", model: "hermes-3", baseUrl: `http://127.0.0.1:${mock.port}/v1` }),
+      msgConfig("hermes", { serverUrl: `http://127.0.0.1:${mock.port}`, provider: "nous", model: "hermes-3" }),
       msgSecret("hermes", key),
       msgTest("hermes"),
       msgSet("hermes"),
@@ -29,11 +29,14 @@ test("Schnittstelle: Zustand, Speichern, Schlüssel bleibt verborgen, Test, Wech
     expect(state.active).toBe("hermes");
     expect(state.backends.opencode.config.provider).toBe("opencode");            // OpenCode bleibt Standard, bis gewechselt wird
     expect(state.backends.hermes.keySet).toBe(true);
+    expect(state.backends.hermes.config).toEqual({ serverUrl: `http://127.0.0.1:${mock.port}`, provider: "nous", model: "hermes-3" });
     expect(JSON.stringify(got)).not.toContain("GEHEIM");                          // der Schlüssel kommt nie zurück
     expect(lines.join("\n")).not.toContain("GEHEIM");                             // und wird nie protokolliert
     expect(got.some(m => m.type === "backend_saved" && m.ok)).toBe(true);
     const t = got.find(m => m.type === "backend_test");
     expect(t).toMatchObject({ backend: "hermes", ok: true });
+    const bad = await talk(mock.port, [msgConfig("hermes", { serverUrl: "http://192.168.1.20:8642", provider: "default", model: "hermes-agent" }), msgConfig("opencode", { serverUrl: "", provider: "x", model: "y" }), msgSecret("opencode", "abc")], 200);
+    expect(bad.filter(m => m.type === "backend_saved").map(m => m.ok)).toEqual([false, false, false]);   // nur Hermes, nur Loopback-IP
     const removed = await talk(mock.port, [msgSecret("hermes", null), msgGet()], 200);
     expect(removed.filter(m => m.type === "backend").at(-1).backends.hermes.keySet).toBe(false);
   } finally { mock.stop(); }
@@ -41,6 +44,7 @@ test("Schnittstelle: Zustand, Speichern, Schlüssel bleibt verborgen, Test, Wech
 
 test("Wechsel zu einem nicht eingerichteten Hermes wird abgelehnt, legacy ignoriert alles", async () => {
   const mock = startMock();
+  mock.store.backends.hermes.config.serverUrl = "";
   const legacy = startMock({ legacy: true });
   try {
     const got = await talk(mock.port, [msgGet(), msgSet("hermes")], 250);

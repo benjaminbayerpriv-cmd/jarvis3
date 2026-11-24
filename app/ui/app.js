@@ -108,7 +108,7 @@ function handle(m) {
     case "commands": slashItems = m.items || []; renderSlash(); break;
     case "extensions": renderExtensions(m); break;
     case "ext_scan": renderImport(m); break;
-    // ANNAHME-BACKEND: Nachrichten des Backend-Wechsels (Formen in backends.js), bis core sie bestätigt
+    // Backend-Wechsel: Nachrichten nach dem Vertrag aus PR #63 (Formen in backends.js, docs/backend-ui.md)
     case "backend": case "backend_saved": case "backend_test": backendPanel.handle(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;

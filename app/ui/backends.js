@@ -1,46 +1,42 @@
 // Backend-Wechsel (OpenCode / Hermes): reine Logik der Oberfläche, ohne DOM, damit sie sich testen lässt (backends.test.js).
 //
-// ANNAHME (noch nicht von core bestätigt): Die Nachrichtenformen unten sind ein Vorschlag der Oberfläche. Der andere Chat, der core
-// umsetzt, dokumentiert die echte Schnittstelle in docs/protocol.md; weicht sie ab, ändert sich nur dieses Modul und der Abschnitt
-// „Daemon-Nachrichten“ in app.js (Kennzeichnung: ANNAHME-BACKEND).
+// Vertrag: docs/protocol.md im Zweig von PR #63 („Agenten-Backend: OpenCode und Hermes“), Stand der Abstimmung siehe docs/backend-ui.md.
 //
 //   UI → jarvisd
-//     {type:"backend_get"}                                              Zustand anfordern
-//     {type:"backend_set", backend:"opencode"|"hermes"}                 aktives Backend wählen (gilt für neue Nachrichten/Chats)
-//     {type:"backend_config", backend, config:{provider, model, baseUrl}}   Einstellungen speichern (nie ein Schlüssel!)
-//     {type:"backend_secret", backend, apiKey:string|null}              Schlüssel speichern (null = entfernen); wird nie zurückgesendet
-//     {type:"backend_test", backend}                                    gespeicherte Einstellungen prüfen
+//     {type:"backend_get"}                                                        Zustand anfordern
+//     {type:"backend_set", backend:"opencode"|"hermes"}                           Backend für NEUE Chats wählen
+//     {type:"backend_config", backend:"hermes", config:{serverUrl, provider, model}}   nur Hermes; nie ein Schlüssel
+//     {type:"backend_secret", backend:"hermes", apiKey:string|null}               Schlüssel des Hermes-SERVERS (null = entfernen)
+//     {type:"backend_test", backend:"hermes"}                                     gespeicherten Zugang prüfen
 //   jarvisd → UI
-//     {type:"backend", active, backends:{<id>:{label?, status, error?, config:{provider,model,baseUrl}, keySet, providers?, models?}}}
-//         status: "ready" | "connecting" | "error" | "unsupported"
-//         keySet: true/false – der Schlüssel selbst verlässt den Daemon nie (auch kein Teilstück)
+//     {type:"backend", active, backends:{<id>:{label?, status, error?, config, keySet, providers?}}}
+//         Hermes-config: {serverUrl, provider, model}; OpenCode-config: {provider, model, baseUrl} nur zur Anzeige
+//         keySet: nur Ja/Nein, der Schlüssel verlässt den Daemon nie
 //     {type:"backend_saved", backend, ok, error?}
-//     {type:"backend_test", backend, ok, error?, latencyMs?, models?}
+//     {type:"backend_test", backend, ok, error?, latencyMs?}
+//
+// Begriffe: `serverUrl` und der Server-Schlüssel gehören zum Hermes-Gateway. `provider`/`model` wählen einen in HERMES eingerichteten
+// Modellanbieter; dessen Adresse und Schlüssel werden hier nicht gespeichert. OpenCode verwaltet seine Anbieter selbst.
+// Schlüsselablage (tatsächlicher Stand): ~/.jarvis3/backend/, Verzeichnis 0700, Datei 0600; keine Verschlüsselung, kein Schlüsselbund,
+// Windows noch nicht unterstützt. Die Oberfläche behauptet nichts darüber hinaus.
 //
 // API-Schlüssel: nur als Passwortfeld, nie in Attributen, localStorage, Protokollen oder Fehlermeldungen (redact()).
 
 export const DEFAULT_BACKEND = "opencode";
+export const DEFAULT_SERVER_URL = "http://127.0.0.1:8642";
+export const DEFAULT_PROVIDER = "default", DEFAULT_MODEL = "hermes-agent";
 
-/** Voreinstellungen je Backend (Anbieter-Auswahl). Der Daemon kann sie mit `providers` überschreiben. */
+/** Je Backend: was die Oberfläche einstellen darf. OpenCode verwaltet Anbieter, Modell und Schlüssel selbst (nur Anzeige). */
 export const BACKENDS = {
   opencode: {
-    id: "opencode", label: "OpenCode", tagline: "Standard. Eigener Agent mit vielen Anbietern und kostenlosen Modellen.",
-    providers: [
-      { id: "opencode", label: "OpenCode (kostenlose Modelle)", url: "", needsKey: false },
-      { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", needsKey: true },
-      { id: "nvidia", label: "NVIDIA", url: "https://integrate.api.nvidia.com/v1", needsKey: true },
-      { id: "lmstudio", label: "LM Studio (lokal)", url: "http://127.0.0.1:1234/v1", needsKey: false, local: true },
-      { id: "custom", label: "Eigener Anbieter (OpenAI-kompatibel)", url: "", needsKey: true },
-    ],
+    id: "opencode", label: "OpenCode", configurable: false,
+    tagline: "Standard. Verwaltet seine Modellanbieter und Zugänge selbst; hier gibt es nichts einzustellen.",
+    providers: [],
   },
   hermes: {
-    id: "hermes", label: "Hermes", tagline: "Hermes Agent. Läuft lokal, im Heimnetz oder bei einem Anbieter.",
-    providers: [
-      { id: "nous", label: "Nous Portal", url: "https://inference-api.nousresearch.com/v1", needsKey: true },
-      { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", needsKey: true },
-      { id: "local", label: "Lokal oder Heimnetz (Ollama, LM Studio, vLLM)", url: "http://127.0.0.1:11434/v1", needsKey: false, local: true },
-      { id: "custom", label: "Eigener Anbieter (OpenAI-kompatibel)", url: "", needsKey: true },
-    ],
+    id: "hermes", label: "Hermes", configurable: true,
+    tagline: "Hermes Agent. Jarvis verbindet sich mit dem Hermes-Gateway auf diesem Rechner.",
+    providers: [{ id: DEFAULT_PROVIDER, label: "Hermes-Standardanbieter", needsKey: false }],
   },
 };
 export const BACKEND_IDS = Object.keys(BACKENDS);
@@ -48,6 +44,7 @@ export const isBackend = id => Object.hasOwn(BACKENDS, id);
 
 const STATUS = new Set(["ready", "connecting", "error", "unsupported"]);
 const text = (v, max = 300) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+const trimUrl = u => text(u).replace(/\/+$/, "");
 
 /** Zustand der Oberfläche aus der Nachricht `backend`; fehlt etwas, gelten sichere Standardwerte (OpenCode aktiv). */
 export function normalizeBackendState(message) {
@@ -57,59 +54,52 @@ export function normalizeBackendState(message) {
   for (const id of BACKEND_IDS) {
     const raw = m.backends && typeof m.backends === "object" ? m.backends[id] : undefined;
     const cfg = raw?.config && typeof raw.config === "object" ? raw.config : {};
+    const hermes = id === "hermes";
     backends[id] = {
-      id, label: text(raw?.label, 40) || BACKENDS[id].label,
+      id, label: text(raw?.label, 40) || BACKENDS[id].label, configurable: BACKENDS[id].configurable,
       status: STATUS.has(raw?.status) ? raw.status : raw ? "ready" : "unsupported",
       error: text(raw?.error, 400),
-      config: { provider: text(cfg.provider, 60), model: text(cfg.model, 200), baseUrl: text(cfg.baseUrl, 300) },
-      keySet: raw?.keySet === true,                                   // nur ein Ja/Nein, nie ein Schlüssel oder Teil davon
+      // `baseUrl` (OpenCode) ist KEINE Hermes-Serveradresse und wird nie als solche gelesen.
+      config: hermes ? { serverUrl: text(cfg.serverUrl, 300), provider: text(cfg.provider, 60) || DEFAULT_PROVIDER, model: text(cfg.model, 200) || DEFAULT_MODEL }
+        : { provider: text(cfg.provider, 60), model: text(cfg.model, 200), serverUrl: "" },
+      keySet: hermes && raw?.keySet === true,                         // nur ein Ja/Nein, nie ein Schlüssel oder Teil davon
       providers: Array.isArray(raw?.providers) && raw.providers.length
-        ? raw.providers.filter(p => p && typeof p.id === "string").map(p => ({ id: p.id, label: text(p.label, 80) || p.id, url: text(p.url, 300), needsKey: p.needsKey !== false, local: p.local === true }))
+        ? raw.providers.filter(p => p && typeof p.id === "string").map(p => ({ id: p.id, label: text(p.label, 80) || p.id }))
         : BACKENDS[id].providers,
-      models: Array.isArray(raw?.models) ? raw.models.map(x => (typeof x === "string" ? { id: x, label: x } : { id: text(x?.id, 200), label: text(x?.label, 120) || text(x?.id, 200) })).filter(x => x.id).slice(0, 500) : [],
     };
   }
   return { active, backends };
 }
 
-/** Wo steht der Dienst? lokal (dieser Rechner), heimnetz (privates Netz), extern (Internet) oder unbekannt. */
-export function classifyHost(host) {
-  const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "");
-  if (!h) return "unbekannt";
-  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || /^127\./.test(h)) return "lokal";
-  if (/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^169\.254\./.test(h)
-    || /^f[cd][0-9a-f]{2}:/.test(h) || /^fe80:/.test(h) || h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".fritz.box") || !h.includes(".")) return "heimnetz";
-  return "extern";
+/** Ist das eine feste Loopback-IP (127.x.x.x oder [::1])? Hostnamen wie localhost zählen nicht: der Daemon verlangt eine IP. */
+export function isLoopbackIp(host) {
+  const h = String(host || "").replace(/^\[|\]$/g, "");
+  const v4 = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) return v4.slice(1).every(n => Number(n) <= 255);
+  return h === "::1";
 }
 
-/** Prüft die Eingaben eines Backends. Gibt Fehler je Feld (Text) und Hinweise (Text) zurück. */
-export function validateConfig(backend, draft, { keySet = false, keyTyped = false } = {}) {
-  const errors = {}, hints = {};
-  const provider = BACKENDS[backend]?.providers.find(p => p.id === draft.provider);
-  if (!draft.provider) errors.provider = "Anbieter wählen.";
-  if (!text(draft.model)) errors.model = "Modell eintragen.";
-  const url = text(draft.baseUrl);
-  if (url) {
+/** Prüft die Eingaben für Hermes. Fehler je Feld (Text). Die Serveradresse muss HTTP auf einer festen Loopback-IP sein. */
+export function validateConfig(draft) {
+  const errors = {};
+  if (!text(draft.provider)) errors.provider = "Modellanbieter wählen.";
+  if (!text(draft.model)) errors.model = "Modell eintragen (hermes-agent verwendet die Hermes-Vorgabe).";
+  const url = text(draft.serverUrl);
+  if (!url) errors.serverUrl = "Serveradresse eintragen, z. B. " + DEFAULT_SERVER_URL + ".";
+  else {
     let parsed;
     try { parsed = new URL(url); } catch { /* unten gemeldet */ }
-    if (!parsed || !/^https?:$/.test(parsed.protocol) || !parsed.hostname) errors.baseUrl = "Gültige Adresse mit http:// oder https:// eintragen, z. B. http://192.168.1.20:11434/v1.";
-    else {
-      const where = classifyHost(parsed.hostname);
-      hints.network = where;
-      if (parsed.protocol === "http:" && where === "extern") hints.baseUrl = "Unverschlüsselt über das Internet: Schlüssel und Gespräche wären mitlesbar. https:// verwenden.";
-      else if (where === "heimnetz") hints.baseUrl = "Rechner im Heimnetz.";
-      else if (where === "lokal") hints.baseUrl = "Dieser Rechner.";
-      if (parsed.username || parsed.password) errors.baseUrl = "Keine Zugangsdaten in die Adresse schreiben, dafür gibt es das Schlüsselfeld.";
-    }
-  } else if (provider?.local) errors.baseUrl = "Für einen lokalen Dienst die Adresse eintragen.";
-  if (provider?.needsKey && !keySet && !keyTyped) hints.apiKey = "Dieser Anbieter braucht normalerweise einen API-Schlüssel.";
-  return { errors, hints, valid: Object.keys(errors).length === 0 };
+    if (!parsed || !parsed.hostname) errors.serverUrl = "Gültige Adresse eintragen, z. B. " + DEFAULT_SERVER_URL + ".";
+    else if (parsed.username || parsed.password) errors.serverUrl = "Keine Zugangsdaten in die Adresse schreiben, dafür gibt es das Schlüsselfeld.";
+    else if (parsed.protocol !== "http:" || !isLoopbackIp(parsed.hostname)) errors.serverUrl = "Erlaubt ist nur http:// mit fester Loopback-IP (127.0.0.1 oder [::1]), z. B. " + DEFAULT_SERVER_URL + ".";
+  }
+  return { errors, valid: Object.keys(errors).length === 0 };
 }
 
-export const configOf = draft => ({ provider: text(draft.provider, 60), model: text(draft.model, 200), baseUrl: text(draft.baseUrl, 300).replace(/\/+$/, "") });
-export const sameConfig = (a, b) => ["provider", "model", "baseUrl"].every(k => text(a?.[k]).replace(/\/+$/, "") === text(b?.[k]).replace(/\/+$/, ""));
+export const configOf = draft => ({ serverUrl: trimUrl(draft.serverUrl), provider: text(draft.provider, 60), model: text(draft.model, 200) });
+export const sameConfig = (a, b) => ["serverUrl", "provider", "model"].every(k => trimUrl(a?.[k]) === trimUrl(b?.[k]));
 
-// ----- Nachrichten an jarvisd (ANNAHME-BACKEND) -----
+// ----- Nachrichten an jarvisd -----
 export const msgGet = () => ({ type: "backend_get" });
 export const msgSet = backend => ({ type: "backend_set", backend });
 export const msgConfig = (backend, draft) => ({ type: "backend_config", backend, config: configOf(draft) });
@@ -126,4 +116,7 @@ export function redact(value, depth = 0) {
 }
 
 /** Anzeige für den Schlüsselstatus: immer verborgen, nie Teile des Schlüssels. */
-export const keyStatus = keySet => (keySet ? "Gespeichert (verborgen)" : "Nicht gesetzt");
+export const keyStatus = keySet => (keySet ? "Gespeichert (wird nie angezeigt)" : "Nicht gesetzt");
+
+/** Wahrheitsgemäßer Hinweis zur Ablage des Server-Schlüssels (Stand PR #63): Dateirechte, keine Verschlüsselung, kein Windows. */
+export const KEY_STORAGE_NOTE = "Liegt als Datei in ~/.jarvis3/backend/ und ist durch Dateirechte (nur dein Benutzer) geschützt, nicht verschlüsselt. Windows wird noch nicht unterstützt. Der Schlüssel wird nie wieder angezeigt.";
