@@ -5,6 +5,7 @@ const TABLER = { ...BASE, ...CUSTOM };
 import { renderMarkdown } from "./markdown.js";
 import { BlurText } from "./blurtext.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
+import { initBackendPanel } from "./backend-panel.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
@@ -107,6 +108,8 @@ function handle(m) {
     case "commands": slashItems = m.items || []; renderSlash(); break;
     case "extensions": renderExtensions(m); break;
     case "ext_scan": renderImport(m); break;
+    // Backend-Wechsel: Nachrichten nach dem Vertrag aus PR #63 (Formen in backends.js, docs/backend-ui.md)
+    case "backend": case "backend_saved": case "backend_test": backendPanel.handle(m); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
     case "dt_open": dtOpen(m.id, m.url); break;
@@ -1867,7 +1870,8 @@ async function runSlash(text) {
 }
 
 // ---------- Große Einstellungen ----------
-const PANES = { general: "Allgemein", voice: "Sprache und Audio", display: "Darstellung", control: "Steuerung", privacy: "Datenschutz", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
+const backendPanel = initBackendPanel({ root: document.querySelector("#settingsDialog .set-pane[data-pane=backend]"), send, isBusy: () => state.busy });
+const PANES = { general: "Allgemein", backend: "Backend", voice: "Sprache und Audio", display: "Darstellung", control: "Steuerung", privacy: "Datenschutz", usage: "Nutzung", mcp: "MCP-Server", skills: "Skills", commands: "Befehle", plugins: "Plugins", import: "Import" };
 let extState = null;
 function showSettingsPane(name) {
   $("#settingsSearch").value = "";
@@ -1880,12 +1884,14 @@ function showSettingsPane(name) {
   });
   document.querySelectorAll(".set-pane").forEach(p => { p.hidden = p.dataset.pane !== name; });
   $("#setTitle").textContent = PANES[name] || "";
+  if (name === "backend") backendPanel.show(); else backendPanel.hide();   // Schlüsselfeld beim Verlassen leeren
   if (name === "general") void refreshAutostart();
   if (name === "usage") requestUsage();
   if (["mcp", "skills", "commands", "plugins"].includes(name)) send({ type: "ext_list" });
 }
 document.querySelectorAll(".set-nav-item").forEach(b => { b.onclick = () => showSettingsPane(b.dataset.pane); });
 $("#closeSettings").onclick = () => $("#settingsDialog").close();
+$("#settingsDialog").addEventListener("close", () => backendPanel.hide());
 $("#settingsSearch").oninput = event => {
   const query = event.target.value.toLocaleLowerCase("de").trim();
   const results = $("#settingsResults");
