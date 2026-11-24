@@ -66,3 +66,34 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 - `click` akzeptiert im macOS-Fenster-Modus optional `window` und `scanToken` als Prüfung der Scan-Zuordnung. `click`/`type` antworten mit `point` (Bildschirmpunkt) für die virtuelle Maus im Live-Bild. `ok` beim Klick bestätigt die Übergabe an das Programm. Für eine Aussage über das Ergebnis ist eine Beobachtung danach nötig.
 - Aufnahme-Dienst `tools/uimap-mac/bin/Jarvis Bildschirm.app` (`uimap capture-serve --port 7779`, gestartet von jarvisd über `open`): `windowshot {window}`, `stream_start {window, fps}`, `stream_stop`, `cursor {point, click?}`, `cursor_hide`, `ping`. Er braucht eine eigene Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert Kommandozeilenprogrammen keine Bilder). Bilder kommen als `{event:"frame", window, data, w, h, bounds, title, app}`; jarvisd reicht sie als `frame` mit `tab:"win:<id>"` und `cursor` an die Vorschau weiter.
 - Nicht setzen: `AXEnhancedUserInterface` – Chromium-Programme melden danach statt ihrer Fenster nur noch das Programm-Element (bis zum Neustart).
+
+## Hermes-Runs-Adapter (Vorarbeit, noch nicht im Daemon aktiviert)
+
+`core/src/hermes.ts` enthält einen experimentellen Client für die
+[Hermes-Runs-API](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md#runs-api-streaming-friendly-alternative).
+Er nimmt `{url, apiKey, provider?, model?}` und übergibt beim Lauf `input`,
+`session_id` und `instructions`. Hermes verwaltet den Kontext der API-Sitzung.
+SSE-Text, Werkzeugstart/-ende und Laufende werden auf Jarvis' `BrainEvent`
+abgebildet. `abort(session)` fordert `/v1/runs/{run_id}/stop` an und wartet
+auf ein terminales Ereignis; Hermes stoppt kooperativ, nicht zwangsläufig sofort.
+Die URL ist auf HTTP mit fester Loopback-IP beschränkt, Redirects sind gesperrt;
+HTTP-Fehler enthalten keine Server-Antwort oder Schlüssel.
+
+**Noch keine UI-Schnittstelle:** Es gibt weder Agentenumschaltung noch
+Einstellungen oder Schlüsselspeicherung. Der Adapter ist nicht mit Chat,
+Verlauf, Projekten, Sprache oder Not-Aus verbunden und startet keinen Server.
+Vor Freischaltung müssen insbesondere folgende Fragen im Code gelöst und
+end-to-end geprüft werden:
+
+- Hermes führt eigene Werkzeuge serverseitig aus. Jarvis' Browser-/Computer-Modus,
+  Passwortsperren und Not-Aus greifen dort nicht automatisch. Ein gemeinsamer
+  Werkzeug- und Sicherheitsvertrag einschließlich MCP-Anbindung ist nötig.
+- Verlauf, Sitzungszuordnung, Umbenennen, Löschen und Bearbeiten sind derzeit
+  direkt an OpenCode gebunden. Hermes-Sitzungen müssen getrennt verwaltet und
+  auch nach Neustart korrekt wiederhergestellt werden.
+- Schlüssel müssen getrennt von normalen Einstellungen und UI-State geschützt
+  gespeichert werden. Anbieter, Modell und Adresse benötigen validierte,
+  dokumentierte Einstellungen und einen Zustand für die UI.
+- Stopp während Verbindungsabbruch, Wiederverbindung/Statusabfrage, Freigaben,
+  Zeitlimits und unbekannte Laufzustände sowie Bildanhänge sind noch offen.
+  Der jetzige Adapter darf deshalb noch nicht produktiv verwendet werden.
