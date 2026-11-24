@@ -29,6 +29,8 @@ import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
 import { defaults, parseSettings, type Settings } from "./settings";
 import { Haptics } from "./haptics";
+import { BackendRuntime, isHermes } from "./backend-runtime";
+import { HermesSupervisor } from "./hermes-supervisor";
 import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, setVisualTheme, type Visual } from "./visuals";
 import { needsChatTitle, parseChatTitle, provisionalChatTitle, titleExcerpt, visibleChatTitle, type ChatMeta } from "./chat-title";
 
@@ -62,6 +64,9 @@ const BASE_OPENCODE_CONFIG = {
 };
 writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
+let backendRuntime: BackendRuntime | undefined;
+try { backendRuntime = new BackendRuntime(HOME); } catch { /* OpenCode bleibt unabhängig verfügbar */ }
+const hermesSupervisor = new HermesSupervisor(PORT);
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
@@ -114,10 +119,10 @@ const runBuffer = new RunBuffer();
 const isBusy = () => !!session && busySessions.has(session);
 let stoppedUntil = 0; // Not-Aus: Werkzeuge kurz sperren
 
-const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean }>>();
-const uiIds = new WeakMap<ServerWebSocket<{ kind: string; fresh?: boolean }>, number>();
+const uis = new Set<ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>>();
+const uiIds = new WeakMap<ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>, number>();
 let uiSeq = 0;
-const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean }>) => {
+const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>) => {
   let id = uiIds.get(ws);
   if (!id) { id = ++uiSeq; uiIds.set(ws, id); }
   return id;
@@ -133,7 +138,7 @@ const state = () => ({ type: "state", ...settings, extStale: extensionStale, bus
 let voice: "off" | "live" | "dictate" | "muted" = "off";
 // Nur die Oberfläche, die Live gestartet hat, darf es auch beenden. Andere UIs (z. B. eine vergessene
 // Registerkarte oder ein zweiter Client) schickten sonst sofort voice:off, sobald sie "live" im State sahen.
-let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean }> | undefined;
+let voiceOwner: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }> | undefined;
 let speechEpoch = 0;
 import { appendFileSync } from "node:fs";
 const vlog = (line: string) => { if (!settings.voiceLog) return; try { appendFileSync(join(HOME, "voice.log"), `${new Date().toISOString()} ${line}\n`); } catch {} };
@@ -345,7 +350,7 @@ function setVoice(mode: typeof voice) {
   broadcast(state());
 }
 let lastIgnoredOffLog = 0;
-function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, mode: typeof voice) {
+function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>, mode: typeof voice) {
   vlog(`voice von ui #${uiId(ws)} ${ws.remoteAddress ?? "?"}: ${mode}`);
   if (mode === "off" && voiceOwner && voiceOwner !== ws) {
     // Kein broadcast(state()): alte Clients antworten auf jeden live-State mit off -> sonst Dauerschleife.
@@ -359,21 +364,44 @@ function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, mo
   setVoice(mode);
 }
 
+function hermesHistory() {
+  return (backendRuntime?.rows ?? []).map(r => ({ id: r.id, title: visibleChatTitle(chatMeta[r.id]) || r.title,
+    folder: projects.label(projects.chat(r.id)?.projectId ?? null), active: r.id === session, running: busySessions.has(r.id),
+    updated: r.updated, pinned: !!chatMeta[r.id]?.pinned, archived: !!chatMeta[r.id]?.archived,
+    projectId: projects.chat(r.id)?.projectId ?? null, project: projects.label(projects.chat(r.id)?.projectId ?? null) }));
+}
+function backendState() {
+  let keySet = false;
+  try { keySet = !!backendRuntime?.store.getKey(); } catch { /* kein Schlüsselstatus */ }
+  const c = backendRuntime?.config;
+  return { type: "backend", active: backendRuntime?.active ?? "opencode", backends: {
+    opencode: { label: "OpenCode", status: "ready", config: { provider: "opencode", model: settings.model, baseUrl: "" }, keySet: false },
+    hermes: { label: "Hermes", status: backendRuntime ? "ready" : "unsupported", keySet,
+      config: { provider: c?.provider ?? "default", model: c?.model ?? "hermes-agent", serverUrl: c?.baseUrl ?? "http://127.0.0.1:8642" },
+      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }] }
+  } };
+}
+async function abortBackend(id: string) {
+  if (isHermes(id)) { if (!backendRuntime) throw new Error("Hermes nicht verfügbar"); await backendRuntime.client(id).abort(backendRuntime.raw(id)); }
+  else await brain.abort(id);
+}
+
 // ---------- Verlauf (OpenCode-Sitzungen) ----------
 async function history() {
   try {
     const list = await (await fetch(`${brain.url}/session`)).json() as any[];
     // Nur echte Unterhaltungen: Testläufe ("Test") und leere Sitzungen ohne eigenen Titel ausblenden
     const isEmpty = (t: string) => !t || t === "Jarvis" || /^New session/i.test(t) || /^Child session/i.test(t);
-    return list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session || busySessions.has(s.id)))
+    const opencodeSessions = list.filter(s => !s.parentID && s.title !== "Test" && (!isEmpty(s.title) || s.id === session || busySessions.has(s.id)))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .map(s => ({ id: s.id, title: visibleChatTitle(chatMeta[s.id]) || (isEmpty(s.title) ? "Neuer Chat" : s.title),
                    folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session, running: busySessions.has(s.id),
                    updated: s.time?.updated ?? 0, pinned: !!chatMeta[s.id]?.pinned, archived: !!chatMeta[s.id]?.archived, projectId: projects.chat(s.id)?.projectId ?? null,
                    project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
+    return [...opencodeSessions, ...hermesHistory()].sort((a, b) => b.updated - a.updated);
   } catch (error) {
     recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
-    return [];
+    return hermesHistory();
   }
 }
 const ATTACHMENT_HEADER = "Angehängte Dateien: ";
@@ -410,6 +438,13 @@ function readChatMessage(message: any) {
 }
 
 async function sessionMessages(id: string) {
+  if (isHermes(id)) {
+    if (!backendRuntime) throw new Error("Hermes nicht verfügbar");
+    backendRuntime.client(id); // vor dem Start prüfen, ob der Chat zu diesem Server gehört
+    await hermesSupervisor.ensure(backendRuntime.config.baseUrl, backendRuntime.store.getKey() ?? "");
+    const rows = await backendRuntime.client(id).messages(backendRuntime.raw(id)) as any[];
+    return rows.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ info: { id: String(m.id ?? ""), role: m.role }, parts: [{ type: "text", text: typeof m.content === "string" ? m.content : "" }] }));
+  }
   const response = await fetch(`${brain.url}/session/${encodeURIComponent(id)}/message`);
   if (!response.ok) throw new Error(`Nachrichten konnten nicht geladen werden (${response.status})`);
   return (await response.json()) as any[];
@@ -444,8 +479,9 @@ async function syncProjects() {
   }
 }
 async function firstExcerpt(id: string) {
+  if (isHermes(id) && !hermesSupervisor.running) return "";
   try {
-    const msgs = await (await fetch(`${brain.url}/session/${id}/message`)).json() as any[];
+    const msgs = await sessionMessages(id);
     const first = msgs.find(m => m.info?.role === "user");
     return String((first?.parts ?? []).filter((p: any) => p.type === "text" && !p.synthetic).map((p: any) => p.text).join(" "))
       .replace(/\s+/g, " ").trim().slice(0, 500);
@@ -582,10 +618,58 @@ async function announceToolAction(target: "browser" | "desktop", cmd: Record<str
   return stoppedUntil === stopBefore && latestRun.get(turn.sid) === turn.run && speechEpoch === userBefore;
 }
 
+// Hermes läuft im eigenen verwalteten Profil mit Jarvis-MCP als Werkzeugauswahl.
+let hermesStopGeneration = 0, hermesActivity = 0;
+async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: Attachment[], existing?: string) {
+  const backend = backendRuntime, stopGeneration = hermesStopGeneration;
+  if (!backend) { broadcast({ type: "error", message: "Hermes ist auf diesem System nicht verfügbar.", session: existing }); return; }
+  hermesActivity++;
+  try {
+  try { await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? ""); }
+  catch (error) { broadcast({ type: "error", message: error instanceof Error ? error.message : "Hermes konnte nicht gestartet werden", session: existing }); return; }
+  if (stopGeneration !== hermesStopGeneration) return;
+  if (atts.length) { broadcast({ type: "error", message: "Anhänge sind für Hermes noch nicht verfügbar.", session: existing }); return; }
+  const run = ++runSeq;
+  if (existing) latestRun.set(existing, run);
+  if (existing && busySessions.has(existing)) await abortBackend(existing);
+  if (existing && latestRun.get(existing) !== run) return;
+  const id = existing ?? await backend.createSession(provisionalChatTitle(text));
+  if (stopGeneration !== hermesStopGeneration) {
+    if (!existing) { await backend.client(id).deleteSession(backend.raw(id)).catch(() => {}); backend.remove(id); }
+    return;
+  }
+  if (!existing && !fresh) { session = id; broadcast({ type: "session", id }); }
+  const rawId = backend.raw(id), client = backend.client(id);
+  latestRun.set(id, run); if (spoken) voiceRun = run;
+  busySessions.add(id); runBuffer.start(id); broadcast(state());
+  const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
+  let response = "", finished = false;
+  try {
+    await client.prompt(rawId, text, SYSTEM_PROMPT, (event: BrainEvent) => {
+      if (finished || latestRun.get(id) !== run) return;
+      if (event.kind === "text") { response += event.delta; if (!spoken) emit({ type: "delta", text: event.delta }); }
+      else if (event.kind === "tool") emit({ type: "tool", ...event });
+      else if (event.kind === "reasoning") { if (!spoken) emit({ type: "reasoning", text: event.delta }); }
+      else {
+        finished = true;
+        if (event.kind === "done" && !event.aborted && spoken && response) { emit({ type: "delta", text: response }); liveAnswer.deliver(run, response); }
+        emit({ type: event.kind, ...event });
+      }
+    });
+  } finally {
+    busySessions.delete(id); runBuffer.clear(id); backend.rename(id, backend.rows.find(r => r.id === id)?.title ?? "Neuer Chat");
+    broadcast(state()); broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
+  }
+  } finally { hermesActivity--; }
+}
+
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments,
                     target?: string | null, replaces?: string) {
   // target: der Chat, an den die Nachricht geht (Standard: der gezeigte); null = neuen Chat anlegen; replaces: der verlorene Chat, den er ersetzt
   const existing = fresh || target === null ? undefined : (target ?? session);
+  if ((existing && isHermes(existing)) || (!existing && backendRuntime?.active === "hermes")) {
+    return chatHermes(text, spoken, fresh, atts, existing);
+  }
   const runId = ++runSeq;
   let click = requestedClick(text);
   let clickContext: string | undefined;
@@ -776,6 +860,7 @@ let repairingTitles = false;
 
 async function refineChatTitle(id: string) {
   const initial = chatMeta[id];
+  if (isHermes(id) && !hermesSupervisor.running) return;
   if (!settings.autoChatTitles || !needsChatTitle(initial) || titleInFlight.has(id) || busySessions.has(id)) return;
   const candidates = ["opencode/nemotron-3.5-lightning-free", CLASSIFY_MODEL, "openrouter/nvidia/nemotron-3.5-lightning:free",
     "opencode/longcat-2.5-free", "opencode/big-pickle"]
@@ -828,7 +913,8 @@ async function setSessionTitle(id: string, title: string, provisional: boolean) 
   if (chatMeta[id]?.auto === false) return;
   chatMeta[id] = { ...chatMeta[id], title, auto: true, provisional };
   saveChatMeta();
-  await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) }).catch(() => {});
+  if (isHermes(id) && backendRuntime) { backendRuntime.rename(id, title); await backendRuntime.client(id).renameSession(backendRuntime.raw(id), title).catch(() => {}); }
+  else await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) }).catch(() => {});
   void syncProjects();
   broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
@@ -842,7 +928,8 @@ async function updateChat(msg: any) {
     const title = String(msg.title ?? "").trim().slice(0, 100);
     if (!title) return;
     chatMeta[id] = { ...chatMeta[id], title, auto: false }; saveChatMeta();
-    await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+    if (isHermes(id) && backendRuntime) { await backendRuntime.client(id).renameSession(backendRuntime.raw(id), title); backendRuntime.rename(id, title); }
+    else await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
   } else if (msg.action === "pin" || msg.action === "archive") {
     const key = msg.action === "pin" ? "pinned" : "archived";
     chatMeta[id] = { ...chatMeta[id] };
@@ -857,16 +944,18 @@ async function updateChat(msg: any) {
     projects.upsertChat({ id, title: chatMeta[id]?.title || id });
     projects.assign(id, target?.id ?? null, "manual");
   } else if (msg.action === "delete") {
-    if (busySessions.has(id)) await brain.abort(id);
-    const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
-    if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`);
+    if (busySessions.has(id)) await abortBackend(id);
+    if (isHermes(id) && backendRuntime) { await backendRuntime.client(id).deleteSession(backendRuntime.raw(id)); backendRuntime.remove(id); }
+    else { const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`); }
     delete chatMeta[id]; saveChatMeta();
     if (session === id) { session = undefined; broadcast({ type: "session", id: null }); broadcast({ type: "messages", session: null, messages: [] }); }
   }
   broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
 }
 async function rewindMessage(id: string, messageID: string) {
-  if (busySessions.has(id)) await brain.abort(id);
+  if (isHermes(id)) throw new Error("Bearbeiten und erneutes Senden sind für Hermes noch nicht verfügbar");
+  if (busySessions.has(id)) await abortBackend(id);
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
   if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
   session = id;
@@ -930,6 +1019,7 @@ browser.onEvent = m => {
 
 /** Stoppt den gezeigten Chat; mit all=true (Not-Aus) alle laufenden Chats. Die anderen Chats laufen sonst ungestört weiter. */
 async function stop(all = false, chat = session) {
+  hermesStopGeneration++;
   haptics.finish();
   const targets = all ? [...busySessions] : chat && busySessions.has(chat) ? [chat] : [];
   if (all || targets.length >= busySessions.size) stoppedUntil = Date.now() + 1500; // Werkzeuge nur sperren, wenn kein anderer Chat sie braucht
@@ -942,7 +1032,7 @@ async function stop(all = false, chat = session) {
   liveAnswer.drop("Stopp");
   trace.add(runSeq, "stopp");
   await Promise.all(targets.map(async sid => {
-    await brain.abort(sid);
+    await abortBackend(sid);
     busySessions.delete(sid); runBuffer.clear(sid);
     broadcast({ type: "stopped", session: sid });
   }));
@@ -1325,7 +1415,7 @@ async function previewWindows() {
     .slice(0, 12).map((w: any) => ({ id: w.id, app: w.app, title: w.title, onScreen: w.onScreen }));
 }
 
-Bun.serve<{ kind: string; fresh?: boolean }, {}>({
+Bun.serve<{ kind: string; fresh?: boolean; trusted?: boolean }, {}>({
   port: PORT, hostname: "127.0.0.1",
   async fetch(req, srv) {
     try { return await route(req, srv); } catch (error) {
@@ -1416,7 +1506,7 @@ async function route(req: Request, srv: any) {
     }
     if (u.pathname.startsWith("/errors")) { const r = await errorsRoute(req, u); if (r) return r; }
     if (u.pathname === "/browser" || u.pathname === "/ui")
-      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh") } }) ? undefined : new Response("upgrade", { status: 400 });
+      return srv.upgrade(req, { data: { kind: u.pathname.slice(1), fresh: u.searchParams.has("fresh"), trusted: trustedUiOrigin(req.headers.get("origin")) } }) ? undefined : new Response("upgrade", { status: 400 });
     // "/app" ohne Schrägstrich würde die relativen Pfade (styles.css, app.js) auf "/styles.css" auflösen: ungestylte Seite. Darum umleiten.
     if (u.pathname === "/" || u.pathname === "/app") return Response.redirect(new URL("/app/", u), 302);
     if (u.pathname.startsWith("/app/")) { // Oberfläche zum Testen im Browser
@@ -1445,11 +1535,52 @@ async function route(req: Request, srv: any) {
     return new Response("jarvisd", { status: 404 });
 }
 
-async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean }>, raw: string) {
+function trustedUiOrigin(origin: string | null) {
+  if (!origin) return true; // lokale native Clients senden ggf. keinen Origin
+  try { const u = new URL(origin); return (u.protocol === "http:" && ["127.0.0.1", "localhost"].includes(u.hostname) && Number(u.port || 80) === PORT)
+    || (u.hostname === "tauri.localhost" && ["http:", "https:"].includes(u.protocol)) || (u.protocol === "tauri:" && u.hostname === "localhost"); }
+  catch { return false; }
+}
+
+async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boolean }>, raw: string) {
       if (ws.data.kind === "browser") return browser.receive(raw);
       const msg = JSON.parse(raw);
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
       if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
+      if (typeof msg.type === "string" && msg.type.startsWith("backend_")) {
+        const reply = (m: unknown) => ws.send(JSON.stringify(m));
+        if (!ws.data.trusted) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Nicht vertrauenswürdiger Ursprung" }); return; }
+        if (msg.type === "backend_get") { reply(backendState()); return; }
+        const backend = backendRuntime;
+        if (!backend || !["hermes", "opencode"].includes(msg.backend)) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Backend nicht verfügbar" }); return; }
+        try {
+          if (msg.type === "backend_set") {
+            backend.setActive(msg.backend); broadcast(backendState()); return;
+          }
+          if (msg.type === "backend_config") {
+            if (msg.backend !== "hermes") throw new Error("OpenCode wird über seine eigene Konfiguration eingerichtet");
+            if (hermesActivity > 0 || hermesSupervisor.isStarting || [...busySessions].some(isHermes)) throw new Error("Hermes arbeitet noch; Einstellungen erst danach ändern");
+            if (!msg.config || typeof msg.config.serverUrl !== "string") throw new Error("Hermes-Serveradresse serverUrl fehlt; Modellanbieter-Adresse ist etwas anderes");
+            backend.configure({ provider: msg.config.provider, model: msg.config.model, baseUrl: msg.config.serverUrl });
+            hermesSupervisor.stop(); backend.resetClients();
+          } else if (msg.type === "backend_secret") {
+            if (msg.backend !== "hermes") throw new Error("OpenCode verwaltet seine Schlüssel selbst");
+            if (hermesActivity > 0 || hermesSupervisor.isStarting || [...busySessions].some(isHermes)) throw new Error("Hermes arbeitet noch; Schlüssel erst danach ändern");
+            if (!(msg.apiKey === null || typeof msg.apiKey === "string")) throw new Error("Ungültiger Server-Schlüssel");
+            backend.store.setKey(msg.apiKey); hermesSupervisor.stop(); backend.resetClients();
+          } else if (msg.type === "backend_test") {
+            const started = performance.now();
+            if (msg.backend === "hermes") await hermesSupervisor.ensure(backend.config.baseUrl, backend.store.getKey() ?? "");
+            else if (!await brain.healthy()) throw new Error("OpenCode ist nicht erreichbar");
+            reply({ type: "backend_test", backend: msg.backend, ok: true, latencyMs: Math.round(performance.now() - started) }); return;
+          } else return;
+          reply({ type: "backend_saved", backend: msg.backend, ok: true }); broadcast(backendState());
+        } catch (error) {
+          const message = error instanceof Error && /^(Hermes|OpenCode|Der verwaltete|Nicht vertrauenswürdiger)/.test(error.message) ? error.message : "Backend-Einstellung konnte nicht verarbeitet werden";
+          reply({ type: msg.type === "backend_test" ? "backend_test" : "backend_saved", backend: msg.backend, ok: false, error: message });
+        }
+        return;
+      }
       if (msg.type === "chat" || msg.type === "resend" || msg.type === "replace") {
         const atts: Attachment[] = Array.isArray(msg.attachments) ? msg.attachments : [];
         const bad = validate(atts);
@@ -1598,4 +1729,4 @@ void repairChatTitles();
 setInterval(() => void repairChatTitles(), TITLE_RETRY_MS);
 console.log(`jarvisd bereit: http://127.0.0.1:${PORT} · ${models.length} Modelle · Standard ${settings.model}`);
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { brain.stop(); desktop.stop(); ibrowser.stop(); haptics.stop(); process.exit(0); });
+  process.on(sig, () => { hermesSupervisor.stop(); brain.stop(); desktop.stop(); ibrowser.stop(); haptics.stop(); process.exit(0); });

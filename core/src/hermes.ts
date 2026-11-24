@@ -1,5 +1,6 @@
 // Hermes Runs API. Dieser Adapter ist noch nicht mit dem Daemon verdrahtet.
 import type { BrainEvent } from "./opencode";
+import { baseToolName } from "./hermes-tools";
 
 export type HermesConfig = { url: string; apiKey: string; provider?: string; model?: string };
 
@@ -24,6 +25,12 @@ export class Hermes {
     // Fehlermeldungen und Antwort-Bodies können Geheimnisse enthalten.
     if (!r.ok) throw new Error(`Hermes-Anfrage fehlgeschlagen (HTTP ${r.status})`);
     return r;
+  }
+
+  async testConnection() {
+    const r = await this.request("/v1/capabilities", { signal: AbortSignal.timeout(5000) });
+    const data = await r.json() as { features?: Record<string, unknown> };
+    if (!data.features?.run_submission || !data.features?.run_events_sse || !data.features?.run_stop) throw new Error("Hermes-Server unterstützt die benötigte Runs-API nicht");
   }
 
   /** Hermes-API-Sitzungen sind vom OpenCode-Verlauf getrennt. */
@@ -90,12 +97,12 @@ export class Hermes {
         const event = JSON.parse(data);
         if (event.event === "message.delta" && typeof event.delta === "string") { text += event.delta; onEvent({ kind: "text", delta: event.delta }); }
         if (event.event === "tool.started") {
-          const name = String(event.tool ?? "Werkzeug"), id = String(event.tool_call_id || crypto.randomUUID());
+          const name = baseToolName(String(event.tool ?? "Werkzeug")), id = String(event.tool_call_id || crypto.randomUUID());
           ids.set(name, [...(ids.get(name) ?? []), id]);
           onEvent({ kind: "tool", id, name, status: "running" });
         }
         if (event.event === "tool.completed") {
-          const name = String(event.tool ?? "Werkzeug"), queue = ids.get(name) ?? [];
+          const name = baseToolName(String(event.tool ?? "Werkzeug")), queue = ids.get(name) ?? [];
           const id = String(event.tool_call_id || queue.shift() || crypto.randomUUID());
           ids.set(name, queue.filter(x => x !== id));
           onEvent({ kind: "tool", id, name, status: event.error ? "error" : "completed", ...(event.error ? { error: "Hermes-Werkzeug fehlgeschlagen" } : {}) });

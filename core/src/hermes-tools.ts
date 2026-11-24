@@ -66,6 +66,8 @@ ${env}
     connect_timeout: ${e.connect_timeout}
     supports_parallel_tool_calls: false
     trust: full
+platform_toolsets:
+  api_server: [jarvis]
 agent:
   disabled_toolsets:
 ${DISABLED_TOOLSETS.map(t => `    - ${t}`).join("\n")}

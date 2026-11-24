@@ -21,14 +21,14 @@ export class BackendStore {
     const s = lstatSync(this.dir);
     if (!s.isDirectory() || s.isSymbolicLink() || (s.mode & 0o077) || (typeof process.getuid === "function" && s.uid !== process.getuid())) throw new Error("Backend-Verzeichnis ist nicht geschützt");
   }
-  private read(name: string): string | undefined {
+  read(name: string): string | undefined {
     this.prepare(); let fd: number;
     try { fd = openSync(join(this.dir, name), constants.O_RDONLY | constants.O_NOFOLLOW); }
     catch (e: any) { if (e.code === "ENOENT") return undefined; throw e; }
     try { const s = fstatSync(fd); if (!s.isFile() || (s.mode & 0o077) || (typeof process.getuid === "function" && s.uid !== process.getuid())) throw new Error("Backend-Datei ist nicht geschützt"); return readFileSync(fd, "utf8"); }
     finally { closeSync(fd); }
   }
-  private write(name: string, value: string) {
+  write(name: string, value: string) {
     this.prepare(); const temp = join(this.dir, `.${name}.${crypto.randomUUID()}`); let fd: number | undefined;
     try { fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); fchmodSync(fd, 0o600); writeFileSync(fd, value, "utf8"); closeSync(fd); fd = undefined; renameSync(temp, join(this.dir, name)); }
     finally { if (fd !== undefined) closeSync(fd); try { unlinkSync(temp); } catch {} }

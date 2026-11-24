@@ -67,47 +67,58 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 - Aufnahme-Dienst `tools/uimap-mac/bin/Jarvis Bildschirm.app` (`uimap capture-serve --port 7779`, gestartet von jarvisd über `open`): `windowshot {window}`, `stream_start {window, fps}`, `stream_stop`, `cursor {point, click?}`, `cursor_hide`, `ping`. Er braucht eine eigene Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert Kommandozeilenprogrammen keine Bilder). Bilder kommen als `{event:"frame", window, data, w, h, bounds, title, app}`; jarvisd reicht sie als `frame` mit `tab:"win:<id>"` und `cursor` an die Vorschau weiter.
 - Nicht setzen: `AXEnhancedUserInterface` – Chromium-Programme melden danach statt ihrer Fenster nur noch das Programm-Element (bis zum Neustart).
 
-## Hermes-Runs-Adapter (Vorarbeit, noch nicht im Daemon aktiviert)
+## Agenten-Backend: OpenCode und Hermes
 
-`core/src/hermes.ts` enthält einen experimentellen Client für die
-[Hermes-Runs-API](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md#runs-api-streaming-friendly-alternative).
-Er nimmt `{url, apiKey, provider?, model?}` und übergibt beim Lauf `input`,
-`session_id` und `instructions`. Hermes verwaltet den Kontext der API-Sitzung.
-SSE-Text, Werkzeugstart/-ende und Laufende werden auf Jarvis' `BrainEvent`
-abgebildet. `abort(session)` fordert `/v1/runs/{run_id}/stop` an und wartet bis zu zehn Sekunden
-auf ein terminales Ereignis; Hermes stoppt kooperativ, nicht zwangsläufig sofort. Bei
-Zeitüberschreitung wird ein Fehler gemeldet; der Lauf kann weiterarbeiten.
-Die URL ist auf HTTP mit fester Loopback-IP beschränkt, Redirects sind gesperrt;
-HTTP-Fehler enthalten keine Server-Antwort oder Schlüssel.
+OpenCode ist der Standard. Der Wechsel legt nur das Backend **neuer Chats** fest;
+vorhandene Chats bleiben ihrem Backend und im Hermes-Fall der Serveradresse
+zugeordnet, auch nach Neustart. Hermes-Chats haben `hermes_`-IDs. Verlauf,
+Öffnen, Umbenennen, Löschen, Projekte und Streaming nutzen diese Zuordnung.
+Hermes-Nachrichten bearbeiten oder erneut senden sowie Anhänge sind noch nicht
+implementiert; Anfragen dazu werden explizit abgelehnt.
 
-**Noch keine UI-Schnittstelle:** Es gibt weder Agentenumschaltung noch aktive
-Einstellungen oder Schlüsselspeicherung im Daemon. Ein noch nicht eingebundener
-`BackendStore` kann die Hermes-Serveradresse und den Server-API-Schlüssel getrennt
-unter `~/.jarvis3/backend/` mit Unix-Dateirechten 0700/0600 ablegen. Das ist keine
-Verschlüsselung oder Schlüsselbundintegration; Windows wird abgelehnt. Der Adapter ist nicht mit Chat,
-Verlauf, Projekten, Sprache oder Not-Aus verbunden und startet keinen Server.
-Vor Freischaltung müssen insbesondere folgende Fragen im Code gelöst und
-end-to-end geprüft werden:
+### UI ↔ Daemon (WebSocket `/ui`)
 
-- Hermes führt eigene Werkzeuge serverseitig aus. Jarvis' Browser-/Computer-Modus,
-  Passwortsperren und Not-Aus greifen dort nicht automatisch. Ein gemeinsamer
-  Werkzeug- und Sicherheitsvertrag einschließlich MCP-Anbindung ist nötig.
-- Verlauf, Sitzungszuordnung, Umbenennen, Löschen und Bearbeiten sind derzeit
-  direkt an OpenCode gebunden. Hermes-Sitzungen müssen getrennt verwaltet und
-  auch nach Neustart korrekt wiederhergestellt werden.
-- Schlüssel müssen getrennt von normalen Einstellungen und UI-State geschützt
-  gespeichert werden. Anbieter, Modell und Adresse benötigen validierte,
-  dokumentierte Einstellungen und einen Zustand für die UI.
-- Stopp während Verbindungsabbruch, Wiederverbindung/Statusabfrage, Freigaben,
-  Zeitlimits und unbekannte Laufzustände sowie Bildanhänge sind noch offen.
-  Der jetzige Adapter darf deshalb noch nicht produktiv verwendet werden.
+- `{type:"backend_get"}` → `{type:"backend", active, backends}`.
+- `{type:"backend_set", backend:"opencode"|"hermes"}` speichert die Auswahl.
+- `{type:"backend_config", backend:"hermes", config:{serverUrl, provider, model}}`
+  speichert die Konfiguration. `serverUrl` ist die **Hermes-Gateway-Adresse**;
+  `provider` und `model` wählen einen in Hermes konfigurierten Modellanbieter und
+  dessen Modell. `default` bzw. `hermes-agent` verwenden die Hermes-Vorgabe.
+  OpenCode verwaltet seine Anbieter selbst. Anbieter-URLs und -Schlüssel sind
+  **nicht** die Hermes-Serveradresse und der Hermes-Server-Schlüssel.
+- `{type:"backend_secret", backend:"hermes", apiKey:string|null}` setzt oder
+  entfernt den Schlüssel des Hermes-Servers. Antworten enthalten nur `keySet`.
+- `{type:"backend_test", backend}` prüft den gespeicherten Zugang; Antwort
+  `{type:"backend_test", backend, ok, error?, latencyMs?}`. Speichern/Entfernen
+  antwortet mit `{type:"backend_saved", backend, ok, error?}`.
+- `backend.config` enthält für Hermes `serverUrl`, `provider`, `model`; Änderungen
+  werden während eines aktiven Hermes-Laufs abgelehnt. UI-PR #64 verwendet noch
+  `baseUrl` für die Anbieteradresse und muss vor gemeinsamer Verwendung angepasst
+  werden. Das Backend behandelt `baseUrl` nicht als Serveradresse.
 
-### Abgleich mit UI-PR #64
+Die URL muss eine feste HTTP-Loopback-IP ohne Zugangsdaten sein; Redirects werden
+abgelehnt. Der Server-Schlüssel liegt getrennt in `~/.jarvis3/backend/` (Verzeichnis
+0700, Datei 0600, keine Verschlüsselung oder Schlüsselbundintegration); Windows
+wird derzeit nicht unterstützt. Backend-Nachrichten über fremde Browser-Origins
+werden abgewiesen. Anbieterzugänge müssen in Hermes' verwaltetem Profil eingerichtet
+werden; sie werden über diesen UI-Vertrag nicht gespeichert.
 
-Der UI-Entwurf bezeichnet `baseUrl` und `apiKey` als Adresse und Schlüssel des
-Modellanbieters. Für die native Runs-API sind dies stattdessen die Adresse und
-der API-Schlüssel des **Hermes-Servers**; Anbieterzugänge verwaltet Hermes selbst.
-Beides darf nicht verwechselt oder stillschweigend als funktionsfähig dargestellt
-werden. Die UI muss diese getrennten Konfigurationen ausdrücklich abbilden.
-Hermes' `GET /v1/toolsets` lässt standardmäßig eingebundene MCP-Server bei der
-Aufzählung aus; diese Antwort allein belegt daher keine Werkzeugisolation.
+Jarvis startet nur seinen **eigenen** Hermes-Gatewayprozess auf der gewählten freien
+Adresse; ein vorhandener Prozess auf dem Port wird nicht übernommen. `setupHome()`
+richtet `HERMES_HOME` ein und verbindet den Jarvis-MCP, das API-Profil verwendet nur
+`platform_toolsets.api_server: [jarvis]`. Der von Jarvis verwaltete Profilordner
+ist standardmäßig `~/.jarvis3/hermes/`; seine automatisch erzeugte `config.yaml`
+wird bei jedem Start erneuert, fremde Konfigurationen werden nicht überschrieben.
+
+SSE-Text und Werkzeugereignisse werden in den bestehenden Jarvis-Stream übersetzt;
+`mcp__jarvis__` wird für die Anzeige entfernt. Stopp/Not-Aus fordert
+`POST /v1/runs/{run_id}/stop` an, der MCP-Abbruch kann umgekehrt `/stop` auslösen.
+Hermes stoppt kooperativ; nach zehn Sekunden ohne terminale Bestätigung wird ein
+Fehler gemeldet und der Lauf kann weiterarbeiten. Die Hermes-Werkzeuge und deren
+Sperren beschreibt `docs/hermes-tools.md`.
+
+Offen: Ein vollständiger modellgesteuerter Lauf und die Sicherheitsgrenzen mit
+realem Gateway sind noch nicht end-to-end geprüft. Netzunterbrechungen und dabei
+unbekannte Laufzustände, Freigabedialoge, Wiederverbindung, Bilder und Windows
+benötigen weitere Arbeit. Die globale Modellliste und Live-Modellauswahl zeigen
+noch OpenCode-Modelle; Hermes verwendet seine eigene Backend-Konfiguration.

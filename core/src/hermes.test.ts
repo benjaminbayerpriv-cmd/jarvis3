@@ -75,3 +75,11 @@ test("ausbleibende Stoppbestätigung wird gemeldet, Lauf bleibt beobachtet", asy
   streamController.enqueue(new TextEncoder().encode('data: {"event":"run.cancelled"}\n\n'));
   await running; expect(events).toEqual([{ kind: "done", aborted: true }]);
 });
+test("Hermes-MCP-Präfix erscheint in Werkzeugereignissen als Jarvis-Name", async () => {
+  const url = serve(req => req.method === "POST" ? Response.json({run_id:"r"}) : sse([
+    {event:"tool.started",tool:"mcp__jarvis__browser_scan",tool_call_id:"t"},
+    {event:"tool.completed",tool:"mcp__jarvis__browser_scan",tool_call_id:"t"}, {event:"run.completed",output:"fertig"}]));
+  const events: BrainEvent[] = []; await new Hermes({url,apiKey:""}).prompt("s","x","",e=>events.push(e));
+  expect(events[0]).toEqual({kind:"tool",id:"t",name:"browser_scan",status:"running"});
+  expect(events[1]).toEqual({kind:"tool",id:"t",name:"browser_scan",status:"completed"});
+});
