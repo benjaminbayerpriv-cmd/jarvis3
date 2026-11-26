@@ -1,6 +1,7 @@
 import { BackendStore, type BackendConfig } from "./backend-config";
 import { Hermes } from "./hermes";
-export type BackendId = "opencode" | "hermes";
+export type BackendId = "opencode" | "hermes" | "claude" | "codex";
+export const BACKEND_IDS: readonly BackendId[] = ["opencode", "hermes", "claude", "codex"];
 type Row = { id: string; title: string; updated: number; serverUrl: string };
 export class BackendRuntime {
   readonly store: BackendStore;
@@ -16,7 +17,8 @@ export class BackendRuntime {
     if (!Array.isArray(rows) || rows.some(r => !r || typeof r.id !== "string" || !r.id.startsWith("hermes_") || typeof r.serverUrl !== "string" || typeof r.title !== "string" || typeof r.updated !== "number")) throw new Error("Ungültige Hermes-Sitzungszuordnung");
     this.rows = rows;
     const active = this.store.read("active.json");
-    if (active && JSON.parse(active) === "hermes") this.active = "hermes";
+    const saved = active ? JSON.parse(active) : undefined;
+    if (BACKEND_IDS.includes(saved)) this.active = saved;
   }
   setActive(id: BackendId) { this.store.write("active.json", JSON.stringify(id)); this.active = id; }
   configure(value: unknown) { this.config = this.store.saveConfig(value); }

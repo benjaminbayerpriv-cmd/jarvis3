@@ -43,6 +43,8 @@ export class BackendStore {
     try { fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); fchmodSync(fd, 0o600); writeFileSync(fd, value, "utf8"); closeSync(fd); fd = undefined; renameSync(temp, join(this.dir, name)); }
     finally { if (fd !== undefined) closeSync(fd); try { unlinkSync(temp); } catch {} }
   }
+  /** Löscht eine Datei der Ablage (fehlende Datei ist kein Fehler). */
+  remove(name: string) { this.prepare(); try { unlinkSync(join(this.dir, name)); } catch (e: any) { if (e.code !== "ENOENT") throw e; } }
   loadConfig(): BackendConfig { const raw = this.read("hermes.json"); return raw === undefined ? { ...defaultHermesConfig } : parseBackendConfig(JSON.parse(raw)); }
   saveConfig(input: unknown): BackendConfig { const config = parseBackendConfig(input); this.write("hermes.json", JSON.stringify(config)); return config; }
   getKey(kind: "server" | "provider" = "server"): string | null { return this.read(kind === "server" ? "hermes.key" : "hermes-provider.key") ?? null; }

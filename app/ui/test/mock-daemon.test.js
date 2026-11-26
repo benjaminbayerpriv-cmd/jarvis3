@@ -65,3 +65,28 @@ test("Wechsel zu einem nicht eingerichteten Hermes wird abgelehnt, legacy ignori
     expect(old.some(m => String(m.type).startsWith("backend"))).toBe(false);        // wie ein Daemon ohne die Schnittstelle
   } finally { mock.stop(); legacy.stop(); }
 });
+
+test("Claude Code und Codex: Einstellungen speichern, ungültig ablehnen, Schlüssel ablehnen, Anmeldung prüfen", async () => {
+  const mock = startMock();
+  try {
+    const got = await talk(mock.port, [
+      msgGet(),
+      msgConfig("claude", { model: "sonnet", files: "read" }),
+      msgConfig("claude", { model: "a b", files: "read" }),
+      msgSecret("claude", "geheim-123456789", "server"),
+      msgTest("claude"), msgTest("codex"),
+      msgSet("claude"), msgGet(),
+    ], 600);
+    const saved = got.filter(m => m.type === "backend_saved");
+    expect(saved.map(m => m.ok)).toEqual([true, false, false]);
+    expect(saved[2].error).toContain("meldet sich selbst an");
+    const state = got.filter(m => m.type === "backend").at(-1);
+    expect(state.active).toBe("claude");
+    expect(state.backends.claude).toMatchObject({ status: "ready", loginManaged: true, keySet: false, config: { provider: "claude", model: "sonnet", files: "read" } });
+    expect(state.backends.codex).toMatchObject({ status: "error", error: expect.stringContaining("codex login") });
+    const tests = got.filter(m => m.type === "backend_test");
+    expect(tests.find(m => m.backend === "claude").ok).toBe(true);
+    expect(tests.find(m => m.backend === "codex").ok).toBe(false);
+    expect(JSON.stringify(got)).not.toContain("geheim-123");
+  } finally { mock.stop(); }
+});

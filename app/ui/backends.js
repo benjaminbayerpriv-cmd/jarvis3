@@ -3,15 +3,21 @@
 // Vertrag: docs/protocol.md im Zweig von PR #63 („Agenten-Backend: OpenCode und Hermes“), geprüft gegen core/src/backend-config.ts,
 // hermes.ts (hermesUrl, managedGateway) und die Handler in index.ts. Abgleich siehe docs/backend-ui.md.
 //
+// Vier Backends: OpenCode (Standard), Hermes, Claude Code und Codex. Claude Code und Codex sind die schon installierten Programme; sie melden sich
+// selbst an (Abo bzw. ChatGPT-Konto). Jarvis speichert, liest und sendet dafür KEINE Schlüssel oder Passwörter; `backend_secret` wird für sie
+// abgelehnt. Einstellungen je Programm: `model` (leer = Vorgabe des Programms) und `files` ("none" | "read").
+//
 //   UI → jarvisd
 //     {type:"backend_get"}                                                        Zustand anfordern
-//     {type:"backend_set", backend:"opencode"|"hermes"}                           Backend für NEUE Chats wählen
+//     {type:"backend_set", backend:"opencode"|"hermes"|"claude"|"codex"}                           Backend für NEUE Chats wählen
 //     {type:"backend_config", backend:"hermes", config:{serverUrl, provider, model, modelBaseUrl, modelSupportsVision}}   nie ein Schlüssel
 //     {type:"backend_secret", backend:"hermes", target:"server"|"provider", apiKey:string|null}   getrennte Schlüssel (null = entfernen)
-//     {type:"backend_test", backend:"hermes"}                                     gespeicherten Zugang prüfen (startet/prüft das Gateway)
+//     {type:"backend_config", backend:"claude"|"codex", config:{model, files}}    Modell und Dateizugriff des Programms
+//     {type:"backend_test", backend}                                              Hermes: Gateway prüfen; Claude Code/Codex: installiert und angemeldet?
 //   jarvisd → UI
 //     {type:"backend", active, backends:{<id>:{label?, status, error?, config, keySet, providerKeySet?, externalGatewayManaged?, providers?}}}
-//         Hermes-config: {serverUrl, provider, model, modelBaseUrl, modelSupportsVision}; OpenCode-config: {provider, model, baseUrl} nur Anzeige
+//         Hermes-config: {serverUrl, provider, model, modelBaseUrl, modelSupportsVision}; OpenCode-config: {provider, model, baseUrl} nur Anzeige;
+//         Claude Code/Codex-config: {provider, model, files}; Claude Code/Codex: loginManaged:true, error = Hinweis zur Anmeldung
 //         keySet/providerKeySet: nur Ja/Nein, Schlüssel verlassen den Daemon nie
 //     {type:"backend_saved", backend, ok, error?}
 //     {type:"backend_test", backend, ok, error?, latencyMs?}
@@ -34,16 +40,29 @@ export const MODEL_URL_EXAMPLE = "http://192.168.1.20:1234/v1";
 /** Je Backend: was die Oberfläche einstellen darf. OpenCode verwaltet Anbieter, Modell und Schlüssel selbst (nur Anzeige). */
 export const BACKENDS = {
   opencode: {
-    id: "opencode", label: "OpenCode", configurable: false,
+    id: "opencode", label: "OpenCode", kind: "opencode", configurable: false,
     tagline: "Standard. Verwaltet seine Modellanbieter und Zugänge selbst; hier gibt es nichts einzustellen.",
     providers: [],
   },
   hermes: {
-    id: "hermes", label: "Hermes", configurable: true,
+    id: "hermes", label: "Hermes", kind: "hermes", configurable: true,
     tagline: "Hermes Agent. Jarvis verbindet sich mit dem Hermes-Gateway auf diesem Rechner.",
     providers: [{ id: DEFAULT_PROVIDER, label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }],
   },
+  claude: {
+    id: "claude", label: "Claude Code", kind: "cli", configurable: true, program: "claude",
+    tagline: "Das installierte Claude Code. Meldet sich selbst an (Claude-Abo); Jarvis speichert dafür nichts.", providers: [],
+    loginHint: "Nicht angemeldet? Im Terminal `claude` starten und anmelden.",
+  },
+  codex: {
+    id: "codex", label: "Codex", kind: "cli", configurable: true, program: "codex",
+    tagline: "Das installierte Codex. Meldet sich selbst an (ChatGPT-Konto); Jarvis speichert dafür nichts.", providers: [],
+    loginHint: "Nicht angemeldet? Im Terminal `codex login` ausführen.",
+  },
 };
+export const isCliBackend = id => BACKENDS[id]?.kind === "cli";
+export const CLI_FILES = [{ id: "none", label: "Keine Dateien" }, { id: "read", label: "Dateien lesen" }];
+export const CLI_MODEL_RE = /^[\w][\w.:/\-\[\]]*$/;
 export const BACKEND_IDS = Object.keys(BACKENDS);
 export const isBackend = id => Object.hasOwn(BACKENDS, id);
 
@@ -59,16 +78,16 @@ export function normalizeBackendState(message) {
   for (const id of BACKEND_IDS) {
     const raw = m.backends && typeof m.backends === "object" ? m.backends[id] : undefined;
     const cfg = raw?.config && typeof raw.config === "object" ? raw.config : {};
-    const hermes = id === "hermes";
+    const hermes = id === "hermes", cli = isCliBackend(id);
     backends[id] = {
       id, label: text(raw?.label, 40) || BACKENDS[id].label, configurable: BACKENDS[id].configurable,
       status: STATUS.has(raw?.status) ? raw.status : raw ? "ready" : "unsupported",
       error: text(raw?.error, 400),
       // `baseUrl` (OpenCode) ist KEINE Hermes-Serveradresse und wird nie als solche gelesen.
-      config: hermes ? { serverUrl: text(cfg.serverUrl, 300), provider: text(cfg.provider, 60) || DEFAULT_PROVIDER, model: text(cfg.model, 200) || DEFAULT_MODEL,
+      config: cli ? { provider: id, model: text(cfg.model, 100), files: cfg.files === "read" ? "read" : "none" } : hermes ? { serverUrl: text(cfg.serverUrl, 300), provider: text(cfg.provider, 60) || DEFAULT_PROVIDER, model: text(cfg.model, 200) || DEFAULT_MODEL,
           modelBaseUrl: text(cfg.modelBaseUrl, 300), modelSupportsVision: cfg.modelSupportsVision === true }
         : { provider: text(cfg.provider, 60), model: text(cfg.model, 200), serverUrl: "", modelBaseUrl: "", modelSupportsVision: false },
-      keySet: hermes && raw?.keySet === true,                         // nur ein Ja/Nein, nie ein Schlüssel oder Teil davon
+      keySet: hermes && raw?.keySet === true, loginManaged: cli,                        // nur ein Ja/Nein, nie ein Schlüssel oder Teil davon
       providerKeySet: hermes && raw?.providerKeySet === true,
       externalGatewayManaged: hermes && raw?.externalGatewayManaged === false ? false : true,
       providers: Array.isArray(raw?.providers) && raw.providers.length
@@ -141,6 +160,16 @@ export function validateConfig(draft) {
   return { errors, hints, managed, valid: Object.keys(errors).length === 0 };
 }
 
+/** Prüft Claude Code/Codex: Modellname (leer = Vorgabe des Programms) und Dateizugriff. */
+export function validateCliConfig(draft) {
+  const errors = {}, model = text(draft.model, 120);
+  if (model && (model.length > 100 || !CLI_MODEL_RE.test(model))) errors.model = "Modellname ungültig (Buchstaben, Ziffern und . : / - _ [ ]); leer lassen für die Vorgabe.";
+  if (draft.files !== "none" && draft.files !== "read") errors.files = "Dateizugriff wählen.";
+  return { errors, valid: Object.keys(errors).length === 0 };
+}
+export const cliConfigOf = draft => ({ model: text(draft.model, 100), files: draft.files === "read" ? "read" : "none" });
+export const sameCliConfig = (a, b) => text(a?.model) === text(b?.model) && (a?.files === "read") === (b?.files === "read");
+
 export const configOf = draft => ({ serverUrl: trimUrl(draft.serverUrl), provider: text(draft.provider, 60), model: text(draft.model, 200),
   modelBaseUrl: trimUrl(draft.modelBaseUrl), modelSupportsVision: draft.modelSupportsVision === true });
 export const sameConfig = (a, b) => ["serverUrl", "provider", "model", "modelBaseUrl"].every(k => trimUrl(a?.[k]) === trimUrl(b?.[k])) && (a?.modelSupportsVision === true) === (b?.modelSupportsVision === true);
@@ -148,7 +177,7 @@ export const sameConfig = (a, b) => ["serverUrl", "provider", "model", "modelBas
 // ----- Nachrichten an jarvisd -----
 export const msgGet = () => ({ type: "backend_get" });
 export const msgSet = backend => ({ type: "backend_set", backend });
-export const msgConfig = (backend, draft) => ({ type: "backend_config", backend, config: configOf(draft) });
+export const msgConfig = (backend, draft) => ({ type: "backend_config", backend, config: isCliBackend(backend) ? cliConfigOf(draft) : configOf(draft) });
 /** target: "server" (Hermes-Gateway) oder "provider" (Modellserver/Anbieter). */
 export const msgSecret = (backend, apiKey, target = "server") => ({ type: "backend_secret", backend, target, apiKey: apiKey === null ? null : String(apiKey) });
 export const msgTest = backend => ({ type: "backend_test", backend });

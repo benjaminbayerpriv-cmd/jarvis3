@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { BACKENDS, KEY_STORAGE_NOTE, PROVIDER_KEY_NOTE, classifyHost, isManagedGateway, keyStatus, parseNetworkUrl, msgConfig, msgSecret, normalizeBackendState, redact, sameConfig, validateConfig } from "./backends.js";
+import { BACKENDS, BACKEND_IDS, CLI_FILES, KEY_STORAGE_NOTE, PROVIDER_KEY_NOTE, classifyHost, isManagedGateway, keyStatus, parseNetworkUrl, cliConfigOf, isCliBackend, msgConfig, msgSecret, normalizeBackendState, redact, sameCliConfig, sameConfig, validateCliConfig, validateConfig } from "./backends.js";
 
 test("Ohne Angaben ist OpenCode aktiv und Hermes als nicht unterstützt markiert", () => {
   const s = normalizeBackendState(undefined);
@@ -108,4 +108,42 @@ test("redact entfernt Schlüssel aus Objekten und Texten", () => {
   expect(json).not.toContain("abc.def.ghi");
   expect(json).not.toContain("Basic xyz");
   expect(out.type).toBe("backend_secret");
+});
+
+test("Vier Backends: OpenCode, Hermes, Claude Code, Codex; die beiden Programme sind keine Schlüssel-Backends", () => {
+  expect(Object.keys(BACKENDS)).toEqual(["opencode", "hermes", "claude", "codex"]);
+  expect(isCliBackend("claude")).toBe(true); expect(isCliBackend("codex")).toBe(true);
+  expect(isCliBackend("hermes")).toBe(false); expect(isCliBackend("opencode")).toBe(false);
+  expect(BACKENDS.claude.loginHint).toContain("claude"); expect(BACKENDS.codex.loginHint).toContain("codex login");
+  for (const id of ["claude", "codex"]) expect(BACKENDS[id].tagline).toContain("Jarvis speichert dafür nichts");
+});
+
+test("Zustand von Claude Code und Codex: Anmeldung über das Programm, Fehlertext, kein Schlüsselstatus", () => {
+  const s = normalizeBackendState({ active: "claude", backends: {
+    claude: { label: "Claude Code", status: "ready", loginManaged: true, keySet: true, config: { provider: "claude", model: "sonnet", files: "read", serverUrl: "http://evil" } },
+    codex: { label: "Codex", status: "error", error: "Nicht angemeldet: im Terminal `codex login` ausführen.", config: { provider: "codex", model: "", files: "bogus" } } } });
+  expect(s.active).toBe("claude");
+  expect(s.backends.claude.config).toEqual({ provider: "claude", model: "sonnet", files: "read" });
+  expect(s.backends.claude.keySet).toBe(false);                       // diese Backends haben hier nie einen Schlüssel
+  expect(s.backends.claude.loginManaged).toBe(true);
+  expect(s.backends.codex.config.files).toBe("none");                 // unbekannte Werte fallen auf den sicheren Standard
+  expect(s.backends.codex.status).toBe("error"); expect(s.backends.codex.error).toContain("codex login");
+  expect(normalizeBackendState({ active: "codex" }).active).toBe("codex");
+  expect(normalizeBackendState({}).backends.claude.status).toBe("unsupported");   // ältere Daemons kennen sie nicht
+  expect(normalizeBackendState({}).backends.hermes.loginManaged).toBe(false);
+});
+
+test("Prüfung und Nachricht für Claude Code/Codex: Modellname, Dateizugriff, nur model und files", () => {
+  expect(validateCliConfig({ model: "", files: "none" }).valid).toBe(true);
+  expect(validateCliConfig({ model: "claude-sonnet-5-5", files: "read" }).valid).toBe(true);
+  expect(validateCliConfig({ model: "gpt-5.5-codex", files: "none" }).valid).toBe(true);
+  for (const model of ["a b", "--evil", "x".repeat(101), "modell;rm", "$(x)"]) expect(validateCliConfig({ model, files: "none" }).errors.model).toBeTruthy();
+  expect(validateCliConfig({ model: "", files: "write" }).errors.files).toBeTruthy();
+  expect(CLI_FILES.map(o => o.id)).toEqual(["none", "read"]);
+  const m = msgConfig("claude", { model: " sonnet ", files: "read", serverUrl: "http://x", apiKey: "sk-geheim-1234567890abcd", provider: "claude" });
+  expect(m).toEqual({ type: "backend_config", backend: "claude", config: { model: "sonnet", files: "read" } });
+  expect(JSON.stringify(m)).not.toMatch(/geheim|serverUrl/);
+  expect(cliConfigOf({ model: "m", files: "x" })).toEqual({ model: "m", files: "none" });
+  expect(sameCliConfig({ model: "a", files: "read" }, { model: "a", files: "read" })).toBe(true);
+  expect(sameCliConfig({ model: "a", files: "read" }, { model: "a", files: "none" })).toBe(false);
 });

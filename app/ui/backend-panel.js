@@ -1,8 +1,9 @@
-// Einstellungen → Backend: OpenCode oder Hermes wählen; für Hermes Serveradresse, Server-Schlüssel, Modellanbieter und Modell.
+// Einstellungen → Backend: OpenCode, Hermes, Claude Code oder Codex wählen; für Hermes Serveradresse, Server-Schlüssel, Modellanbieter und Modell,
+// für Claude Code und Codex Modell und Dateizugriff (die Programme melden sich selbst an, Jarvis speichert dafür nichts).
 // OpenCode verwaltet seine Anbieter selbst und zeigt hier nur seinen Zustand. Reine Oberfläche; Nachrichtenformen in backends.js.
 // Sicherheit: Der Schlüssel liegt nur in einem Passwortfeld, geht nur in `backend_secret` an jarvisd und wird danach aus dem Feld
 // gelöscht (auch beim Wechsel des Bereichs und beim Schließen). Er steht in keinem Attribut, keinem Speicher und keinem Protokoll.
-import { BACKEND_IDS, BACKENDS, DEFAULT_SERVER_URL, KEY_STORAGE_NOTE, MODEL_URL_EXAMPLE, PROVIDER_KEY_NOTE, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
+import { BACKEND_IDS, BACKENDS, CLI_FILES, DEFAULT_SERVER_URL, cliConfigOf, isCliBackend, sameCliConfig, validateCliConfig, KEY_STORAGE_NOTE, MODEL_URL_EXAMPLE, PROVIDER_KEY_NOTE, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -59,6 +60,31 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       const card = el("section", { className: "be-card" }, head, el("div", { className: "be-body" }, f.info));
       card.dataset.backend = id; card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
       return { id, card, f, draft: { ...empty }, baseline: { ...empty }, removeArmed: 0, testing: false, saving: false };
+    }
+    if (meta.kind === "cli") {
+      f.model = el("input", { id: `be-${id}-model`, type: "text", name: `be-model-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", placeholder: "Vorgabe des Programms" });
+      f.files = el("select", { id: `be-${id}-files`, name: `be-files-${id}` }, ...CLI_FILES.map(o => el("option", { value: o.id, textContent: o.label })));
+      f.modelHint = el("span", { className: "be-hint", id: `be-${id}-model-hint` });
+      f.save = el("button", { type: "button", className: "chip-btn be-primary", textContent: "Speichern" });
+      f.test = el("button", { type: "button", className: "chip-btn", textContent: "Anmeldung prüfen" });
+      f.reset = el("button", { type: "button", className: "chip-btn", textContent: "Zurücksetzen" });
+      f.result = el("p", { className: "be-result", role: "status", id: `be-${id}-result` });
+      for (const k of ["model", "files"]) f[k].setAttribute("aria-describedby", `be-${id}-${k}-desc`);
+      const filesNote = id === "claude"
+        ? "Mit „Dateien lesen“ darf Claude Code die Lesewerkzeuge Read, Glob und Grep benutzen und Bilder ansehen. Schreiben und Befehle ausführen gibt es nicht."
+        : "Mit „Dateien lesen“ darf Codex in einer Nur-Lese-Sandbox Befehle ausführen (kein Schreiben). Bilder kann Codex immer ansehen.";
+      const body = el("div", { className: "be-body" },
+        row(id, "login", "Anmeldung", `${meta.loginHint} Jarvis speichert, liest und sendet dafür keine Schlüssel oder Passwörter. „Anmeldung prüfen“ fragt nur den Status ab.`, el("span", { className: "be-keystate", id: `be-${id}-login`, textContent: "Über das Programm" })),
+        row(id, "model", "Modell (optional)", "Modellname für dieses Programm, z. B. sonnet. Leer = Vorgabe des Programms.", f.model, f.modelHint),
+        row(id, "files", "Dateizugriff", `Die Werkzeuge von Jarvis (Browser, Computer-Steuerung) gelten immer, mit denselben Sperren und demselben Not-Aus. Eingebaute Werkzeuge des Programms sind sonst abgeschaltet. ${filesNote}`, f.files));
+      const card = el("section", { className: "be-card" }, head, body, el("div", { className: "be-actions" }, f.save, f.test, f.reset, f.result));
+      card.dataset.backend = id; card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
+      const c = { id, card, f, draft: { model: "", files: "none" }, baseline: { model: "", files: "none" }, removeArmed: { server: 0, provider: 0 }, testing: false, saving: false };
+      f.model.oninput = () => { c.draft.model = f.model.value; update(c); };
+      f.files.onchange = () => { c.draft.files = f.files.value; update(c); };
+      f.save.onclick = () => save(c); f.test.onclick = () => test(c);
+      f.reset.onclick = () => { c.draft = { ...c.baseline }; f.result.textContent = ""; fill(c); update(c); };
+      return c;
     }
     const secretInput = (name, placeholder) => {
       const i = el("input", { id: `be-${id}-${name}`, type: "password", name: `be-secret-${id}-${name}-${nameSuffix}`, autocomplete: "new-password", spellcheck: false, autocapitalize: "off", placeholder });
@@ -120,6 +146,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     c.f.provider.value = keep;
   }
   function fill(c) {
+    if (isCliBackend(c.id)) { c.f.model.value = c.draft.model; c.f.files.value = c.draft.files; return; }
     if (!c.f.provider) return;
     providerOptions(c);
     c.f.model.value = c.draft.model;
@@ -139,6 +166,22 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       c.card.toggleAttribute("data-disabled", !supported);
     };
     if (!b.configurable) return done();
+    if (isCliBackend(c.id)) {
+      const v = validateCliConfig(c.draft), dirty = !sameCliConfig(c.draft, c.baseline);
+      const locked = isBusy() && model.active === c.id, enabled = supported && !c.saving && !locked;
+      f.model.disabled = f.files.disabled = !enabled;
+      f.save.disabled = !enabled || !dirty || !v.valid;
+      f.test.disabled = !supported || dirty || c.testing || b.status === "unsupported";
+      f.test.title = locked ? "Während einer laufenden Antwort nicht änderbar." : dirty ? "Erst speichern, dann prüfen." : "";
+      f.reset.disabled = !enabled || !dirty;
+      const show = dirty || c.touched;
+      f.model.setAttribute("aria-invalid", String(!!(show && v.errors.model)));
+      f.modelHint.textContent = show && v.errors.model ? v.errors.model : locked ? "Gesperrt, solange eine Antwort läuft." : "";
+      f.modelHint.classList.toggle("bad", !!(show && v.errors.model));
+      done();
+      if (b.error && b.status === "error" && !f.result.textContent) f.result.textContent = b.error;
+      return;
+    }
     const keyTyped = f.apiKey.value.length > 0, pKeyTyped = f.providerKey.value.length > 0;
     const v = validateConfig(c.draft);
     const dirty = !sameConfig(c.draft, c.baseline) || keyTyped || pKeyTyped;
@@ -167,6 +210,12 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
 
   // ----- Aktionen -----
   function save(c) {
+    if (isCliBackend(c.id)) {
+      const v = validateCliConfig(c.draft); c.touched = true;
+      if (!v.valid) { update(c); return; }
+      c.saving = true; c.f.result.textContent = "Speichert …"; c.f.result.className = "be-result";
+      send(msgConfig(c.id, c.draft)); update(c); return;
+    }
     const v = validateConfig(c.draft);
     c.touched = true;
     if (!v.valid) { update(c); return; }
@@ -180,7 +229,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     update(c);
   }
   function test(c) {
-    c.testing = true; c.f.result.textContent = "Prüft die Verbindung …"; c.f.result.className = "be-result";
+    c.testing = true; c.f.result.textContent = isCliBackend(c.id) ? "Prüft Installation und Anmeldung …" : "Prüft die Verbindung …"; c.f.result.className = "be-result";
     send(msgTest(c.id)); update(c);
   }
   function removeKey(c, target) {
@@ -218,7 +267,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       return;
     }
     const act = model.backends[model.active];
-    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Serveradresse und Server-Schlüssel.`; return; }
+    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = isCliBackend(act.id) ? `${act.label}: ${act.error || "nicht bereit."}` : `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Serveradresse und Server-Schlüssel.`; return; }
     if (isBusy()) { banner.hidden = false; banner.className = "be-banner"; banner.textContent = "Es läuft gerade eine Antwort. Ein Wechsel gilt für neue Nachrichten; laufende Chats bleiben bei ihrem Backend."; return; }
     banner.hidden = true;
   }
@@ -231,6 +280,12 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     for (const id of BACKEND_IDS) {
       const c = cards.get(id), cfg = next.backends[id].config;
       if (!next.backends[id].configurable) continue;
+      if (isCliBackend(id)) {
+        const clean = sameCliConfig(c.draft, c.baseline);       // vor dem Überschreiben: hat der Nutzer etwas geändert?
+        c.baseline = { model: cfg.model, files: cfg.files };
+        if (clean || initial) { c.draft = { ...c.baseline }; fill(c); }
+        continue;
+      }
       const dirty = !sameConfig(c.draft, c.baseline);
       c.baseline = { ...cfg };
       if (!dirty || initial) { c.draft = { ...cfg }; fill(c); } else providerOptions(c);
@@ -255,6 +310,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       const c = cards.get(m.backend); if (!c?.f.test) return;
       c.testing = false;
       c.f.result.className = "be-result " + (m.ok ? "ok" : "bad");
+      if (isCliBackend(m.backend) && m.ok) { c.f.result.textContent = "Installiert und angemeldet."; update(c); return; }
       c.f.result.textContent = m.ok ? `Verbindung steht${Number.isFinite(m.latencyMs) ? ` (${Math.round(m.latencyMs)} ms)` : ""}.` : `Keine Verbindung${m.error ? `: ${String(m.error).slice(0, 300)}` : "."}`;
       update(c);
     }

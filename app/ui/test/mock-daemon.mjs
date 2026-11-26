@@ -14,11 +14,13 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     active: "opencode",
     backends: {
       opencode: { status: "ready", config: { provider: "opencode", model: "opencode/big-pickle", baseUrl: "" }, secret: null },
+      claude: { status: "ready", config: { provider: "claude", model: "", files: "none" }, secret: null },
+      codex: { status: "error", error: "Nicht angemeldet: im Terminal `codex login` ausführen.", config: { provider: "codex", model: "", files: "none" }, secret: null },
       hermes: { status: "ready", config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642", modelBaseUrl: "", modelSupportsVision: false }, secret: null, providerSecret: null },
     },
   };
   const view = () => ({ type: "backend", active: store.active, backends: Object.fromEntries(Object.entries(store.backends).map(([id, b]) =>
-    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
+    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(b.error ? { error: b.error } : {}), ...(id === "claude" || id === "codex" ? { loginManaged: true, providers: [] } : {}), ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
       providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] } : {}) }])) });
   const sockets = new Set();
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
@@ -56,6 +58,12 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
             store.active = m.backend; broadcast(view()); break;
           case "backend_config":
             if (!b || !m.config) return;
+            if (m.backend === "claude" || m.backend === "codex") {
+              const c = m.config ?? {};
+              if (typeof c.model !== "string" || (c.model && !/^[\w][\w.:/\-\[\]]*$/.test(c.model)) || (c.files !== "none" && c.files !== "read")) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Modellname ungültig" })); break; }
+              b.config = { provider: m.backend, model: c.model, files: c.files };
+              ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
+            }
             if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend verwaltet seine Anbieter selbst" })); break; }
             const net = v => { try { const u = new URL(String(v)); return /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } };
             if (!net(m.config.serverUrl)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Hermes-Gateway-Adresse ungültig" })); break; }
@@ -67,6 +75,7 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_secret":
             if (!b) return;
+            if (m.backend === "claude" || m.backend === "codex") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: `${m.backend === "claude" ? "Claude Code" : "Codex"} meldet sich selbst an; Jarvis speichert dafür keine Schlüssel oder Passwörter` })); break; }
             if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend hat hier keinen Server-Schlüssel" })); break; }
             if (m.target !== undefined && !["server", "provider"].includes(m.target)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Ungültiger Schlüsseltyp" })); break; }
             if (m.target === "provider" && !isManagedGateway(b.config.serverUrl)) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Hermes: Der Modellanbieter-Schlüssel muss am externen Gateway eingerichtet werden." })); break; }
@@ -74,7 +83,7 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
             ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
           case "backend_test": {
             if (!b) return;
-            const ok = String(b.config.serverUrl ?? "").includes(`127.0.0.1:${server.port}`);
+            const ok = m.backend === "claude" || m.backend === "codex" ? b.status === "ready" : String(b.config.serverUrl ?? "").includes(`127.0.0.1:${server.port}`);
             setTimeout(() => ws.send(JSON.stringify({ type: "backend_test", backend: m.backend, ok, ...(ok ? { latencyMs: 42 } : { error: "Verbindung abgelehnt" }) })), 150);
             break;
           }

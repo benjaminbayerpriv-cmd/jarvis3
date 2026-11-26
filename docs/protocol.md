@@ -67,7 +67,7 @@ Klicks/Eingaben müssen auch in Hintergrund-Tabs funktionieren (Content-Script/`
 - Aufnahme-Dienst `tools/uimap-mac/bin/Jarvis Bildschirm.app` (`uimap capture-serve --port 7779`, gestartet von jarvisd über `open`): `windowshot {window}`, `stream_start {window, fps}`, `stream_stop`, `cursor {point, click?}`, `cursor_hide`, `ping`. Er braucht eine eigene Bildschirmaufnahme-Freigabe (ScreenCaptureKit liefert Kommandozeilenprogrammen keine Bilder). Bilder kommen als `{event:"frame", window, data, w, h, bounds, title, app}`; jarvisd reicht sie als `frame` mit `tab:"win:<id>"` und `cursor` an die Vorschau weiter.
 - Nicht setzen: `AXEnhancedUserInterface` – Chromium-Programme melden danach statt ihrer Fenster nur noch das Programm-Element (bis zum Neustart).
 
-## Agenten-Backend: OpenCode und Hermes
+## Agenten-Backend: OpenCode, Hermes, Claude Code und Codex
 
 OpenCode ist der Standard. Der Wechsel legt nur das Backend **neuer Chats** fest;
 vorhandene Chats bleiben ihrem Backend und im Hermes-Fall der Serveradresse
@@ -138,3 +138,20 @@ noch nicht end-to-end geprüft. Netzunterbrechungen und dabei
 unbekannte Laufzustände, Freigabedialoge, Wiederverbindung und Windows
 benötigen weitere Arbeit. Die Modellliste und Live-Modellauswahl zeigen beim Hermes-Chat das konfigurierte
 Hermes-Modell; eine automatische Anbieter-/Modellinventur ist noch nicht implementiert.
+
+### Claude Code und Codex
+
+Beide sind die **schon installierten Programme** (`claude`, `codex`); Jarvis lädt nichts herunter. Sie melden sich selbst an (Claude-Abo bzw.
+ChatGPT-Konto): Jarvis speichert, liest und sendet dafür **keine Schlüssel oder Passwörter** und öffnet keine Anmeldedateien; es fragt nur
+`claude auth status` bzw. `codex login status` ab. Details und Grenzen: `docs/cli-backends.md`.
+
+- `backend_set` akzeptiert zusätzlich `"claude"` und `"codex"`. Chats haben `claude_<uuid>`- bzw. `codex_<uuid>`-IDs und bleiben ihrem Backend zugeordnet.
+- `{type:"backend_config", backend:"claude"|"codex", config:{model, files}}`: `model` leer = Vorgabe des Programms; `files` `"none"` (Standard) oder
+  `"read"` (Lesewerkzeuge bei Claude Code; Nur-Lese-Sandbox mit Befehlen bei Codex). Änderungen werden abgelehnt, solange ein solcher Chat läuft.
+- `{type:"backend_secret", backend:"claude"|"codex", …}` wird **abgelehnt** („meldet sich selbst an“).
+- `{type:"backend_test", backend:"claude"|"codex"}` prüft Installation und Anmeldung (`backend_test`-Antwort mit `ok`/`error`, ohne Modellaufruf).
+- `backend.backends.claude|codex`: `{label, status, error?, loginManaged:true, keySet:false, config:{provider, model, files}, providers:[]}`;
+  `status` `ready` (installiert und angemeldet), `error` (nicht angemeldet; `error` nennt den Befehl), `unsupported` (nicht installiert),
+  `connecting` (Status wird abgefragt). Die Statusabfrage läuft bei `backend_get` im Hintergrund; danach folgt ein neues `backend`.
+- Eigene Werkzeuge: nur die von Jarvis (MCP `jarvis`, dieselben Sperren und derselbe Not-Aus über jarvisd). Bearbeiten/erneutes Senden und
+  Zurücksetzen auf eine Nachricht sind für beide noch nicht möglich und werden abgelehnt.
