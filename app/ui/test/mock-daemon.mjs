@@ -23,8 +23,8 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(b.error ? { error: b.error } : {}), ...(id === "claude" || id === "codex" ? { loginManaged: true, installed: { skills: id === "claude" ? 124 : 60, plugins: id === "claude" ? 1 : 3 }, providers: [], models: id === "claude" ? [{ id: "sonnet", label: "Sonnet (aktuell)" }, { id: "claude-opus-5-5", label: "Opus 5.5" }] : [{ id: "gpt-6.2-sol", label: "GPT-6.2-Sol" }], efforts: id === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"] } : {}), ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
       providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] } : {}) }])) });
   const sockets = new Set();
-  let appName = "Jarvis";
-  const stateMsg = () => ({ type: "state", appName, model: "opencode/big-pickle", voiceModel: "opencode/big-pickle", mode: "browser", busy: false, busySessions: [], models: [], speech: false, voice: "off", backend: "opencode" });
+  let appName = "Jarvis", logo = 0;
+  const stateMsg = () => ({ type: "state", appName, logo, model: "opencode/big-pickle", voiceModel: "opencode/big-pickle", mode: "browser", busy: false, busySessions: [], models: [], speech: false, voice: "off", backend: "opencode" });
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
 
   const server = Bun.serve({
@@ -32,6 +32,7 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     async fetch(req, srv) {
       const u = new URL(req.url);
       if (u.pathname === "/ui") return srv.upgrade(req, { data: {} }) ? undefined : new Response("upgrade", { status: 400 });
+      if (u.pathname === "/logo") return logo > 0 ? new Response(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64"), { headers: { "content-type": "image/png" } }) : new Response("kein Logo", { status: 404 });
       if (u.pathname === "/health") return Response.json({ ok: true, opencode: true, browser: false });
       if (u.pathname === "/" || u.pathname === "/app") return Response.redirect(new URL("/app/", u), 302);
       if (u.pathname.startsWith("/app/")) {
@@ -49,6 +50,10 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
       close(ws) { sockets.delete(ws); },
       message(ws, raw) {
         let m; try { m = JSON.parse(String(raw)); } catch { return; }
+        if ((m.type === "logo_set" || m.type === "logo_clear") && !legacy) {
+          if (m.type === "logo_set" && (typeof m.data !== "string" || !m.data.startsWith("iVBOR"))) { ws.send(JSON.stringify({ type: "logo_saved", ok: false, error: "Das Logo muss ein PNG-Bild sein" })); return; }
+          logo = m.type === "logo_set" ? Date.now() : m.none === true ? -1 : 0; ws.send(JSON.stringify({ type: "logo_saved", ok: true })); broadcast(stateMsg()); return;
+        }
         if (m.type === "settings" && !legacy) {
           const n = typeof m.settings?.appName === "string" ? m.settings.appName.replace(/[\u0000-\u001f<>"`\\]/g, "").replace(/\s+/g, " ").trim() : "";
           if (n && n.length <= 24) { appName = n; broadcast(stateMsg()); }

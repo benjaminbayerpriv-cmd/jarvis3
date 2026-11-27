@@ -146,6 +146,23 @@ echo '{"type":"turn.completed"}'
     await wait(m => m.type === "history" && !m.sessions.some((s: any) => s.id === cid));
     expect(readdirSync(join(root, ".jarvis3", "backend")).filter(f => f.includes(cid))).toEqual([]);
 
+    // Logo: hochladen, ausliefern, falsche Daten ablehnen, entfernen
+    const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+    expect((await fetch(`http://127.0.0.1:${daemonPort}/logo`)).status).toBe(404);                    // Standard: kein Logo
+    messages.length = 0; send({ type: "logo_set", data: Buffer.from("GIF89a" + "x".repeat(60)).toString("base64") });
+    const badLogo = await wait(m => m.type === "logo_saved"); expect(badLogo.ok).toBe(false); expect(badLogo.error).toContain("PNG");
+    send({ type: "logo_set", data: PIXEL }); expect((await wait(m => m.type === "logo_saved")).ok).toBe(true);
+    const withLogo = await wait(m => m.type === "state" && m.logo > 0); expect(withLogo.logo).toBeGreaterThan(0);
+    const served = await fetch(`http://127.0.0.1:${daemonPort}/logo?v=${withLogo.logo}`);
+    expect(served.status).toBe(200); expect(served.headers.get("content-type")).toBe("image/png"); expect(served.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(Buffer.from(await served.arrayBuffer()).toString("base64")).toBe(PIXEL);
+    expect(existsSync(join(root, ".jarvis3", "logo.png"))).toBe(true);
+    send({ type: "logo_clear", none: true }); expect((await wait(m => m.type === "logo_saved")).ok).toBe(true);
+    expect((await wait(m => m.type === "state" && m.logo === -1)).logo).toBe(-1);                    // ausdrücklich kein Logo (auch kein Tab-Symbol)
+    send({ type: "logo_clear" }); expect((await wait(m => m.type === "logo_saved")).ok).toBe(true);
+    expect((await wait(m => m.type === "state" && m.logo === 0)).logo).toBe(0);                      // Standard
+    expect((await fetch(`http://127.0.0.1:${daemonPort}/logo`)).status).toBe(404); expect(existsSync(join(root, ".jarvis3", "logo.png"))).toBe(false);
+
     // Geheimnisse: Der Schlüsselversuch taucht nirgends auf
     expect(JSON.stringify(messages)).not.toContain("geheim-123456789");
   } finally { ws?.close(); proc.kill(); await proc.exited; oc.stop(true); rmSync(root, { recursive: true, force: true }); }

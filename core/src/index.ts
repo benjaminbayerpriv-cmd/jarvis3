@@ -34,6 +34,7 @@ import { CliAgent, CLI_LABEL, cliModelId, defaultCliConfig, isCliKind, parseCliC
 import { CliBackends, cliKindOf, isCli } from "./cli-backends";
 import { effortsFor, loadCodexModels, staticModels, type CliModel } from "./cli-models";
 import { readLimits, type Limits } from "./cli-limits";
+import { LogoStore } from "./logo";
 import { scanInstalled } from "./cli-adopt";
 import { HermesSupervisor } from "./hermes-supervisor";
 import { managedGateway } from "./hermes";
@@ -70,6 +71,9 @@ const BASE_OPENCODE_CONFIG = {
 };
 writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
+// Logo der App (optional, vom Nutzer hochgeladen); ohne Datei gibt es keins
+const logo = new LogoStore(HOME);
+let logoVersion = logo.version();
 let backendRuntime: BackendRuntime | undefined;
 try { backendRuntime = new BackendRuntime(HOME); } catch { /* OpenCode bleibt unabhängig verfügbar */ }
 const hermesSupervisor = new HermesSupervisor(PORT);
@@ -186,7 +190,7 @@ const state = () => {
   const id = hermesModelId(), config = backendRuntime?.config;
   const cliConfig = cli ? cliBackends!.configs[cli] : undefined, cliId = cli ? cliModelId(cli, cliConfig!) : "";
   const own = hermes ? id : cliId;
-  return { type: "state", ...settings, ...(own ? { model: own, voiceModel: own } : {}), extStale: extensionStale,
+  return { type: "state", ...settings, logo: logoVersion, ...(own ? { model: own, voiceModel: own } : {}), extStale: extensionStale,
     backend, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
     speech: speech.connected, voice, models: hermes ? [{ id, provider: config?.provider ?? "default", model: config?.model ?? "hermes-agent", group: "other", vision: config?.modelSupportsVision === true }]
       : cli ? cliModelEntries(cli) : models, devices: audioDevices };
@@ -1708,6 +1712,10 @@ async function route(req: Request, srv: any) {
       const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
       return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
     }
+    if (u.pathname === "/logo") {   // das hochgeladene Logo (nur PNG, geprüft beim Speichern)
+      const file = logo.file_();
+      return logoVersion > 0 && await file.exists() ? new Response(file, { headers: { "content-type": "image/png", "cache-control": "no-cache", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" } }) : new Response("kein Logo", { status: 404 });
+    }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
     if (u.pathname === "/usage") return Response.json(summarize(readUsage(), parseRange(u.searchParams.get("range"))));
     if (u.pathname === "/models") return Response.json(models = await listModels());
@@ -1741,6 +1749,15 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       const msg = JSON.parse(raw);
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
       if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
+      if (msg.type === "logo_set" || msg.type === "logo_clear") {
+        const done = (ok: boolean, error?: string) => ws.send(JSON.stringify({ type: "logo_saved", ok, ...(error ? { error } : {}) }));
+        if (!ws.data.trusted) { done(false, "Nicht vertrauenswürdiger Ursprung"); return; }
+        try {
+          if (msg.type === "logo_set") logoVersion = logo.save(msg.data); else { logo.clear(msg.none === true); logoVersion = logo.version(); }
+          done(true); broadcast(state());
+        } catch (error) { done(false, error instanceof Error && /^Das Logo/.test(error.message) ? error.message : "Das Logo konnte nicht gespeichert werden"); }
+        return;
+      }
       if (msg.type === "limits_get") {
         if (ws.data.trusted && cliBackends) await Promise.all((["claude", "codex"] as const).map(kind => refreshLimits(kind, msg.force === true)));
         ws.send(JSON.stringify(limitsMessage())); return;

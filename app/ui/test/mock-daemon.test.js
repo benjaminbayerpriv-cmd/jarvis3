@@ -111,3 +111,15 @@ test("App-Name: der Daemon übernimmt den gültigen Namen und meldet ihn im Zust
     expect(states.at(-1).appName).toBe("Hugo");                     // zu lange Namen werden abgelehnt
   } finally { mock.stop(); }
 });
+
+test("Logo: hochladen, Zustand zeigt es, entfernen; ungültige Daten werden abgelehnt", async () => {
+  const mock = startMock();
+  try {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+    expect((await fetch(`http://127.0.0.1:${mock.port}/logo`)).status).toBe(404);            // Standard: kein Logo
+    const got = await talk(mock.port, [{ type: "logo_set", data: "R0lGODlh" }, { type: "logo_set", data: png }, { type: "logo_clear", none: true }, { type: "logo_clear" }], 300);
+    expect(got.filter(m => m.type === "logo_saved").map(m => m.ok)).toEqual([false, true, true, true]);
+    const states = got.filter(m => m.type === "state").map(m => m.logo);
+    expect(states[0]).toBe(0); expect(states.at(-3)).toBeGreaterThan(0); expect(states.at(-2)).toBe(-1); expect(states.at(-1)).toBe(0);   // eigenes Logo, ausdrücklich keins, Standard
+  } finally { mock.stop(); }
+});

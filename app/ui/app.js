@@ -8,6 +8,7 @@ import { preferences, setPreference, lessMotion } from "./preferences.js";
 import { initBackendPanel } from "./backend-panel.js";
 import { limitLevel, limitSummary, normalizeLimits } from "./backends.js";
 import { DEFAULT_NAME, cleanAppName, watchName } from "./appname.js";
+import { checkLogoFile, fileToLogoPng, logoUrl } from "./logo.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
@@ -112,6 +113,7 @@ function handle(m) {
     case "ext_scan": renderImport(m); break;
     // Backend-Wechsel: Nachrichten nach dem Vertrag aus PR #63 (Formen in backends.js, docs/backend-ui.md)
     case "backend": case "backend_saved": case "backend_test": backendPanel.handle(m); break;
+    case "logo_saved": $("#setLogo-hint").textContent = m.ok ? "" : (m.error || "Das Logo konnte nicht gespeichert werden."); break;
     case "limits": backendPanel.handle(m); limitState = normalizeLimits(m); renderLimitChip(); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
@@ -165,7 +167,34 @@ function renderAppName() {
   $("#setAppName").addEventListener("change", e => { clearTimeout(timer); send_(e.target.value); });
   $("#setAppNameReset").addEventListener("click", () => { clearTimeout(timer); $("#setAppName").value = ""; $("#setAppName-hint").textContent = ""; send({ type: "settings", settings: { appName: DEFAULT_NAME } }); });
 }
+// Logo: ohne hochgeladenes Bild gibt es keins (Seitenleiste ohne Bild, Tab-Symbol wie ursprünglich)
+const iconLinks = [...document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]')].map(link => [link, link.getAttribute("href")]);
+let shownLogo = null;
+const BLANK_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";   // 1×1 transparent
+function renderLogo() {
+  const version = Number(state.logo) || 0;
+  if (version !== shownLogo) {
+    shownLogo = version;
+    const url = logoUrl(DAEMON, version), rail = $("#railLogo"), prev = $("#logoPreviewImg");
+    rail.hidden = prev.hidden = !url;
+    if (url) { rail.src = url; prev.src = url; } else { rail.removeAttribute("src"); prev.removeAttribute("src"); }
+    for (const [link, original] of iconLinks) link.setAttribute("href", url || (version < 0 ? BLANK_ICON : original));
+  }
+  $("#logoClear").disabled = version < 0;        // schon ausdrücklich ohne Logo
+  $("#logoDefault").disabled = version === 0;    // schon Standard
+}
+$("#logoUpload").addEventListener("click", () => $("#logoFile").click());
+$("#logoFile").addEventListener("change", async event => {
+  const file = event.target.files?.[0]; event.target.value = "";
+  const hint = $("#setLogo-hint"), problem = checkLogoFile(file);
+  if (problem) { hint.textContent = problem; return; }
+  try { hint.textContent = "Lädt hoch …"; send({ type: "logo_set", data: await fileToLogoPng(file) }); }
+  catch (error) { hint.textContent = error.message || "Das Bild konnte nicht gelesen werden."; }
+});
+$("#logoClear").addEventListener("click", () => { $("#setLogo-hint").textContent = ""; send({ type: "logo_clear", none: true }); });
+$("#logoDefault").addEventListener("click", () => { $("#setLogo-hint").textContent = ""; send({ type: "logo_clear" }); });
 function renderState() {
+  renderLogo();
   renderAppName();
   renderLimitChip();
   syncBusy();

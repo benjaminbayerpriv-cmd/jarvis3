@@ -1022,3 +1022,11 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 
 /* Schmale Fenster: der Modellname wird kurz, damit das Eingabefeld Platz behält */
 @media (max-width: 520px) { .model-btn { max-width: 96px; padding: 0 4px 0 8px; } .model-btn .model-name { font-size: 14px; } }
+
+/* Logo: Seitenleiste und Einstellung */
+.rail-logo { display: none; flex: none; width: 24px; height: 24px; margin-left: 6px; object-fit: contain; border-radius: 4px; }
+.app[data-rail="open"] .rail-logo:not([hidden]) { display: block; }
+.app[data-rail="open"] .rail-logo:not([hidden]) + .rail-brand { padding-left: 10px; }
+.logo-field { flex: 0 1 auto; }
+.logo-preview { flex: none; width: 40px; height: 40px; border-radius: var(--r-s); border: 1px dashed var(--outline-variant); display: grid; place-items: center; overflow: hidden; background: var(--surface); }
+.logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
