@@ -1,5 +1,8 @@
 // Eigene Icons im Tabler-Raster (24×24, Strich 1.75, runde Enden).
 export const CUSTOM = {
+  // Seitenleiste (Gemini): Fläche mit Balken links; Gitter für „Projekte“
+  "panel-left": { d: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M9 4v16"/>', fill: false },
+  "layout-grid": { d: '<rect x="4" y="4" width="6" height="6" rx="2"/><rect x="14" y="4" width="6" height="6" rx="2"/><rect x="4" y="14" width="6" height="6" rx="2"/><rect x="14" y="14" width="6" height="6" rx="2"/>', fill: false },
   "arrow-left": { d: '<path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/>', fill: false },
   "arrow-right": { d: '<path d="M5 12l14 0"/><path d="M13 18l6 -6"/><path d="M13 6l6 6"/>', fill: false },
   lock: { d: '<path d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2l0 -6"/><path d="M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0"/><path d="M8 11v-4a4 4 0 1 1 8 0v4"/>', fill: false },

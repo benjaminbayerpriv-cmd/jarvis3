@@ -38,7 +38,7 @@
   --r-xs: 4px; --r-s: 8px; --r-m: 12px; --r-l: 16px; --r-xl: 28px; --r-xl-inc: 32px; --r-full: 9999px;
   /* Raster und Maße (alles Vielfache von 4) */
   --rail-w: 52px;       /* Rail (zu): Symbole mittig bei x = 26, wie bei Gemini */
-  --rail-open-w: 280px;
+  --rail-open-w: 292px;
   --row-h: 32px;        /* Zeilenhöhe in der Seitenleiste */
   --header-h: 64px;     /* Kopfzeile und Rail-Kopf: gemeinsame Mittellinie bei y = 32 */
   --hit: 40px;          /* Standard-Klickfläche */
@@ -112,8 +112,12 @@ html.tauri { --inset-top: 28px; }
 .rail-item:hover { background: var(--state-hover); }
 .rail-item.selected { background: #171717; }                              /* „Neuer Chat“ wie bei Gemini hervorgehoben */
 .rail-item.selected:hover { background: #1c1c1c; }
-.app[data-rail="open"] .rail-item { padding: 0 8px; }
-.app[data-rail="open"] .rail-top .rail-item { padding: 0 4px; }
+.app[data-rail="open"] .rail-item { padding: 0 6px; gap: 10px; }
+.app[data-rail="open"] .rail-top .rail-item { padding: 0; gap: 0; }
+.rail-item.selected { font-weight: 500; }
+/* Symbole: 20 px (Strichbild ca. 15 px) in einer 24-px-Fläche, wie bei Gemini */
+.rail .rail-item > [data-icon], .rail .chat-search > [data-icon], .rail .folder-toggle > [data-icon] { flex: none; width: 24px; height: 24px; display: grid; place-items: center; }
+.rail .rail-item [data-icon] svg, .rail .chat-search svg, .rail .folder-toggle svg { width: 20px; height: 20px; }
 .chat-search { flex:none; display:flex; align-items:center; gap:8px; min-height:var(--row-h); margin:0; padding:0 8px; border-radius:var(--r-full); color:var(--on-surface); font-size:14px; background:transparent; }
 .chat-search svg { width:24px; height:24px; }
 .chat-search input { width:100%; min-width:0; color:var(--on-surface); background:transparent; border:0; outline:0; font:inherit; }
@@ -132,7 +136,7 @@ html.tauri { --inset-top: 28px; }
 }
 .history-chat[data-id]:hover:not(.active) { background: var(--state-hover); }
 .history li.active { background: var(--primary-container); color: var(--on-primary-container); }
-.history li.history-section { height:var(--row-h); display:block; padding:0; margin-top:16px; overflow:visible; }
+.history li.history-section { height:var(--row-h); display:block; padding:0; margin-top:12px; overflow:visible; }
 .history-section-toggle { width:100%; height:var(--row-h); display:flex; align-items:center; justify-content:space-between; gap:4px; padding:0 8px; border-radius:0; color:var(--on-surface-low); font-size:14px; font-weight:400; text-align:left; outline:none; }
 .history-section-toggle:hover { color:var(--on-surface); background:transparent; }
 .history-section-toggle:focus-visible { outline:none; }
@@ -448,10 +452,19 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 .rail-top { position: relative; }
 #railToggle { position: relative; z-index: 1; margin-left: 0; width: 36px; height: 36px; min-width: 36px; padding: 0; justify-content: center; }
 .app:not([data-rail="open"]) #railToggle { margin-left: -2px; }
-.app[data-rail="open"] #railToggle { margin-left: auto; }
-.rail-brand { display: none; flex: 1; min-width: 0; padding-left: 8px; font-size: 22px; line-height: 28px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-logo { display: none; flex: none; width: 22px; height: 22px; margin-left: 7px; border-radius: 50%; }
+.app[data-rail="open"] .rail-logo { display: block; }
+.rail-brand { display: none; flex: 1; min-width: 0; padding-left: 10px; font-size: 18px; line-height: 28px; font-weight: 500; font-variation-settings: "wdth" 100, "wght" 400; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app[data-rail="open"] .rail-brand { display: block; }
 .app[data-rail="open"] .topbar .brand { display: none; }
+/* Kopfzeile der offenen Leiste: Suche und Umschalter klein und grau */
+.rail-head-btn { display: none; width: 36px; height: 36px; min-width: 36px; padding: 0; justify-content: center; color: var(--on-surface-low); }
+.app[data-rail="open"] .rail-head-btn { display: flex; }
+.rail-head-btn svg, #railToggle svg { width: 18px; height: 18px; }
+.app[data-rail="open"] #railToggle { color: var(--on-surface-low); margin-left: 0; margin-right: 4px; }
+.app[data-rail="open"] #railToggle:hover, .rail-head-btn:hover { color: var(--on-surface); }
+.app[data-rail="open"] .chat-search { display: none; }                       /* Suchfeld erst nach Klick aufs Such-Symbol oben */
+.app[data-rail="open"][data-search] .chat-search { display: flex; }
 #railToggle svg { transition: opacity var(--d-s3) linear; }
 
 
@@ -760,7 +773,7 @@ body.dropping::after {
   --viewer-max: min(60vw, calc(100vw - var(--viewer-main-min) - var(--viewer-rail)));
   --viewer-w: clamp(min(240px, var(--viewer-max)), var(--viewer-user-width, var(--viewer-frame-width, 42vw)), var(--viewer-max));
 }
-:root:has(.app[data-rail="open"]) { --viewer-rail: 280px; }
+:root:has(.app[data-rail="open"]) { --viewer-rail: var(--rail-open-w); }
 :root:has(.live:not([hidden])) { --viewer-rail: 0px; }
 body:has(.viewer:not([hidden])) .live { right: var(--viewer-w); }
 body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px, 2vw, 20px); }

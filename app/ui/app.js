@@ -583,7 +583,7 @@ const setRail = open => {
   railBtn.setAttribute("aria-expanded", String(open));
   railBtn.setAttribute("aria-label", open ? "Seitenleiste schließen" : "Seitenleiste öffnen");
   railBtn.title = open ? "Seitenleiste schließen" : "Seitenleiste öffnen";
-  railBtn.querySelector("span").innerHTML = icon(open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand");
+  railBtn.querySelector("span").innerHTML = icon(open ? "panel-left" : "layout-sidebar-left-expand");
   try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
 };
 railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
@@ -1533,7 +1533,17 @@ function renderModels(filter = "") {
   }
 }
 $("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
-$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
+// Suche: bei offener Leiste erst nach Klick auf das Such-Symbol oben (wie bei Gemini), bei zugeklappter Leiste öffnet das Symbol die Leiste
+{
+  const app = $("#app"), field = $("#chatSearch");
+  const openSearch = () => { app.dataset.search = "1"; requestAnimationFrame(() => field.focus()); };
+  $("#railSearch").addEventListener("click", openSearch);
+  field.addEventListener("input", () => { if (field.value) app.dataset.search = "1"; });
+  field.addEventListener("blur", () => { if (!field.value) delete app.dataset.search; });
+  field.addEventListener("keydown", e => { if (e.key === "Escape") { field.value = ""; field.dispatchEvent(new Event("input", { bubbles: true })); delete app.dataset.search; field.blur(); } });
+  window.__openChatSearch = openSearch;
+}
+$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); window.__openChatSearch(); } });
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
   const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?",
