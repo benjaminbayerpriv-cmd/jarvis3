@@ -467,7 +467,8 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 
 
 /* ---------- Unten: Einstellungen (zu: Zahnrad, auf: Zahnrad und Text) ---------- */
-.rail-profile { flex: none; padding-top: 8px; }
+.rail-profile { flex: none; min-width: 0; padding-top: 8px; }
+.rail-profile .rail-item { width: 100%; overflow: hidden; }
 
 /* ---------- Dialoge ---------- */
 .sheet {
