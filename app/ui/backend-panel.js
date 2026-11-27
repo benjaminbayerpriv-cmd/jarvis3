@@ -1,8 +1,9 @@
-// Einstellungen → Backend: OpenCode oder Hermes wählen; für Hermes Serveradresse, Server-Schlüssel, Modellanbieter und Modell.
+// Einstellungen → Backend: OpenCode, Hermes, Claude Code oder Codex wählen; für Hermes Serveradresse, Server-Schlüssel, Modellanbieter und Modell,
+// für Claude Code und Codex Modell und Dateizugriff (die Programme melden sich selbst an, Jarvis speichert dafür nichts).
 // OpenCode verwaltet seine Anbieter selbst und zeigt hier nur seinen Zustand. Reine Oberfläche; Nachrichtenformen in backends.js.
 // Sicherheit: Der Schlüssel liegt nur in einem Passwortfeld, geht nur in `backend_secret` an jarvisd und wird danach aus dem Feld
 // gelöscht (auch beim Wechsel des Bereichs und beim Schließen). Er steht in keinem Attribut, keinem Speicher und keinem Protokoll.
-import { BACKEND_IDS, BACKENDS, DEFAULT_SERVER_URL, KEY_STORAGE_NOTE, MODEL_URL_EXAMPLE, PROVIDER_KEY_NOTE, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
+import { BACKEND_IDS, BACKENDS, CLI_FILES, EFFORT_LABEL, formatReset, limitLevel, normalizeLimits, DEFAULT_SERVER_URL, cliConfigOf, isCliBackend, sameCliConfig, validateCliConfig, KEY_STORAGE_NOTE, MODEL_URL_EXAMPLE, PROVIDER_KEY_NOTE, keyStatus, msgConfig, msgGet, msgSecret, msgSet, msgTest, normalizeBackendState, sameConfig, validateConfig } from "./backends.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -14,7 +15,7 @@ const SUPPORT_WAIT_MS = 2500;
 
 export function initBackendPanel({ root, send, isBusy = () => false }) {
   let model = normalizeBackendState(undefined);
-  let supported = false, waiting = false, waitTimer = 0, switching = false;
+  let supported = false, waiting = false, waitTimer = 0, switching = false, limits = {};
   const cards = new Map();       // id -> { card, fields, draft, baseline, ... }
   const nameSuffix = Math.random().toString(36).slice(2, 8);
 
@@ -59,6 +60,46 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       const card = el("section", { className: "be-card" }, head, el("div", { className: "be-body" }, f.info));
       card.dataset.backend = id; card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
       return { id, card, f, draft: { ...empty }, baseline: { ...empty }, removeArmed: 0, testing: false, saving: false };
+    }
+    if (meta.kind === "cli") {
+      f.model = el("input", { id: `be-${id}-model`, type: "text", name: `be-model-${id}`, spellcheck: false, autocomplete: "off", autocapitalize: "off", placeholder: "Vorgabe des Programms" });
+      f.models = el("datalist", { id: `be-${id}-models` }); f.model.setAttribute("list", f.models.id);
+      f.effort = el("select", { id: `be-${id}-effort`, name: `be-effort-${id}` });
+      f.adopt = el("input", { id: `be-${id}-adopt`, type: "checkbox", name: `be-adopt-${id}` });
+      f.adoptCount = el("span", { className: "be-hint", id: `be-${id}-adopt-count` });
+      f.limits = el("div", { className: "be-limits", id: `be-${id}-limits` });
+      f.limitsRefresh = el("button", { type: "button", className: "chip-btn", textContent: "Aktualisieren" });
+      f.files = el("select", { id: `be-${id}-files`, name: `be-files-${id}` }, ...CLI_FILES.map(o => el("option", { value: o.id, textContent: o.label })));
+      f.modelHint = el("span", { className: "be-hint", id: `be-${id}-model-hint` });
+      f.save = el("button", { type: "button", className: "chip-btn be-primary", textContent: "Speichern" });
+      f.test = el("button", { type: "button", className: "chip-btn", textContent: "Anmeldung prüfen" });
+      f.reset = el("button", { type: "button", className: "chip-btn", textContent: "Zurücksetzen" });
+      f.result = el("p", { className: "be-result", role: "status", id: `be-${id}-result` });
+      for (const k of ["model", "effort", "files", "adopt"]) f[k].setAttribute("aria-describedby", `be-${id}-${k}-desc`);
+      const filesNote = id === "claude"
+        ? "Mit „Dateien lesen“ darf Claude Code die Lesewerkzeuge Read, Glob und Grep benutzen und Bilder ansehen. Schreiben und Befehle ausführen gibt es nicht."
+        : "Mit „Dateien lesen“ darf Codex in einer Nur-Lese-Sandbox Befehle ausführen (kein Schreiben). Bilder kann Codex immer ansehen.";
+      const adoptNote = id === "claude"
+        ? "Übernimmt die Skills und Plugins aus deiner Claude-Code-Installation (Einstellungen des Nutzers). Nicht übernommen werden Hooks, MCP-Server und Computer-Steuerung der Plugins: Sie würden Jarvis' Sperren und den Not-Aus umgehen. Skills, die Befehle oder Schreibzugriff brauchen, laufen hier nicht."
+        : "Übernimmt die Skills und Plugins aus deiner Codex-Installation (config.toml). Nicht übernommen werden Hooks und deine MCP-Server (z. B. Computer-Steuerung): Sie würden Jarvis' Sperren und den Not-Aus umgehen. Codex liest Skills über eine nur lesende Shell, die dann an ist; Befehle mit Schreibzugriff bleiben gesperrt.";
+      const body = el("div", { className: "be-body" },
+        row(id, "login", "Anmeldung", `${meta.loginHint} Jarvis speichert, liest und sendet dafür keine Schlüssel oder Passwörter. „Anmeldung prüfen“ fragt nur den Status ab.`, el("span", { className: "be-keystate", id: `be-${id}-login`, textContent: "Über das Programm" })),
+        row(id, "model", "Modell (optional)", "Aus der Liste wählen oder einen Modellnamen eintragen. Leer = Vorgabe des Programms. Das Modell lässt sich auch im Modellmenü des Chats wählen.", el("div", { className: "be-field" }, f.model, f.models), f.modelHint),
+        row(id, "effort", "Denkaufwand", "Wie gründlich das Modell nachdenkt. „Vorgabe“ überlässt es dem Programm; nicht jedes Modell kennt jede Stufe.", f.effort),
+        row(id, "adopt", "Installierte Skills und Plugins übernehmen", adoptNote, f.adopt, f.adoptCount),
+        row(id, "files", "Dateizugriff", `Die Werkzeuge von Jarvis (Browser, Computer-Steuerung) gelten immer, mit denselben Sperren und demselben Not-Aus. Eingebaute Werkzeuge des Programms sind sonst abgeschaltet. ${filesNote}`, f.files));
+      const limitBox = el("div", { className: "be-limitbox" }, el("div", { className: "be-limithead" }, el("strong", { textContent: "Verbleibendes Kontingent" }), f.limitsRefresh), f.limits);
+      const card = el("section", { className: "be-card" }, head, body, limitBox, el("div", { className: "be-actions" }, f.save, f.test, f.reset, f.result));
+      card.dataset.backend = id; card.setAttribute("aria-label", `${meta.label}-Einstellungen`);
+      f.limitsRefresh.onclick = () => { f.limitsRefresh.disabled = true; f.limits.dataset.loading = "1"; send({ type: "limits_get", force: true }); };
+      const c = { id, card, f, draft: { model: "", files: "none", effort: "", adopt: false }, baseline: { model: "", files: "none", effort: "", adopt: false }, removeArmed: { server: 0, provider: 0 }, testing: false, saving: false };
+      f.model.oninput = () => { c.draft.model = f.model.value; update(c); };
+      f.files.onchange = () => { c.draft.files = f.files.value; update(c); };
+      f.effort.onchange = () => { c.draft.effort = f.effort.value; update(c); };
+      f.adopt.onchange = () => { c.draft.adopt = f.adopt.checked; update(c); };
+      f.save.onclick = () => save(c); f.test.onclick = () => test(c);
+      f.reset.onclick = () => { c.draft = { ...c.baseline }; f.result.textContent = ""; fill(c); update(c); };
+      return c;
     }
     const secretInput = (name, placeholder) => {
       const i = el("input", { id: `be-${id}-${name}`, type: "password", name: `be-secret-${id}-${name}-${nameSuffix}`, autocomplete: "new-password", spellcheck: false, autocapitalize: "off", placeholder });
@@ -120,6 +161,12 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     c.f.provider.value = keep;
   }
   function fill(c) {
+    if (isCliBackend(c.id)) {
+      const b = model.backends[c.id];
+      c.f.models.replaceChildren(...b.models.map(m => el("option", { value: m.id, label: m.label })));
+      c.f.effort.replaceChildren(...["", ...b.efforts].map(e => el("option", { value: e, textContent: EFFORT_LABEL[e] ?? e })));
+      c.f.model.value = c.draft.model; c.f.files.value = c.draft.files; c.f.effort.value = c.draft.effort ?? ""; c.f.adopt.checked = c.draft.adopt === true; return;
+    }
     if (!c.f.provider) return;
     providerOptions(c);
     c.f.model.value = c.draft.model;
@@ -139,6 +186,24 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       c.card.toggleAttribute("data-disabled", !supported);
     };
     if (!b.configurable) return done();
+    if (isCliBackend(c.id)) {
+      const v = validateCliConfig(c.draft), dirty = !sameCliConfig(c.draft, c.baseline);
+      const locked = isBusy() && model.active === c.id, enabled = supported && !c.saving && !locked;
+      f.model.disabled = f.files.disabled = f.effort.disabled = f.adopt.disabled = !enabled;
+      f.adoptCount.textContent = `Gefunden: ${b.installed.skills} ${b.installed.skills === 1 ? "Skill" : "Skills"}, ${b.installed.plugins} ${b.installed.plugins === 1 ? "Plugin" : "Plugins"}${c.draft.adopt && c.id === "codex" ? ". Dateizugriff „lesen“ ist dafür nötig und wird automatisch genutzt" : ""}.`;
+      renderLimits(c);
+      f.save.disabled = !enabled || !dirty || !v.valid;
+      f.test.disabled = !supported || dirty || c.testing || b.status === "unsupported";
+      f.test.title = locked ? "Während einer laufenden Antwort nicht änderbar." : dirty ? "Erst speichern, dann prüfen." : "";
+      f.reset.disabled = !enabled || !dirty;
+      const show = dirty || c.touched;
+      f.model.setAttribute("aria-invalid", String(!!(show && v.errors.model)));
+      f.modelHint.textContent = show && v.errors.model ? v.errors.model : locked ? "Gesperrt, solange eine Antwort läuft." : "";
+      f.modelHint.classList.toggle("bad", !!(show && v.errors.model));
+      done();
+      if (b.error && b.status === "error" && !f.result.textContent) f.result.textContent = b.error;
+      return;
+    }
     const keyTyped = f.apiKey.value.length > 0, pKeyTyped = f.providerKey.value.length > 0;
     const v = validateConfig(c.draft);
     const dirty = !sameConfig(c.draft, c.baseline) || keyTyped || pKeyTyped;
@@ -165,8 +230,27 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     if (b.error && b.status === "error" && !f.result.textContent) f.result.textContent = b.error;
   }
 
+  function renderLimits(c) {
+    const l = limits[c.id], box = c.f.limits;
+    c.f.limitsRefresh.disabled = !supported || c.f.limits.dataset.loading === "1";
+    if (!l) { box.replaceChildren(el("p", { className: "be-hint", textContent: supported ? "Wird abgefragt …" : "Nicht verfügbar." })); return; }
+    if (!l.ok) { box.replaceChildren(el("p", { className: "be-hint bad", textContent: l.error || "Keine Angaben." })); return; }
+    box.replaceChildren(...l.windows.map(w => {
+      const bar = el("div", { className: `be-bar ${limitLevel(w.usedPercent)}`, role: "progressbar" }, el("span", { style: `width:${w.usedPercent}%` }));
+      bar.setAttribute("aria-valuenow", String(w.usedPercent)); bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-label", `${w.label}: ${w.usedPercent} % verbraucht`);
+      const reset = formatReset(w);
+      return el("div", { className: "be-limit" }, el("div", { className: "be-limitrow" }, el("span", { textContent: w.label }), el("span", { textContent: `${w.usedPercent} % verbraucht · noch ${100 - w.usedPercent} % frei` })), bar, reset ? el("span", { className: "be-hint", textContent: `Zurückgesetzt ${reset}` }) : "");
+    }), ...(l.note || l.plan ? [el("p", { className: "be-hint", textContent: [l.plan && `Tarif: ${l.plan}`, l.note].filter(Boolean).join(" · ") })] : []));
+  }
+
   // ----- Aktionen -----
   function save(c) {
+    if (isCliBackend(c.id)) {
+      const v = validateCliConfig(c.draft); c.touched = true;
+      if (!v.valid) { update(c); return; }
+      c.saving = true; c.f.result.textContent = "Speichert …"; c.f.result.className = "be-result";
+      send(msgConfig(c.id, c.draft)); update(c); return;
+    }
     const v = validateConfig(c.draft);
     c.touched = true;
     if (!v.valid) { update(c); return; }
@@ -180,7 +264,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     update(c);
   }
   function test(c) {
-    c.testing = true; c.f.result.textContent = "Prüft die Verbindung …"; c.f.result.className = "be-result";
+    c.testing = true; c.f.result.textContent = isCliBackend(c.id) ? "Prüft Installation und Anmeldung …" : "Prüft die Verbindung …"; c.f.result.className = "be-result";
     send(msgTest(c.id)); update(c);
   }
   function removeKey(c, target) {
@@ -218,7 +302,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       return;
     }
     const act = model.backends[model.active];
-    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Serveradresse und Server-Schlüssel.`; return; }
+    if (act.status === "error") { banner.hidden = false; banner.className = "be-banner bad"; banner.textContent = isCliBackend(act.id) ? `${act.label}: ${act.error || "nicht bereit."}` : `${act.label} ist nicht erreichbar${act.error ? `: ${act.error}` : "."} Prüfe Serveradresse und Server-Schlüssel.`; return; }
     if (isBusy()) { banner.hidden = false; banner.className = "be-banner"; banner.textContent = "Es läuft gerade eine Antwort. Ein Wechsel gilt für neue Nachrichten; laufende Chats bleiben bei ihrem Backend."; return; }
     banner.hidden = true;
   }
@@ -231,6 +315,12 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
     for (const id of BACKEND_IDS) {
       const c = cards.get(id), cfg = next.backends[id].config;
       if (!next.backends[id].configurable) continue;
+      if (isCliBackend(id)) {
+        const clean = sameCliConfig(c.draft, c.baseline);       // vor dem Überschreiben: hat der Nutzer etwas geändert?
+        c.baseline = { model: cfg.model, files: cfg.files, effort: cfg.effort, adopt: cfg.adopt };
+        if (clean || initial) { c.draft = { ...c.baseline }; fill(c); } else fill(c);
+        continue;
+      }
       const dirty = !sameConfig(c.draft, c.baseline);
       c.baseline = { ...cfg };
       if (!dirty || initial) { c.draft = { ...cfg }; fill(c); } else providerOptions(c);
@@ -243,6 +333,9 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       supported = true; waiting = false; clearTimeout(waitTimer); switching = false;
       adopt(normalizeBackendState(m), { initial: !cards.get("hermes").touched });
       render();
+    } else if (m.type === "limits") {
+      limits = normalizeLimits(m);
+      for (const c of cards.values()) if (c.f.limits) { delete c.f.limits.dataset.loading; renderLimits(c); }
     } else if (m.type === "backend_saved") {
       const c = cards.get(m.backend); if (!c?.f.save) return;
       c.saving = false;
@@ -255,6 +348,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
       const c = cards.get(m.backend); if (!c?.f.test) return;
       c.testing = false;
       c.f.result.className = "be-result " + (m.ok ? "ok" : "bad");
+      if (isCliBackend(m.backend) && m.ok) { c.f.result.textContent = "Installiert und angemeldet."; update(c); return; }
       c.f.result.textContent = m.ok ? `Verbindung steht${Number.isFinite(m.latencyMs) ? ` (${Math.round(m.latencyMs)} ms)` : ""}.` : `Keine Verbindung${m.error ? `: ${String(m.error).slice(0, 300)}` : "."}`;
       update(c);
     }
@@ -263,7 +357,7 @@ export function initBackendPanel({ root, send, isBusy = () => false }) {
   // ----- Öffnen / Schließen -----
   function show() {
     waiting = !supported; render();
-    send(msgGet());
+    send(msgGet()); send({ type: "limits_get" });
     if (!supported) {
       clearTimeout(waitTimer);
       waitTimer = setTimeout(() => { waiting = false; render(); }, SUPPORT_WAIT_MS);

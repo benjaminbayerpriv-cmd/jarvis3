@@ -16,24 +16,26 @@
     <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
     <nav class="rail" aria-label="Navigation">
       <div class="rail-top" data-tauri-drag-region>
+        <img class="rail-logo" id="railLogo" alt="" hidden width="24" height="24">
+        <span class="rail-brand" id="railBrand">Jarvis</span>
+        <button class="rail-item rail-head-btn" id="railSearch" aria-label="Chats durchsuchen" title="Chats durchsuchen"><span data-icon="search"></span></button>
         <button class="rail-item" id="railToggle" aria-label="Seitenleiste öffnen" aria-expanded="false"><span data-icon="layout-sidebar-left-expand"></span></button>
       </div>
-      <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
+      <button class="rail-item selected" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
-      <button class="rail-item" id="openProjects"><span data-icon="folder-open"></span><span class="rail-label">Projekte</span></button>
+      <button class="rail-item" id="openProjects"><span data-icon="layout-grid"></span><span class="rail-label">Projekte</span></button>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
-      <button class="rail-item" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDialog"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
+      <div class="rail-profile">
+        <button class="rail-item" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDialog" aria-label="Einstellungen" title="Einstellungen"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
+      </div>
     </nav>
 
     <main class="main">
       <header class="topbar" data-tauri-drag-region>
-        <button class="model-chip" id="modelChip" aria-haspopup="dialog">
-          <span class="brand">Jarvis</span>
-          <span class="model-name" id="modelName">…</span>
-          <span data-icon="chevron-down" class="chev"></span>
-        </button>
+        <span class="brand" id="topBrand">Jarvis</span>
         <div class="topbar-right">
+          <button class="limit-chip" id="limitChip" hidden aria-label="Verbleibendes Kontingent"><span class="full" id="limitText">Limit</span><span class="short" id="limitShort">Limit</span></button>
           <button class="icon-btn view-toggle" id="viewToggle" data-icon="eye" aria-pressed="true" title="Live-Ansicht des Tabs"></button>
           <span class="status-pill" id="browserPill" title="Chrome-Erweiterung"><span data-icon="world"></span><span>Browser</span></span>
           <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" title="Computer übernehmen">
@@ -67,6 +69,7 @@
           <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Fotos und Dateien hinzufügen" title="Fotos und Dateien hinzufügen"></button>
           <div class="ta-wrap"><textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea><div class="ta-mirror" id="taMirror" aria-hidden="true"></div></div>
           <div class="composer-actions">
+            <button type="button" class="model-btn" id="modelChip" aria-haspopup="dialog" aria-label="Modell wählen"><span class="model-name" id="modelName">…</span><span data-icon="chevron-down" class="chev"></span></button>
             <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>
             <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span></button>
             <button type="submit" class="send-btn" id="send" aria-label="Senden" hidden><span data-icon="arrow-up"></span></button>
@@ -197,13 +200,15 @@
         <header class="set-head"><h3 id="setTitle">Allgemein</h3><button type="button" class="icon-btn" id="closeSettings" data-icon="x" aria-label="Schließen"></button></header>
         <ul class="set-results" id="settingsResults" aria-label="Gefundene Einstellungen" hidden></ul>
         <section class="set-pane" data-pane="general">
+          <div class="setting be-row"><div><label for="setAppName" id="setAppName-label">Name der App</label><p id="setAppName-desc" data-keep-name>Ersetzt „Jarvis“ in der Oberfläche, in Hinweisen und Ansagen und ist der Name, mit dem sich der Assistent vorstellt. Gilt sofort; alte Chats bleiben unverändert.</p><span class="be-hint" id="setAppName-hint" role="status"></span></div><div class="be-field"><input id="setAppName" type="text" maxlength="24" autocomplete="off" spellcheck="false" aria-describedby="setAppName-desc setAppName-hint" placeholder="Jarvis" data-keep-name><button type="button" class="chip-btn" id="setAppNameReset" data-keep-name title="Wieder „Jarvis“ verwenden">Zurücksetzen</button></div></div>
+          <div class="setting be-row"><div><label id="setLogo-label">Logo</label><p id="setLogo-desc" data-keep-name>Eigenes Bild für die Seitenleiste und das Symbol im Tab, auf 256 px verkleinert. „Entfernen“ lässt Seitenleiste und Tab ganz ohne Logo, „Standard“ stellt das eingebaute Tab-Symbol wieder her.</p><span class="be-hint" id="setLogo-hint" role="status"></span></div><div class="be-field logo-field"><span class="logo-preview" id="logoPreview" aria-hidden="true"><img id="logoPreviewImg" alt="" hidden></span><button type="button" class="chip-btn" id="logoUpload" aria-describedby="setLogo-desc">Hochladen …</button><button type="button" class="chip-btn" id="logoClear" disabled>Entfernen</button><button type="button" class="chip-btn" id="logoDefault" disabled>Standard</button><input type="file" id="logoFile" accept="image/*" hidden></div></div>
           <div class="setting"><div><label for="setChatModel" id="setChatModel-label">Chatmodell</label><p id="setChatModel-desc">Für normale Chatnachrichten.</p></div><select id="setChatModel" aria-describedby="setChatModel-desc" data-daemon="model"></select></div>
           <div class="setting"><div><label for="set-autoChatTitles" id="set-autoChatTitles-label">KI-Titel für Chats</label><p id="set-autoChatTitles-desc">Erstellt nach der ersten Antwort einen Titel zum Thema. Ist die Option aus, verwendet Jarvis Stichwörter.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoChatTitles-label" aria-describedby="set-autoChatTitles-desc" id="set-autoChatTitles" data-daemon="autoChatTitles"></button></div>
           <div class="setting"><div><label for="set-autoProjects" id="set-autoProjects-label">Chats automatisch zuordnen</label><p id="set-autoProjects-desc">Jarvis prüft, ob neue Chats zu einem vorhandenen Projekt passen.</p></div><button type="button" class="toggle-lg" role="switch" aria-checked="false" aria-labelledby="set-autoProjects-label" aria-describedby="set-autoProjects-desc" id="set-autoProjects" data-daemon="autoProjects"></button></div>
           <div class="setting" id="setAutostartRow" hidden><div><label id="setAutostartLabel" for="setAutostart">Beim Anmelden starten</label><p id="setAutostartStatus" role="status">Startet Jarvis im Hintergrund.</p></div><button type="button" class="toggle-lg" role="switch" id="setAutostart" aria-labelledby="setAutostartLabel" aria-describedby="setAutostartStatus" aria-checked="false"></button></div>
         </section>
         <section class="set-pane" data-pane="backend" hidden>
-          <p class="set-intro">Welches Backend Jarvis' Antworten erzeugt. <b>OpenCode</b> ist der Standard. Für Hermes stellst du Serveradresse und Server-Schlüssel des Gateways sowie Modellanbieter, Modell und optional die Adresse eines lokalen Modellservers (auch im Heimnetz) mit eigenem Schlüssel ein; OpenCode verwaltet seine Anbieter selbst. Sprache, Live-Modus und Computersteuerung bleiben unverändert.</p>
+          <p class="set-intro">Welches Backend Jarvis' Antworten erzeugt. <b>OpenCode</b> ist der Standard. Für Hermes stellst du Serveradresse und Server-Schlüssel des Gateways sowie Modellanbieter, Modell und optional die Adresse eines lokalen Modellservers (auch im Heimnetz) mit eigenem Schlüssel ein; Claude Code und Codex sind die installierten Programme: sie melden sich selbst an, du wählst nur Modell und Dateizugriff. OpenCode verwaltet seine Anbieter selbst. Sprache, Live-Modus und Computersteuerung bleiben unverändert.</p>
           <div class="be-banner" id="beBanner" role="status" hidden></div>
           <div class="setting be-active"><div><label id="beActive-label">Aktives Backend</label><p id="beActive-desc">Gilt für neue Nachrichten und Chats.</p></div><div class="be-seg" id="beSeg" role="radiogroup" aria-labelledby="beActive-label" aria-describedby="beActive-desc"></div></div>
           <div class="be-cards" id="beCards"></div>

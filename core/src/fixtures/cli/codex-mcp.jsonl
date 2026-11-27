@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a21a3d-b6f7-73c2-9629-d32a2886d5ad"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Ich suche das Werkzeug und rufe es auf, sobald ich es gefunden habe."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"jarvis","tool":"desktop_displays","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"jarvis","tool":"desktop_displays","arguments":{},"result":{"content":[{"type":"text","text":"Monitor 1: Hauptbildschirm 1920x1080"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"`desktop_displays` meldet einen Monitor, den Hauptbildschirm mit 1920 × 1080 Pixeln."}}
+{"type":"turn.completed","usage":{"input_tokens":77254,"cached_input_tokens":64896,"cache_write_input_tokens":0,"output_tokens":102,"reasoning_output_tokens":0}}

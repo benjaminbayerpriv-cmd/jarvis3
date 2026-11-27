@@ -1,5 +1,13 @@
 // Gemeinsame Einstellungen für alle Jarvis-Oberflächen dieses lokalen Daemons.
+export const DEFAULT_APP_NAME = "Jarvis";
+/** Name der App: 1 bis 24 Zeichen, keine Steuerzeichen oder Tag-/Anführungszeichen; Leerraum wird zusammengezogen. Leer = ungültig. */
+export function cleanAppName(v: unknown): string {
+  if (typeof v !== "string") return "";
+  const s = v.replace(/[\u0000-\u001f\u007f<>"`\\]/g, "").replace(/\s+/g, " ").trim();
+  return s.length >= 1 && s.length <= 24 ? s : "";
+}
 export const defaults = {
+  appName: DEFAULT_APP_NAME,
   model: "opencode/deepseek-v4.1-flash-free",
   voiceModel: "opencode/deepseek-v4.1-flash-free",
   mode: "browser" as "browser" | "computer",
@@ -42,6 +50,7 @@ export function parseSettings(input: unknown, stored = false): Patch {
     "autoProjects", "errorScreenshots", "voiceLog", "internalBrowser", "darkPages", "haptics", "hapticsClick", "hapticsTool", "hapticsType"] as const;
   for (const key of switches) if (typeof value[key] === "boolean") patch[key] = value[key];
   if (value.hapticsStrength === "soft" || value.hapticsStrength === "normal" || value.hapticsStrength === "strong") patch.hapticsStrength = value.hapticsStrength;
+  { const name = cleanAppName(value.appName); if (name) patch.appName = name; }
   if (nonempty(value.model)) patch.model = value.model;
   if (nonempty(value.voiceModel)) patch.voiceModel = value.voiceModel;
   if (value.mode === "browser" || value.mode === "computer") patch.mode = value.mode;

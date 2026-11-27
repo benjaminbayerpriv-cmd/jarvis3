@@ -65,3 +65,61 @@ test("Wechsel zu einem nicht eingerichteten Hermes wird abgelehnt, legacy ignori
     expect(old.some(m => String(m.type).startsWith("backend"))).toBe(false);        // wie ein Daemon ohne die Schnittstelle
   } finally { mock.stop(); legacy.stop(); }
 });
+
+test("Claude Code und Codex: Einstellungen speichern, ungültig ablehnen, Schlüssel ablehnen, Anmeldung prüfen", async () => {
+  const mock = startMock();
+  try {
+    const got = await talk(mock.port, [
+      msgGet(),
+      msgConfig("claude", { model: "sonnet", files: "read", effort: "high", adopt: true }),
+      msgConfig("claude", { model: "a b", files: "read" }),
+      msgSecret("claude", "geheim-123456789", "server"),
+      msgTest("claude"), msgTest("codex"),
+      msgSet("claude"), msgGet(),
+    ], 600);
+    const saved = got.filter(m => m.type === "backend_saved");
+    expect(saved.map(m => m.ok)).toEqual([true, false, false]);
+    expect(saved[2].error).toContain("meldet sich selbst an");
+    const state = got.filter(m => m.type === "backend").at(-1);
+    expect(state.active).toBe("claude");
+    expect(state.backends.claude).toMatchObject({ status: "ready", loginManaged: true, keySet: false, config: { provider: "claude", model: "sonnet", files: "read", effort: "high", adopt: true }, installed: { skills: 124, plugins: 1 }, efforts: expect.arrayContaining(["high"]) });
+    expect(state.backends.claude.models.map(x => x.id)).toContain("claude-opus-5-5");
+    expect(state.backends.codex).toMatchObject({ status: "error", error: expect.stringContaining("codex login") });
+    const tests = got.filter(m => m.type === "backend_test");
+    expect(tests.find(m => m.backend === "claude").ok).toBe(true);
+    expect(tests.find(m => m.backend === "codex").ok).toBe(false);
+    expect(JSON.stringify(got)).not.toContain("geheim-123");
+  } finally { mock.stop(); }
+});
+
+test("Limits: der Daemon liefert beide Programme, ohne Modellaufruf, alte Daemons schweigen", async () => {
+  const mock = startMock(), legacy = startMock({ legacy: true });
+  try {
+    const got = await talk(mock.port, [{ type: "limits_get" }], 200);
+    const l = got.find(m => m.type === "limits").limits;
+    expect(l.claude.windows).toHaveLength(2); expect(l.codex.plan).toBe("plus");
+    expect((await talk(legacy.port, [{ type: "limits_get" }], 200)).some(m => m.type === "limits")).toBe(false);
+  } finally { mock.stop(); legacy.stop(); }
+});
+
+test("App-Name: der Daemon übernimmt den gültigen Namen und meldet ihn im Zustand", async () => {
+  const mock = startMock();
+  try {
+    const got = await talk(mock.port, [{ type: "settings", settings: { appName: "  Hugo  " } }, { type: "settings", settings: { appName: "x".repeat(30) } }], 250);
+    const states = got.filter(m => m.type === "state");
+    expect(states[0].appName).toBe("Jarvis");                       // Standard
+    expect(states.at(-1).appName).toBe("Hugo");                     // zu lange Namen werden abgelehnt
+  } finally { mock.stop(); }
+});
+
+test("Logo: hochladen, Zustand zeigt es, entfernen; ungültige Daten werden abgelehnt", async () => {
+  const mock = startMock();
+  try {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+    expect((await fetch(`http://127.0.0.1:${mock.port}/logo`)).status).toBe(404);            // Standard: kein Logo
+    const got = await talk(mock.port, [{ type: "logo_set", data: "R0lGODlh" }, { type: "logo_set", data: png }, { type: "logo_clear", none: true }, { type: "logo_clear" }], 300);
+    expect(got.filter(m => m.type === "logo_saved").map(m => m.ok)).toEqual([false, true, true, true]);
+    const states = got.filter(m => m.type === "state").map(m => m.logo);
+    expect(states[0]).toBe(0); expect(states.at(-3)).toBeGreaterThan(0); expect(states.at(-2)).toBe(-1); expect(states.at(-1)).toBe(0);   // eigenes Logo, ausdrücklich keins, Standard
+  } finally { mock.stop(); }
+});

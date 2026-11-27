@@ -11,7 +11,7 @@ import { DirectBrowser, type PageSocket } from "./dbrowser";
 import { WebProxy } from "./proxy";
 import { agentSource } from "./proxy-agent";
 import { FUNCTION_COMMANDS } from "./functions";
-import { SYSTEM_PROMPT } from "./prompt";
+import { SYSTEM_PROMPT, systemPrompt } from "./prompt";
 import { Speech } from "./speech";
 import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
 import { prepare, validate, hasImages, type Attachment } from "./attachments";
@@ -29,7 +29,13 @@ import { LiveAnswer, TurnTrace, isEcho } from "./live-turn";
 import { RunBuffer } from "./runbuf";
 import { defaults, parseSettings, type Settings } from "./settings";
 import { Haptics } from "./haptics";
-import { BackendRuntime, isHermes } from "./backend-runtime";
+import { BACKEND_IDS, BackendRuntime, isHermes, type BackendId } from "./backend-runtime";
+import { CliAgent, CLI_LABEL, cliModelId, defaultCliConfig, isCliKind, parseCliConfig, type CliKind } from "./cli-agents";
+import { CliBackends, cliKindOf, isCli } from "./cli-backends";
+import { effortsFor, loadCodexModels, staticModels, type CliModel } from "./cli-models";
+import { readLimits, type Limits } from "./cli-limits";
+import { LogoStore } from "./logo";
+import { scanInstalled } from "./cli-adopt";
 import { HermesSupervisor } from "./hermes-supervisor";
 import { managedGateway } from "./hermes";
 import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, setVisualTheme, type Visual } from "./visuals";
@@ -65,9 +71,50 @@ const BASE_OPENCODE_CONFIG = {
 };
 writeWorkspace(workspace, BASE_OPENCODE_CONFIG);   // plus MCP-Server, Plugins, Befehle und Skills aus ~/.jarvis3/extensions.json
 
+// Logo der App (optional, vom Nutzer hochgeladen); ohne Datei gibt es keins
+const logo = new LogoStore(HOME);
+let logoVersion = logo.version();
 let backendRuntime: BackendRuntime | undefined;
 try { backendRuntime = new BackendRuntime(HOME); } catch { /* OpenCode bleibt unabhängig verfügbar */ }
 const hermesSupervisor = new HermesSupervisor(PORT);
+// Claude Code und Codex: schon installierte Programme, eigene Anmeldung (Jarvis speichert dafür nichts)
+let cliBackends: CliBackends | undefined;
+try { if (backendRuntime) cliBackends = new CliBackends(backendRuntime.store, new CliAgent({ daemonUrl: `http://127.0.0.1:${PORT}`, workspace })); } catch { /* die übrigen Backends bleiben nutzbar */ }
+const cliModels = new Map<CliKind, CliModel[]>([["claude", staticModels("claude")], ["codex", []]]);
+let cliModelsAt = 0;
+async function refreshCliModels(force = false) {   // Codex liefert seinen Modellkatalog selbst (`codex debug models`, kein Modellaufruf)
+  if (!force && Date.now() - cliModelsAt < 10 * 60_000) return;
+  cliModelsAt = Date.now();
+  const list = await loadCodexModels();
+  if (list.length) { cliModels.set("codex", list); broadcast(backendState()); broadcast(state()); }
+}
+const cliModelEntries = (kind: CliKind) => {
+  const config = cliBackends!.configs[kind], list = cliModels.get(kind) ?? [];
+  const known = list.some(m => m.id === config.model) || !config.model;
+  return [{ id: cliModelId(kind, defaultCliConfig()), provider: kind, model: "Vorgabe", group: "other" as const, vision: kind === "codex" || config.files === "read" },
+    ...(known ? [] : [{ id: cliModelId(kind, config), provider: kind, model: config.model, group: "other" as const, vision: kind === "codex" || config.files === "read" }]),
+    ...list.map(m => ({ id: `${kind}/${m.id}`, provider: kind, model: m.label, group: "other" as const, vision: kind === "codex" || config.files === "read" }))];
+};
+// Limit-Anzeige: Rest-Kontingent aus den Programmen selbst (kein Modellaufruf, kein Verbrauch)
+const cliLimits = new Map<CliKind, Limits>(), limitsBusy = new Map<CliKind, Promise<void>>();
+const limitsMessage = () => ({ type: "limits", limits: Object.fromEntries(cliLimits) });
+async function refreshLimits(kind: CliKind, force = false) {
+  const known = cliLimits.get(kind);
+  if (!force && known && Date.now() - known.at < 20_000) return;
+  let run = limitsBusy.get(kind);
+  if (!run) { run = (async () => { cliLimits.set(kind, await readLimits(kind)); })().finally(() => limitsBusy.delete(kind)); limitsBusy.set(kind, run); }
+  await run; broadcast(limitsMessage());
+}
+setInterval(() => { const b = effectiveBackend(); if (uis.size && cliBackends && isCliKind(b)) void refreshLimits(b); }, 5 * 60_000);
+const cliStatus = new Map<CliKind, { installed: boolean; loggedIn: boolean; detail: string; at: number }>();
+async function refreshCliStatus(kind: CliKind, force = false) {
+  const known = cliStatus.get(kind);
+  if (known && !force && Date.now() - known.at < 30_000) return known;
+  const status = { ...(await (cliBackends?.agent.status(kind) ?? Promise.resolve({ installed: false, loggedIn: false, detail: "Nicht verfügbar" }))), at: Date.now() };
+  cliStatus.set(kind, status);
+  return status;
+}
+if (cliBackends) void refreshCliModels();
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
@@ -128,18 +175,25 @@ const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boo
   if (!id) { id = ++uiSeq; uiIds.set(ws, id); }
   return id;
 };
-const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const ui of uis) ui.send(s); };
+// Der App-Name aus den Einstellungen ersetzt „Jarvis“ in Hinweisen, Fehlern und Ansagen (nicht in „Jarvis Bildschirm“, dem Namen der macOS-App)
+const brand = (text: string) => (settings.appName && settings.appName !== "Jarvis" ? text.replace(/\bJarvis\b(?! Bildschirm)/g, settings.appName) : text);
+const branded = (msg: any) => (msg && (msg.type === "notice" || msg.type === "error")
+  ? { ...msg, ...(typeof msg.text === "string" ? { text: brand(msg.text) } : {}), ...(typeof msg.message === "string" ? { message: brand(msg.message) } : {}) } : msg);
+const broadcast = (msg: unknown) => { const s = JSON.stringify(branded(msg)); for (const ui of uis) ui.send(s); };
 type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
-const effectiveBackend = () => session ? (isHermes(session) ? "hermes" : "opencode") : (backendRuntime?.active ?? "opencode");
+const effectiveBackend = (): BackendId => session ? (isHermes(session) ? "hermes" : cliKindOf(session) ?? "opencode") : (backendRuntime?.active ?? "opencode");
 const hermesModelId = () => `hermes/${backendRuntime?.config.provider ?? "default"}/${backendRuntime?.config.model ?? "hermes-agent"}`;
 const state = () => {
-  const hermes = effectiveBackend() === "hermes";
+  const backend = effectiveBackend(), hermes = backend === "hermes", cli = isCliKind(backend) && cliBackends ? backend : undefined;
   const id = hermesModelId(), config = backendRuntime?.config;
-  return { type: "state", ...settings, ...(hermes ? { model: id, voiceModel: id } : {}), extStale: extensionStale,
-    backend: hermes ? "hermes" : "opencode", busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
-    speech: speech.connected, voice, models: hermes ? [{ id, provider: config?.provider ?? "default", model: config?.model ?? "hermes-agent", group: "other", vision: config?.modelSupportsVision === true }] : models, devices: audioDevices };
+  const cliConfig = cli ? cliBackends!.configs[cli] : undefined, cliId = cli ? cliModelId(cli, cliConfig!) : "";
+  const own = hermes ? id : cliId;
+  return { type: "state", ...settings, logo: logoVersion, ...(own ? { model: own, voiceModel: own } : {}), extStale: extensionStale,
+    backend, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
+    speech: speech.connected, voice, models: hermes ? [{ id, provider: config?.provider ?? "default", model: config?.model ?? "hermes-agent", group: "other", vision: config?.modelSupportsVision === true }]
+      : cli ? cliModelEntries(cli) : models, devices: audioDevices };
 };
 
 // ---------- Sprache ----------
@@ -372,11 +426,24 @@ function requestVoice(ws: ServerWebSocket<{ kind: string; fresh?: boolean; trust
   setVoice(mode);
 }
 
+function cliHistory() {
+  return (cliBackends?.rows ?? []).map(r => ({ id: r.id, title: visibleChatTitle(chatMeta[r.id]) || r.title,
+    folder: projects.label(projects.chat(r.id)?.projectId ?? null), active: r.id === session, running: busySessions.has(r.id),
+    updated: r.updated, pinned: !!chatMeta[r.id]?.pinned, archived: !!chatMeta[r.id]?.archived,
+    projectId: projects.chat(r.id)?.projectId ?? null, project: projects.label(projects.chat(r.id)?.projectId ?? null) }));
+}
 function hermesHistory() {
   return (backendRuntime?.rows ?? []).map(r => ({ id: r.id, title: visibleChatTitle(chatMeta[r.id]) || r.title,
     folder: projects.label(projects.chat(r.id)?.projectId ?? null), active: r.id === session, running: busySessions.has(r.id),
     updated: r.updated, pinned: !!chatMeta[r.id]?.pinned, archived: !!chatMeta[r.id]?.archived,
     projectId: projects.chat(r.id)?.projectId ?? null, project: projects.label(projects.chat(r.id)?.projectId ?? null) }));
+}
+function cliBackendState(kind: CliKind) {
+  const st = cliStatus.get(kind), cfg = cliBackends?.configs[kind] ?? defaultCliConfig();
+  return { label: CLI_LABEL[kind], loginManaged: true, keySet: false,
+    status: !cliBackends ? "unsupported" : !st ? "connecting" : !st.installed ? "unsupported" : st.loggedIn ? "ready" : "error",
+    ...(st && !st.loggedIn ? { error: st.detail } : {}), config: { provider: kind, model: cfg.model, files: cfg.files, effort: cfg.effort, adopt: cfg.adopt }, installed: scanInstalled(kind), providers: [],
+    models: (cliModels.get(kind) ?? []).map(m => ({ id: m.id, label: m.label })), efforts: effortsFor(kind) };
 }
 function backendState() {
   let keySet = false, providerKeySet = false;
@@ -388,10 +455,12 @@ function backendState() {
       externalGatewayManaged: c ? managedGateway(c.baseUrl) : false,
       ...((c && !managedGateway(c.baseUrl)) ? { error: "Externes Hermes-Gateway: Werkzeugregeln müssen dort separat eingerichtet sein." } : {}),
       config: { provider: c?.provider ?? "default", model: c?.model ?? "hermes-agent", serverUrl: c?.baseUrl ?? "http://127.0.0.1:8642", modelBaseUrl: c?.modelBaseUrl ?? "", modelSupportsVision: c?.modelSupportsVision ?? false },
-      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] }
+      providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] },
+    claude: cliBackendState("claude"), codex: cliBackendState("codex")
   } };
 }
 async function abortBackend(id: string) {
+  if (isCli(id)) { await cliBackends?.agent.abort(id); return; }
   if (isHermes(id)) { if (!backendRuntime) throw new Error("Hermes nicht verfügbar"); await backendRuntime.client(id).abort(backendRuntime.raw(id)); }
   else await brain.abort(id);
 }
@@ -408,10 +477,10 @@ async function history() {
                    folder: projects.label(projects.chat(s.id)?.projectId ?? null), active: s.id === session, running: busySessions.has(s.id),
                    updated: s.time?.updated ?? 0, pinned: !!chatMeta[s.id]?.pinned, archived: !!chatMeta[s.id]?.archived, projectId: projects.chat(s.id)?.projectId ?? null,
                    project: projects.label(projects.chat(s.id)?.projectId ?? null) }));
-    return [...opencodeSessions, ...hermesHistory()].sort((a, b) => b.updated - a.updated);
+    return [...opencodeSessions, ...hermesHistory(), ...cliHistory()].sort((a, b) => b.updated - a.updated);
   } catch (error) {
     recordError({ category: "model", source: "jarvisd/history", message: "Verlauf von OpenCode nicht abrufbar", error, context: { url: brain.url } });
-    return hermesHistory();
+    return [...hermesHistory(), ...cliHistory()].sort((a, b) => b.updated - a.updated);
   }
 }
 const ATTACHMENT_HEADER = "Angehängte Dateien: ";
@@ -448,6 +517,11 @@ function readChatMessage(message: any) {
 }
 
 async function sessionMessages(id: string) {
+  if (isCli(id)) {
+    if (!cliBackends) throw new Error("Claude Code und Codex sind nicht verfügbar");
+    return cliBackends.messages(id).map(m => ({ info: { id: m.id, role: m.role },
+      parts: [{ type: "text", text: m.text }, ...(m.files?.length ? [{ type: "text", text: `${ATTACHMENT_HEADER}${JSON.stringify(m.files)}\n` }] : [])] }));
+  }
   if (isHermes(id)) {
     if (!backendRuntime) throw new Error("Hermes nicht verfügbar");
     backendRuntime.client(id); // vor dem Start prüfen, ob der Chat zu diesem Server gehört
@@ -602,11 +676,13 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
 let runSeq = 0, voiceRun = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
+const SPOKEN_SUFFIX = "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll. Antworte knapp und direkt in vollständigen Sätzen. Wenn der Nutzer um Details bittet oder etwas vorgelesen haben möchte, gib den gewünschten Inhalt vollständig wieder. Erwähne Koordinaten und Elementnummern nur auf Nachfrage.";
 type ActiveTurn = { run: number; sid?: string; spoken: boolean; click?: ClickIntent; clickSent?: boolean; clickInFlight?: boolean; firstAction?: Promise<void> };
 let activeTurn: ActiveTurn | undefined;
 let recentClick: { session: string; intent: ClickIntent; text: string; at: number } | undefined;
 
 function say(text: string) {
+  text = brand(text);
   lastSayAt = Date.now();
   recentSaid.push({ text, at: lastSayAt });
   if (recentSaid.length > 10) recentSaid.shift();
@@ -682,7 +758,7 @@ async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: A
   const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
   let response = "", finished = false;
   try {
-    await client.prompt(rawId, (text || "Sieh dir die angehängten Dateien an.") + attachmentText, SYSTEM_PROMPT, (event: BrainEvent) => {
+    await client.prompt(rawId, (text || "Sieh dir die angehängten Dateien an.") + attachmentText, systemPrompt(settings.appName), (event: BrainEvent) => {
       if (finished || latestRun.get(id) !== run) return;
       if (event.kind === "text") { response += event.delta; if (!spoken) emit({ type: "delta", text: event.delta }); }
       else if (event.kind === "tool") emit({ type: "tool", ...event });
@@ -700,6 +776,85 @@ async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: A
   } finally { hermesActivity--; }
 }
 
+// Claude Code und Codex: je Nachricht ein Lauf des installierten Programms; Jarvis führt den Verlauf und die Werkzeuge (Jarvis-MCP) selbst.
+async function chatCli(kind: CliKind, text: string, spoken: boolean, fresh: boolean, atts: Attachment[], existing?: string) {
+  const cli = cliBackends, stopGeneration = hermesStopGeneration, label = CLI_LABEL[kind];
+  const fail = (message: string) => broadcast({ type: "error", message, session: existing });
+  if (!cli) { fail(`${label} ist auf diesem System nicht verfügbar.`); return; }
+  const status = await refreshCliStatus(kind);
+  if (!status.installed || !status.loggedIn) { fail(status.detail); return; }
+  if (stopGeneration !== hermesStopGeneration) return;
+  const config = cli.configs[kind];
+  let attachmentText = ""; const names: string[] = [], imageFiles: string[] = [];
+  if (atts.length) {
+    if (hasImages(atts) && kind === "claude" && config.files !== "read") { fail("Claude Code kann Bilder nur ansehen, wenn in den Backend-Einstellungen „Dateien lesen“ erlaubt ist."); return; }
+    const prepared = await prepare(atts, join(workspace, "uploads"), true);
+    if (prepared.problems.length) { fail(`Mindestens ein Anhang kann nicht an ${label} übergeben werden.`); return; }
+    if (prepared.notes.length) broadcast({ type: "notice", text: prepared.notes.join(" "), session: existing });
+    attachmentText = `\n\n${ATTACHMENT_HEADER}${JSON.stringify(atts.map(a => a.name))}\n${prepared.text}`;
+    names.push(...atts.map(a => a.name));
+    for (const image of prepared.images) {
+      const m = /^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/.exec(image.url);
+      if (!m) continue;
+      const file = join(workspace, "uploads", `${crypto.randomUUID()}.${m[1].replace("jpeg", "jpg")}`);
+      writeFileSync(file, Buffer.from(m[2], "base64")); imageFiles.push(file);
+    }
+  }
+  if (stopGeneration !== hermesStopGeneration) return;
+  const run = ++runSeq;
+  if (existing) latestRun.set(existing, run);
+  if (existing && busySessions.has(existing)) await abortBackend(existing);
+  if (existing && latestRun.get(existing) !== run) return;
+  const id = existing ?? cli.createSession(kind, provisionalChatTitle(text));
+  if (stopGeneration !== hermesStopGeneration) { if (!existing) cli.remove(id); return; }
+  if (!existing && !fresh) { session = id; broadcast({ type: "session", id }); }
+  latestRun.set(id, run); if (spoken) voiceRun = run;
+  busySessions.add(id); runBuffer.start(id); broadcast(state());
+  // Wie bei OpenCode: Jarvis spricht die kurze Ansage vor einer Aktion selbst (announceToolAction braucht den aktiven Lauf)
+  const turn: ActiveTurn = { run, spoken, sid: id };
+  activeTurn = turn;
+  cli.append(id, { role: "user", text: text || "Sieh dir die angehängten Dateien an.", ...(names.length ? { files: names } : {}) });
+  const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
+  let response = "", finalSpeech = "", finished = false, afterTool = false, toolSeen = false;
+  try {
+    const row = cli.get(id);
+    const hint = kind === "claude" && imageFiles.length ? `\n\nBilder liegen unter: ${imageFiles.join(", ")} (mit Read ansehen).` : "";
+    const result = await cli.agent.prompt(id, { kind, config, input: (text || "Sieh dir die angehängten Dateien an.") + attachmentText + hint, instructions: spoken ? systemPrompt(settings.appName) + SPOKEN_SUFFIX : systemPrompt(settings.appName),
+      native: row.native, resume: row.started, images: kind === "codex" ? imageFiles : [] }, (event: BrainEvent) => {
+      if (finished || latestRun.get(id) !== run) return;
+      if (event.kind === "text") {
+        // Text nach einem Werkzeug beginnt einen neuen Absatz („…Moment.“ und „YouTube ist geöffnet“ nicht aneinanderkleben)
+        const delta = afterTool && response ? `\n\n${event.delta}` : event.delta;
+        afterTool = false; response += delta; finalSpeech += delta;
+        if (!spoken) emit({ type: "delta", text: delta });
+      }
+      else if (event.kind === "tool") {
+        emit({ type: "tool", ...event });
+        toolSeen = true;
+        if (event.status === "running") { afterTool = true; finalSpeech = ""; }   // gesprochen wird nur, was nach dem letzten Werkzeug kommt
+      }
+      else if (event.kind === "reasoning") { if (!spoken) emit({ type: "reasoning", text: event.delta }); }
+      else {
+        finished = true;
+        if (event.kind === "done" && !event.aborted && spoken) {
+          const toRead = formatLiveSpeech(finalSpeech || (!toolSeen ? response : ""), text) || "Ich konnte die Antwort nicht abschließen.";
+          emit({ type: "delta", text: toRead }); liveAnswer.deliver(run, toRead);
+        }
+        emit({ type: event.kind, ...event });
+      }
+    });
+    if (result.native) cli.markStarted(id, result.native);
+  } finally {
+    if (response) cli.append(id, { role: "assistant", text: response });
+    for (const file of imageFiles) { try { unlinkSync(file); } catch { /* schon weg */ } }
+    if (activeTurn === turn) activeTurn = undefined;
+    busySessions.delete(id); runBuffer.clear(id);
+    if (fresh) { try { cli.remove(id); } catch { /* schon weg */ } } else cli.touch(id);
+    if (!fresh) setTimeout(() => void refreshLimits(kind), 3000);   // das Kontingent ändert sich erst nach dem Lauf   // „fresh“ = kurzlebiger Testchat, kein Verlauf
+    broadcast(state()); broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
+  }
+}
+
 async function chat(text: string, model = settings.model, spoken = false, tried: string[] = [], fresh = false, atts: Attachment[] = [], saved?: SavedAttachments,
                     target?: string | null, replaces?: string) {
   // target: der Chat, an den die Nachricht geht (Standard: der gezeigte); null = neuen Chat anlegen; replaces: der verlorene Chat, den er ersetzt
@@ -707,6 +862,8 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
   if ((existing && isHermes(existing)) || (!existing && backendRuntime?.active === "hermes")) {
     return chatHermes(text, spoken, fresh, atts, existing);
   }
+  const cliKind = existing ? cliKindOf(existing) : isCliKind(backendRuntime?.active) ? backendRuntime!.active as CliKind : undefined;
+  if (cliKind) return chatCli(cliKind, text, spoken, fresh, atts, existing);
   const runId = ++runSeq;
   let click = requestedClick(text);
   let clickContext: string | undefined;
@@ -757,7 +914,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
   }, 1300);
-  const system = spoken ? SYSTEM_PROMPT + "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll. Antworte knapp und direkt in vollständigen Sätzen. Wenn der Nutzer um Details bittet oder etwas vorgelesen haben möchte, gib den gewünschten Inhalt vollständig wieder. Erwähne Koordinaten und Elementnummern nur auf Nachfrage." : SYSTEM_PROMPT;
+  const system = spoken ? systemPrompt(settings.appName) + SPOKEN_SUFFIX : systemPrompt(settings.appName);
   const attachmentBlocks = saved?.text ? [saved.text] : [];
   const attachmentNames = [...(saved?.names ?? []), ...atts.map(file => file.name)];
   const images = canSee(model) ? [...(saved?.images ?? [])] : [];
@@ -951,6 +1108,7 @@ async function setSessionTitle(id: string, title: string, provisional: boolean) 
   chatMeta[id] = { ...chatMeta[id], title, auto: true, provisional };
   saveChatMeta();
   if (isHermes(id) && backendRuntime) { backendRuntime.rename(id, title); await backendRuntime.client(id).renameSession(backendRuntime.raw(id), title).catch(() => {}); }
+  else if (isCli(id)) cliBackends?.rename(id, title);
   else await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) }).catch(() => {});
   void syncProjects();
   broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
@@ -966,6 +1124,7 @@ async function updateChat(msg: any) {
     if (!title) return;
     chatMeta[id] = { ...chatMeta[id], title, auto: false }; saveChatMeta();
     if (isHermes(id) && backendRuntime) { await backendRuntime.client(id).renameSession(backendRuntime.raw(id), title); backendRuntime.rename(id, title); }
+    else if (isCli(id)) cliBackends?.rename(id, title);
     else await fetch(`${brain.url}/session/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
   } else if (msg.action === "pin" || msg.action === "archive") {
     const key = msg.action === "pin" ? "pinned" : "archived";
@@ -983,6 +1142,7 @@ async function updateChat(msg: any) {
   } else if (msg.action === "delete") {
     if (busySessions.has(id)) await abortBackend(id);
     if (isHermes(id) && backendRuntime) { await backendRuntime.client(id).deleteSession(backendRuntime.raw(id)); backendRuntime.remove(id); }
+    else if (isCli(id)) cliBackends?.remove(id);
     else { const response = await fetch(`${brain.url}/session/${id}`, { method: "DELETE" });
       if (!response.ok) throw new Error(`Chat konnte nicht gelöscht werden (${response.status})`); }
     delete chatMeta[id]; saveChatMeta();
@@ -992,6 +1152,7 @@ async function updateChat(msg: any) {
 }
 async function rewindMessage(id: string, messageID: string) {
   if (isHermes(id)) throw new Error("Bearbeiten und erneutes Senden sind für Hermes noch nicht verfügbar");
+  if (isCli(id)) throw new Error("Bearbeiten und erneutes Senden sind für Claude Code und Codex noch nicht verfügbar");
   if (busySessions.has(id)) await abortBackend(id);
   const response = await fetch(`${brain.url}/session/${id}/revert`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageID }) });
   if (!response.ok) throw new Error(`Nachricht konnte nicht zurückgesetzt werden (${response.status})`);
@@ -1551,6 +1712,10 @@ async function route(req: Request, srv: any) {
       const file = Bun.file(join(ROOT, "app/ui", rel.replace(/\.\.+/g, "")));
       return (await file.exists()) ? new Response(file) : new Response("nicht gefunden", { status: 404 });
     }
+    if (u.pathname === "/logo") {   // das hochgeladene Logo (nur PNG, geprüft beim Speichern)
+      const file = logo.file_();
+      return logoVersion > 0 && await file.exists() ? new Response(file, { headers: { "content-type": "image/png", "cache-control": "no-cache", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" } }) : new Response("kein Logo", { status: 404 });
+    }
     if (u.pathname === "/health") return Response.json({ ok: true, opencode: await brain.healthy(), browser: browser.connected });
     if (u.pathname === "/usage") return Response.json(summarize(readUsage(), parseRange(u.searchParams.get("range"))));
     if (u.pathname === "/models") return Response.json(models = await listModels());
@@ -1584,15 +1749,45 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       const msg = JSON.parse(raw);
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
       if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
+      if (msg.type === "logo_set" || msg.type === "logo_clear") {
+        const done = (ok: boolean, error?: string) => ws.send(JSON.stringify({ type: "logo_saved", ok, ...(error ? { error } : {}) }));
+        if (!ws.data.trusted) { done(false, "Nicht vertrauenswürdiger Ursprung"); return; }
+        try {
+          if (msg.type === "logo_set") logoVersion = logo.save(msg.data); else { logo.clear(msg.none === true); logoVersion = logo.version(); }
+          done(true); broadcast(state());
+        } catch (error) { done(false, error instanceof Error && /^Das Logo/.test(error.message) ? error.message : "Das Logo konnte nicht gespeichert werden"); }
+        return;
+      }
+      if (msg.type === "limits_get") {
+        if (ws.data.trusted && cliBackends) await Promise.all((["claude", "codex"] as const).map(kind => refreshLimits(kind, msg.force === true)));
+        ws.send(JSON.stringify(limitsMessage())); return;
+      }
       if (typeof msg.type === "string" && msg.type.startsWith("backend_")) {
         const reply = (m: unknown) => ws.send(JSON.stringify(m));
         if (!ws.data.trusted) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Nicht vertrauenswürdiger Ursprung" }); return; }
-        if (msg.type === "backend_get") { reply(backendState()); return; }
+        if (msg.type === "backend_get") { reply(backendState()); for (const kind of ["claude", "codex"] as const) void refreshCliStatus(kind).then(() => broadcast(backendState()));
+          void refreshCliModels(); return; }
         const backend = backendRuntime;
-        if (!backend || !["hermes", "opencode"].includes(msg.backend)) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Backend nicht verfügbar" }); return; }
+        if (!backend || !BACKEND_IDS.includes(msg.backend)) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Backend nicht verfügbar" }); return; }
         try {
           if (msg.type === "backend_set") {
             backend.setActive(msg.backend); broadcast(backendState()); broadcast(state()); return;
+          }
+          if (isCliKind(msg.backend)) {
+            const kind: CliKind = msg.backend, label = CLI_LABEL[kind];
+            if (!cliBackends) throw new Error(`${label} ist nicht verfügbar`);
+            if (msg.type === "backend_config") {
+              if ([...busySessions].some(isCli)) throw new Error(`${label} arbeitet noch; Einstellungen erst danach ändern`);
+              cliBackends.configure(kind, msg.config);
+            } else if (msg.type === "backend_secret") throw new Error(`${label} meldet sich selbst an; Jarvis speichert dafür keine Schlüssel oder Passwörter`);
+            else if (msg.type === "backend_test") {
+              const started = performance.now(), st = await refreshCliStatus(kind, true);
+              broadcast(backendState());
+              if (!st.installed || !st.loggedIn) throw new Error(`${label}: ${st.detail}`);
+              reply({ type: "backend_test", backend: kind, ok: true, latencyMs: Math.round(performance.now() - started) }); return;
+            } else if (msg.type === "backend_set") { backend.setActive(kind); broadcast(backendState()); broadcast(state()); return; }
+            else return;
+            reply({ type: "backend_saved", backend: kind, ok: true }); broadcast(backendState()); broadcast(state()); return;
           }
           if (msg.type === "backend_config") {
             if (msg.backend !== "hermes") throw new Error("OpenCode wird über seine eigene Konfiguration eingerichtet");
@@ -1617,7 +1812,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           } else return;
           reply({ type: "backend_saved", backend: msg.backend, ok: true }); broadcast(backendState()); broadcast(state());
         } catch (error) {
-          const message = error instanceof Error && /^(Hermes|OpenCode|Der verwaltete|Nicht vertrauenswürdiger)/.test(error.message) ? error.message : "Backend-Einstellung konnte nicht verarbeitet werden";
+          const message = error instanceof Error && /^(Hermes|OpenCode|Claude|Codex|Der verwaltete|Nicht vertrauenswürdiger|Modellname|Dateizugriff|Ungültige Einstellungen)/.test(error.message) ? error.message : "Backend-Einstellung konnte nicht verarbeitet werden";
           reply({ type: msg.type === "backend_test" ? "backend_test" : "backend_saved", backend: msg.backend, ok: false, error: message });
         }
         return;
@@ -1635,6 +1830,7 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           if (text.trim() || atts.length) await chat(text, msg.model, false, [], ws.data.fresh, atts);
         } else {
           const id = String(msg.id), messageID = String(msg.messageID);
+          if (isCli(id)) { ws.send(JSON.stringify({ type: "error", session: id, message: "Bearbeiten und erneutes Senden sind für Claude Code und Codex noch nicht möglich." })); return; }
           if (isHermes(id)) { ws.send(JSON.stringify({ type: "error", session: id, message: "Hermes bietet kein Zurücksetzen auf eine bestimmte Nachricht. Bearbeiten und erneutes Senden sind deshalb noch nicht möglich." })); return; }
           const original = (await sessionMessages(id)).find(message => message.info?.id === messageID && message.info.role === "user");
           if (!original) throw new Error("Nachricht nicht gefunden");
@@ -1656,6 +1852,20 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           for (const key of ["model", "voiceModel"] as const) {
             if (!(key in patch)) continue;
             if (patch[key] !== hermesModelId()) ws.send(JSON.stringify({ type: "notice", text: "Hermes-Modelle werden in den Backend-Einstellungen gewählt." }));
+            delete patch[key];
+          }
+        }
+        if (isCliKind(effectiveBackend()) && cliBackends) {
+          // Claude Code und Codex: die Modellwahl im Chat setzt das Modell des Programms (Denkaufwand und Dateizugriff bleiben)
+          const kind = effectiveBackend() as CliKind, config = cliBackends.configs[kind];
+          for (const key of ["model", "voiceModel"] as const) {
+            if (!(key in patch)) continue;
+            const picked = String(patch[key]), prefix = `${kind}/`;
+            if (key === "model" && picked.startsWith(prefix)) {
+              const name = picked.slice(prefix.length) === "default" ? "" : picked.slice(prefix.length);
+              try { cliBackends.configure(kind, { ...config, model: name }); broadcast(backendState()); }
+              catch { ws.send(JSON.stringify({ type: "notice", text: "Modellname ungültig." })); }
+            } else ws.send(JSON.stringify({ type: "notice", text: `${CLI_LABEL[kind]}: Das Modell wählst du im Modellmenü oder in den Backend-Einstellungen.` }));
             delete patch[key];
           }
         }
@@ -1750,7 +1960,8 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       else if (msg.type === "chat_action") await updateChat(msg);
       else if (msg.type === "rewind") {
         const id = String(msg.id);
-        if (isHermes(id)) ws.send(JSON.stringify({ type: "error", session: id, message: "Hermes bietet kein Zurücksetzen auf eine bestimmte Nachricht." }));
+        if (isCli(id)) ws.send(JSON.stringify({ type: "error", session: id, message: "Claude Code und Codex bieten kein Zurücksetzen auf eine bestimmte Nachricht." }));
+        else if (isHermes(id)) ws.send(JSON.stringify({ type: "error", session: id, message: "Hermes bietet kein Zurücksetzen auf eine bestimmte Nachricht." }));
         else await rewindMessage(id, String(msg.messageID));
       }
       else if (msg.type === "new") { session = undefined; broadcast(state()); }

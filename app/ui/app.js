@@ -6,6 +6,9 @@ import { renderMarkdown } from "./markdown.js";
 import { BlurText } from "./blurtext.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
 import { initBackendPanel } from "./backend-panel.js";
+import { limitLevel, limitSummary, normalizeLimits } from "./backends.js";
+import { DEFAULT_NAME, cleanAppName, watchName } from "./appname.js";
+import { checkLogoFile, fileToLogoPng, logoUrl } from "./logo.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
@@ -110,6 +113,8 @@ function handle(m) {
     case "ext_scan": renderImport(m); break;
     // Backend-Wechsel: Nachrichten nach dem Vertrag aus PR #63 (Formen in backends.js, docs/backend-ui.md)
     case "backend": case "backend_saved": case "backend_test": backendPanel.handle(m); break;
+    case "logo_saved": $("#setLogo-hint").textContent = m.ok ? "" : (m.error || "Das Logo konnte nicht gespeichert werden."); break;
+    case "limits": backendPanel.handle(m); limitState = normalizeLimits(m); renderLimitChip(); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
     case "dt_open": dtOpen(m.id, m.url); break;
@@ -131,9 +136,69 @@ function handle(m) {
 
 // ---------- Kopfzeile / Status ----------
 const short = id => id ? id.split("/").pop().replace(/-free$/, "") : "…";
+// Limit-Chip in der Kopfzeile: nur für Claude Code und Codex, Rest-Kontingent aus den Programmen selbst
+let limitState = {}, limitAsked = 0;
+function renderLimitChip() {
+  const chip = $("#limitChip"), kind = state.backend === "claude" || state.backend === "codex" ? state.backend : "";
+  chip.hidden = !kind;
+  if (!kind) return;
+  const s = limitSummary(limitState[kind]);
+  $("#limitText").textContent = s.text; $("#limitShort").textContent = s.short; chip.title = s.title + "\nKlicken zum Aktualisieren"; chip.dataset.level = limitLevel(s.percent);
+  if (!limitState[kind] && Date.now() - limitAsked > 15000) { limitAsked = Date.now(); send({ type: "limits_get" }); }
+}
+$("#limitChip").onclick = () => { limitAsked = Date.now(); send({ type: "limits_get", force: true }); };
+// App-Name: aus den Einstellungen des Daemons, ersetzt „Jarvis“ überall in der Oberfläche
+const appNameWatch = watchName(() => state.appName || DEFAULT_NAME);
+let shownName = "";
+function renderAppName() {
+  const name = state.appName || DEFAULT_NAME;
+  if (name !== shownName) {
+    shownName = name; appNameWatch.refresh();
+    try { tauri?.window?.getCurrentWindow?.().setTitle(name); } catch { /* Fenstertitel nur in der App */ }
+  }
+  const input = $("#setAppName");
+  if (input && document.activeElement !== input) input.value = name === DEFAULT_NAME ? "" : name;
+  $("#setAppNameReset").disabled = name === DEFAULT_NAME;
+}
+{
+  let timer = 0;
+  const send_ = value => { const name = cleanAppName(value) || (value.trim() === "" ? DEFAULT_NAME : ""); $("#setAppName-hint").textContent = name ? "" : "1 bis 24 Zeichen, ohne < > \" ` \\."; if (name && name !== (state.appName || DEFAULT_NAME)) send({ type: "settings", settings: { appName: name } }); };
+  $("#setAppName").addEventListener("input", e => { clearTimeout(timer); timer = setTimeout(() => send_(e.target.value), 500); });
+  $("#setAppName").addEventListener("change", e => { clearTimeout(timer); send_(e.target.value); });
+  $("#setAppNameReset").addEventListener("click", () => { clearTimeout(timer); $("#setAppName").value = ""; $("#setAppName-hint").textContent = ""; send({ type: "settings", settings: { appName: DEFAULT_NAME } }); });
+}
+// Logo: ohne hochgeladenes Bild gibt es keins (Seitenleiste ohne Bild, Tab-Symbol wie ursprünglich)
+const iconLinks = [...document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]')].map(link => [link, link.getAttribute("href")]);
+let shownLogo = null;
+const BLANK_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";   // 1×1 transparent
+function renderLogo() {
+  const version = Number(state.logo) || 0;
+  if (version !== shownLogo) {
+    shownLogo = version;
+    const url = logoUrl(DAEMON, version), rail = $("#railLogo"), prev = $("#logoPreviewImg");
+    rail.hidden = prev.hidden = !url;
+    if (url) { rail.src = url; prev.src = url; } else { rail.removeAttribute("src"); prev.removeAttribute("src"); }
+    for (const [link, original] of iconLinks) link.setAttribute("href", url || (version < 0 ? BLANK_ICON : original));
+  }
+  $("#logoClear").disabled = version < 0;        // schon ausdrücklich ohne Logo
+  $("#logoDefault").disabled = version === 0;    // schon Standard
+}
+$("#logoUpload").addEventListener("click", () => $("#logoFile").click());
+$("#logoFile").addEventListener("change", async event => {
+  const file = event.target.files?.[0]; event.target.value = "";
+  const hint = $("#setLogo-hint"), problem = checkLogoFile(file);
+  if (problem) { hint.textContent = problem; return; }
+  try { hint.textContent = "Lädt hoch …"; send({ type: "logo_set", data: await fileToLogoPng(file) }); }
+  catch (error) { hint.textContent = error.message || "Das Bild konnte nicht gelesen werden."; }
+});
+$("#logoClear").addEventListener("click", () => { $("#setLogo-hint").textContent = ""; send({ type: "logo_clear", none: true }); });
+$("#logoDefault").addEventListener("click", () => { $("#setLogo-hint").textContent = ""; send({ type: "logo_clear" }); });
 function renderState() {
+  renderLogo();
+  renderAppName();
+  renderLimitChip();
   syncBusy();
-  $("#modelName").textContent = short(state.model);
+  { const cur = (state.backend === "claude" || state.backend === "codex") && (state.models || []).find(x => x.id === state.model); $("#modelName").textContent = cur ? cur.model : short(state.model); }
   $("#footModel").textContent = state.model;
   const pill = $("#browserPill");
   pill.classList.toggle("ok", state.browser);
@@ -546,7 +611,7 @@ const setRail = open => {
   railBtn.setAttribute("aria-expanded", String(open));
   railBtn.setAttribute("aria-label", open ? "Seitenleiste schließen" : "Seitenleiste öffnen");
   railBtn.title = open ? "Seitenleiste schließen" : "Seitenleiste öffnen";
-  railBtn.querySelector("span").innerHTML = icon(open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand");
+  railBtn.querySelector("span").innerHTML = icon(open ? "panel-left" : "layout-sidebar-left-expand");
   try { localStorage.setItem("jarvis.rail", open ? "open" : "collapsed"); } catch {}
 };
 railBtn.onclick = () => setRail($("#app").dataset.rail !== "open");
@@ -1496,7 +1561,17 @@ function renderModels(filter = "") {
   }
 }
 $("#chatSearch").addEventListener("input", () => renderHistory(historySessions));
-$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); requestAnimationFrame(() => $("#chatSearch").focus()); } });
+// Suche: bei offener Leiste erst nach Klick auf das Such-Symbol oben (wie bei Gemini), bei zugeklappter Leiste öffnet das Symbol die Leiste
+{
+  const app = $("#app"), field = $("#chatSearch");
+  const openSearch = () => { app.dataset.search = "1"; requestAnimationFrame(() => field.focus()); };
+  $("#railSearch").addEventListener("click", openSearch);
+  field.addEventListener("input", () => { if (field.value) app.dataset.search = "1"; });
+  field.addEventListener("blur", () => { if (!field.value) delete app.dataset.search; });
+  field.addEventListener("keydown", e => { if (e.key === "Escape") { field.value = ""; field.dispatchEvent(new Event("input", { bubbles: true })); delete app.dataset.search; field.blur(); } });
+  window.__openChatSearch = openSearch;
+}
+$(".chat-search").addEventListener("click", () => { if ($("#app").dataset.rail !== "open") { setRail(true); window.__openChatSearch(); } });
 function showChatAction(action, id = "", title = "", value = "") {
   pendingChatAction = { action, id, title };
   const labels = { folder: "Projekt erstellen", rename: "Chat umbenennen", move: "Chat verschieben", delete: "Chat löschen?",

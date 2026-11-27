@@ -65,3 +65,23 @@ Mehrere Chats laufen gleichzeitig; jeder hat seinen eigenen Lauf (OpenCode-Sitzu
   - **Text-/Code-Dateien** (UTF-8) werden eingebettet, über 60 000 Zeichen gekürzt.
   - **PDF**: Text per `pdftotext` (poppler), falls installiert; sonst nur Pfad.
   - Alles andere: nur Pfad, dazu ein Hinweis; Fehlschläge landen als Kategorie `ui`, Quelle `jarvisd/attachment` im Fehler-Log.
+
+## App-Name (Einstellungen → Allgemein → „Name der App“)
+
+`appName` in `~/.jarvis3/settings.json` (Standard „Jarvis“, 1 bis 24 Zeichen, keine Steuerzeichen und `< > " ` \`; Prüfung `cleanAppName` in `core/src/settings.ts` und `app/ui/appname.js`). Gilt sofort für alle verbundenen Oberflächen (`state.appName`):
+
+- **Oberfläche:** `app/ui/appname.js` ersetzt „Jarvis“ in Texten und Beschriftungen (`title`, `placeholder`, `aria-label`, `alt`), im Seitentitel und, in der Desktop-Hülle, im Fenstertitel; auch bei später erzeugten Hinweisen. Nicht ersetzt werden die Chatnachrichten (Verlauf bleibt) und Elemente mit `data-keep-name`.
+- **Daemon:** Die Anweisung an das Modell (`systemPrompt(name)`, alle Backends) stellt den Assistenten mit dem Namen vor; Hinweise, Fehler und Ansagen (`notice`, `error`, `say`) nennen ihn. „Jarvis Bildschirm“ (Name der macOS-App) bleibt.
+- **Unverändert, weil technisch:** die Tab-Gruppe „Jarvis“ im Chrome des Nutzers, Werkzeug- und Dateinamen (`jarvis_*`, `~/.jarvis3`), Name der macOS-Hilfs-App, Menüleisten-Symbol und Programmname der Desktop-Hülle (dafür wäre ein neuer Build nötig).
+
+## Gemini-Anordnung (Seitenleiste, Eingabefeld)
+
+Gemessen an Bildern von gemini.google.com (Pixelraster 2:1, Eingabefeld 64 px als Bezug): Zeilen der Seitenleiste 32 px, Schrift 14 px `#e3e3e3`, Abschnittstitel 14 px `#9a9b9c`, „Neuer Chat“ immer hervorgehoben (`#171717`), Leiste zu 52 px, auf 280 px (`#1e1f20`) mit Marke links und Umschalter rechts; unten Zahnrad und Avatar (zu: übereinander, auf: Avatar, Name, Zahnrad). Eingabefeld: Schrift 16 px, Platzhalter `#c4c7c5`, rechts die **Modellauswahl** (Text + Pfeil, öffnet die Modellliste) vor Mikrofon und Live; in der Kopfzeile steht nur noch der Name. Maße als Variablen `--rail-w`, `--rail-open-w`, `--row-h` in `app/ui/styles.css`.
+
+## Logo (Einstellungen → Allgemein → „Logo“)
+
+Drei Zustände, in `state.logo`: **Standard** (`0`: kein Logo in der Seitenleiste, eingebautes Symbol im Tab), **eigenes Logo** (`> 0`, Version zum Zwischenspeichern) und **kein Logo** (`-1`: Seitenleiste ohne Bild und leeres Tab-Symbol; Marker `~/.jarvis3/logo.none`).
+
+- Hochladen: Die Oberfläche (`app/ui/logo.js`) nimmt jedes Bild, das der Browser lesen kann (auch SVG), verkleinert es auf höchstens 256 px und schickt PNG als Base64 (`{type:"logo_set", data}`). Der Daemon (`core/src/logo.ts`) prüft noch einmal: PNG-Signatur und -Kopf, höchstens 1 MB und 1024 × 1024 px; gespeichert wird `~/.jarvis3/logo.png` (Rechte 0600).
+- Entfernen: `{type:"logo_clear", none:true}` (kein Logo), Standard: `{type:"logo_clear"}`. Antwort `{type:"logo_saved", ok, error?}`; nur von vertrauenswürdigen Ursprüngen.
+- Ausgeliefert unter `GET /logo` (nur PNG, `nosniff`, `Content-Security-Policy: sandbox`); wirkt in Seitenleiste, Vorschau in den Einstellungen und als `link rel=icon`/`apple-touch-icon`. Das Fenstersymbol der Desktop-Hülle und das Symbol im Dock ändert das nicht (dafür wäre ein neuer Build nötig).
