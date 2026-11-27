@@ -179,10 +179,11 @@ html.tauri { --inset-top: 28px; }
   transition: background-color var(--d-s3) var(--ease);
 }
 .model-chip:hover { background: var(--state-hover); }
+.model-chip { flex-shrink: 0; }   /* der Limit-Chip darf schrumpfen, nicht der Modellname */
 .brand { font-size: 22px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; }
-.model-name { font-size: 14px; color: var(--on-surface-low); }
+.model-name { font-size: 14px; color: var(--on-surface-low); white-space: nowrap; }
 .chev svg { width: 18px; height: 18px; color: var(--on-surface-low); }
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .status-pill {
   display: flex; align-items: center; gap: 6px; height: var(--ctl); padding: 0 12px; border-radius: var(--r-full);
   font-size: 13px; color: var(--on-surface-low); background: var(--surface);
@@ -990,4 +991,5 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .be-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--primary); transition: width .3s var(--ease, ease); }
 .be-bar.warn > span { background: #ffb74d; }
 .be-bar.bad > span { background: var(--error); }
-@media (max-width: 760px) { .limit-chip #limitText { max-width: 120px; overflow: hidden; text-overflow: ellipsis; } }
+.limit-chip { flex: 0 1 auto; min-width: 0; }
+.limit-chip #limitText { overflow: hidden; text-overflow: ellipsis; max-width: min(300px, 22vw); }
