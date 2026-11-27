@@ -239,9 +239,9 @@ export function formatReset(w, now = Date.now()) {
 }
 /** Kurztext für die Kopfzeile: z. B. „5 Std. 10 % · Woche 11 %“ und die höchste Auslastung (für die Farbe). */
 export function limitSummary(l) {
-  if (!l?.ok) return { text: "Limit ?", percent: 0, title: l?.error || "Limit unbekannt" };
+  if (!l?.ok) return { text: "Limit ?", short: "Limit ?", percent: 0, title: l?.error || "Limit unbekannt" };
   const short = w => w.label.replace(/ \(5 Std\.\)$/, "").replace(" (alle Modelle)", "");
   const percent = Math.max(...l.windows.map(w => w.usedPercent));
-  return { text: l.windows.slice(0, 2).map(w => `${short(w)} ${w.usedPercent} %`).join(" · "), percent,
+  return { text: l.windows.slice(0, 2).map(w => `${short(w)} ${w.usedPercent} %`).join(" · "), short: `${percent} %`, percent,
     title: [...l.windows.map(w => `${w.label}: ${w.usedPercent} % verbraucht, noch ${100 - w.usedPercent} % frei${formatReset(w) ? ` · zurückgesetzt ${formatReset(w)}` : ""}`), l.note, l.plan ? `Tarif: ${l.plan}` : ""].filter(Boolean).join("\n") };
 }

@@ -171,7 +171,7 @@ test("Limit-Anzeige: Nachricht lesen, Farben, Kurztext, Zeitpunkt", () => {
   expect(l.claude.windows.map(w => w.usedPercent)).toEqual([10, 75]); expect(l.codex.windows[0].usedPercent).toBe(100);
   expect(limitLevel(10)).toBe("ok"); expect(limitLevel(70)).toBe("warn"); expect(limitLevel(89)).toBe("warn"); expect(limitLevel(90)).toBe("bad");
   const s = limitSummary(l.claude);
-  expect(s.text).toBe("Sitzung 10 % · Woche 75 %"); expect(s.percent).toBe(75);
+  expect(s.text).toBe("Sitzung 10 % · Woche 75 %"); expect(s.percent).toBe(75); expect(s.short).toBe("75 %");
   expect(s.title).toContain("noch 90 % frei"); expect(s.title).toContain("zurückgesetzt 28. Nov., 02:20");
   expect(limitSummary(undefined).text).toBe("Limit ?");
   expect(limitSummary(normalizeLimits({ limits: { codex: { ok: false, error: "Codex nicht erreichbar", windows: [] } } }).codex)).toMatchObject({ text: "Limit ?", title: "Codex nicht erreichbar" });

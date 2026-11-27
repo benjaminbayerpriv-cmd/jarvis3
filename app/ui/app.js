@@ -140,7 +140,7 @@ function renderLimitChip() {
   chip.hidden = !kind;
   if (!kind) return;
   const s = limitSummary(limitState[kind]);
-  $("#limitText").textContent = s.text; chip.title = s.title + "\nKlicken zum Aktualisieren"; chip.dataset.level = limitLevel(s.percent);
+  $("#limitText").textContent = s.text; $("#limitShort").textContent = s.short; chip.title = s.title + "\nKlicken zum Aktualisieren"; chip.dataset.level = limitLevel(s.percent);
   if (!limitState[kind] && Date.now() - limitAsked > 15000) { limitAsked = Date.now(); send({ type: "limits_get" }); }
 }
 $("#limitChip").onclick = () => { limitAsked = Date.now(); send({ type: "limits_get", force: true }); };

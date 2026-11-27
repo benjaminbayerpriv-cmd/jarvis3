@@ -991,5 +991,9 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .be-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--primary); transition: width .3s var(--ease, ease); }
 .be-bar.warn > span { background: #ffb74d; }
 .be-bar.bad > span { background: var(--error); }
-.limit-chip { flex: 0 1 auto; min-width: 0; }
-.limit-chip #limitText { overflow: hidden; text-overflow: ellipsis; max-width: min(300px, 22vw); }
+.limit-chip { flex: 0 0 auto; }
+.limit-chip .short { display: none; }
+/* Die Kopfzeile wird vom Vorschaufenster schmaler: erst nur die höchste Auslastung, dann gar kein Chip (Details stehen in den Einstellungen) */
+.topbar { container: topbar / inline-size; }
+@container topbar (max-width: 880px) { .limit-chip .full { display: none; } .limit-chip .short { display: inline; } }
+@container topbar (max-width: 640px) { .limit-chip { display: none; } }
