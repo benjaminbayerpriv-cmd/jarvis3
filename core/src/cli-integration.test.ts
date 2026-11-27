@@ -97,11 +97,18 @@ echo '{"type":"turn.completed"}'
     expect(claudeCalls[0]).toContain("--model opus"); expect(claudeCalls[0]).toContain("--effort high"); expect(claudeCalls[0]).toContain("--strict-mcp-config");
     expect(claudeCalls[0]).not.toMatch(/dangerously|Bash/);
     // Text vor und nach einem Werkzeug: neuer Absatz, nicht aneinandergeklebt
+    // App-Name: wird gespeichert, kommt im Zustand an und steht in der Anweisung an das Programm
+    send({ type: "settings", settings: { appName: "  Hugo  " } });
+    expect((await wait(m => m.type === "state" && m.appName === "Hugo")).appName).toBe("Hugo");
+    send({ type: "settings", settings: { appName: "x".repeat(40) } }); await Bun.sleep(150);   // zu lang: bleibt „Hugo“
     messages.length = 0;
     send({ type: "chat", text: "Mit VORTEXT", session: sid });
     expect((await wait(m => m.type === "delta" && m.session === sid)).text).toBe("Ich öffne es.");
     expect((await wait(m => m.type === "delta" && m.session === sid)).text).toBe("\n\nAntwort von Claude");
     await wait(m => m.type === "done" && m.session === sid);
+    const last = calls().filter(c => c.startsWith("claude -p") && !c.startsWith("claude -p /usage")).at(-1)!;
+    expect(last).toContain("Du bist Hugo,"); expect(last).toContain("Dein Name ist Hugo."); expect(last).not.toContain("Du bist Jarvis");
+    expect(JSON.parse(readFileSync(join(root, ".jarvis3", "settings.json"), "utf8")).appName).toBe("Hugo");
     send({ type: "open", id: sid });
     expect((await wait(m => m.type === "messages" && m.session === sid)).messages.map((m: any) => m.text)).toEqual(["Hallo Claude", "Antwort von Claude", "Noch eine", "Antwort von Claude", "Mit VORTEXT", "Ich öffne es.\n\nAntwort von Claude"]);
 

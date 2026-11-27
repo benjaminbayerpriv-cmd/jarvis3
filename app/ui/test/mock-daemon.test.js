@@ -101,3 +101,13 @@ test("Limits: der Daemon liefert beide Programme, ohne Modellaufruf, alte Daemon
     expect((await talk(legacy.port, [{ type: "limits_get" }], 200)).some(m => m.type === "limits")).toBe(false);
   } finally { mock.stop(); legacy.stop(); }
 });
+
+test("App-Name: der Daemon übernimmt den gültigen Namen und meldet ihn im Zustand", async () => {
+  const mock = startMock();
+  try {
+    const got = await talk(mock.port, [{ type: "settings", settings: { appName: "  Hugo  " } }, { type: "settings", settings: { appName: "x".repeat(30) } }], 250);
+    const states = got.filter(m => m.type === "state");
+    expect(states[0].appName).toBe("Jarvis");                       // Standard
+    expect(states.at(-1).appName).toBe("Hugo");                     // zu lange Namen werden abgelehnt
+  } finally { mock.stop(); }
+});

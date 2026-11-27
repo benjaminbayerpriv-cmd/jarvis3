@@ -23,6 +23,8 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(b.error ? { error: b.error } : {}), ...(id === "claude" || id === "codex" ? { loginManaged: true, installed: { skills: id === "claude" ? 124 : 60, plugins: id === "claude" ? 1 : 3 }, providers: [], models: id === "claude" ? [{ id: "sonnet", label: "Sonnet (aktuell)" }, { id: "claude-opus-5-5", label: "Opus 5.5" }] : [{ id: "gpt-6.2-sol", label: "GPT-6.2-Sol" }], efforts: id === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"] } : {}), ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
       providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] } : {}) }])) });
   const sockets = new Set();
+  let appName = "Jarvis";
+  const stateMsg = () => ({ type: "state", appName, model: "opencode/big-pickle", voiceModel: "opencode/big-pickle", mode: "browser", busy: false, busySessions: [], models: [], speech: false, voice: "off", backend: "opencode" });
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
 
   const server = Bun.serve({
@@ -41,12 +43,17 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     websocket: {
       open(ws) {
         sockets.add(ws);
-        ws.send(JSON.stringify({ type: "state", model: "opencode/big-pickle", voiceModel: "opencode/big-pickle", mode: "browser", busy: false, busySessions: [], models: [], speech: false, voice: "off" }));
+        ws.send(JSON.stringify(stateMsg()));
         ws.send(JSON.stringify({ type: "projects", projects: [], chats: [], root: "" })); ws.send(JSON.stringify({ type: "history", sessions: [], folders: [] }));
       },
       close(ws) { sockets.delete(ws); },
       message(ws, raw) {
         let m; try { m = JSON.parse(String(raw)); } catch { return; }
+        if (m.type === "settings" && !legacy) {
+          const n = typeof m.settings?.appName === "string" ? m.settings.appName.replace(/[\u0000-\u001f<>"`\\]/g, "").replace(/\s+/g, " ").trim() : "";
+          if (n && n.length <= 24) { appName = n; broadcast(stateMsg()); }
+          return;
+        }
         if (m.type === "limits_get" && !legacy) {
           ws.send(JSON.stringify({ type: "limits", limits: {
             claude: { kind: "claude", ok: true, at: Date.now(), windows: [{ id: "current-session", label: "Sitzung (5 Std.)", usedPercent: 10, resetText: "28. Nov., 02:20" }, { id: "current-week-all-models", label: "Woche (alle Modelle)", usedPercent: 74, resetText: "3. Dez., 11:00" }] },

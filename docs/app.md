@@ -65,3 +65,11 @@ Mehrere Chats laufen gleichzeitig; jeder hat seinen eigenen Lauf (OpenCode-Sitzu
   - **Text-/Code-Dateien** (UTF-8) werden eingebettet, über 60 000 Zeichen gekürzt.
   - **PDF**: Text per `pdftotext` (poppler), falls installiert; sonst nur Pfad.
   - Alles andere: nur Pfad, dazu ein Hinweis; Fehlschläge landen als Kategorie `ui`, Quelle `jarvisd/attachment` im Fehler-Log.
+
+## App-Name (Einstellungen → Allgemein → „Name der App“)
+
+`appName` in `~/.jarvis3/settings.json` (Standard „Jarvis“, 1 bis 24 Zeichen, keine Steuerzeichen und `< > " ` \`; Prüfung `cleanAppName` in `core/src/settings.ts` und `app/ui/appname.js`). Gilt sofort für alle verbundenen Oberflächen (`state.appName`):
+
+- **Oberfläche:** `app/ui/appname.js` ersetzt „Jarvis“ in Texten und Beschriftungen (`title`, `placeholder`, `aria-label`, `alt`), im Seitentitel und, in der Desktop-Hülle, im Fenstertitel; auch bei später erzeugten Hinweisen. Nicht ersetzt werden die Chatnachrichten (Verlauf bleibt) und Elemente mit `data-keep-name`.
+- **Daemon:** Die Anweisung an das Modell (`systemPrompt(name)`, alle Backends) stellt den Assistenten mit dem Namen vor; Hinweise, Fehler und Ansagen (`notice`, `error`, `say`) nennen ihn. „Jarvis Bildschirm“ (Name der macOS-App) bleibt.
+- **Unverändert, weil technisch:** die Tab-Gruppe „Jarvis“ im Chrome des Nutzers, Werkzeug- und Dateinamen (`jarvis_*`, `~/.jarvis3`), Name der macOS-Hilfs-App, Menüleisten-Symbol und Programmname der Desktop-Hülle (dafür wäre ein neuer Build nötig).

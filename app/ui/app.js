@@ -7,6 +7,7 @@ import { BlurText } from "./blurtext.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
 import { initBackendPanel } from "./backend-panel.js";
 import { limitLevel, limitSummary, normalizeLimits } from "./backends.js";
+import { DEFAULT_NAME, cleanAppName, watchName } from "./appname.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
@@ -144,7 +145,28 @@ function renderLimitChip() {
   if (!limitState[kind] && Date.now() - limitAsked > 15000) { limitAsked = Date.now(); send({ type: "limits_get" }); }
 }
 $("#limitChip").onclick = () => { limitAsked = Date.now(); send({ type: "limits_get", force: true }); };
+// App-Name: aus den Einstellungen des Daemons, ersetzt „Jarvis“ überall in der Oberfläche
+const appNameWatch = watchName(() => state.appName || DEFAULT_NAME);
+let shownName = "";
+function renderAppName() {
+  const name = state.appName || DEFAULT_NAME;
+  if (name !== shownName) {
+    shownName = name; appNameWatch.refresh();
+    try { tauri?.window?.getCurrentWindow?.().setTitle(name); } catch { /* Fenstertitel nur in der App */ }
+  }
+  const input = $("#setAppName");
+  if (input && document.activeElement !== input) input.value = name === DEFAULT_NAME ? "" : name;
+  $("#setAppNameReset").disabled = name === DEFAULT_NAME;
+}
+{
+  let timer = 0;
+  const send_ = value => { const name = cleanAppName(value) || (value.trim() === "" ? DEFAULT_NAME : ""); $("#setAppName-hint").textContent = name ? "" : "1 bis 24 Zeichen, ohne < > \" ` \\."; if (name && name !== (state.appName || DEFAULT_NAME)) send({ type: "settings", settings: { appName: name } }); };
+  $("#setAppName").addEventListener("input", e => { clearTimeout(timer); timer = setTimeout(() => send_(e.target.value), 500); });
+  $("#setAppName").addEventListener("change", e => { clearTimeout(timer); send_(e.target.value); });
+  $("#setAppNameReset").addEventListener("click", () => { clearTimeout(timer); $("#setAppName").value = ""; $("#setAppName-hint").textContent = ""; send({ type: "settings", settings: { appName: DEFAULT_NAME } }); });
+}
 function renderState() {
+  renderAppName();
   renderLimitChip();
   syncBusy();
   { const cur = (state.backend === "claude" || state.backend === "codex") && (state.models || []).find(x => x.id === state.model); $("#modelName").textContent = cur ? cur.model : short(state.model); }

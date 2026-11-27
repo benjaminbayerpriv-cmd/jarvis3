@@ -11,7 +11,7 @@ import { DirectBrowser, type PageSocket } from "./dbrowser";
 import { WebProxy } from "./proxy";
 import { agentSource } from "./proxy-agent";
 import { FUNCTION_COMMANDS } from "./functions";
-import { SYSTEM_PROMPT } from "./prompt";
+import { SYSTEM_PROMPT, systemPrompt } from "./prompt";
 import { Speech } from "./speech";
 import { clickOutcome, formatLiveSpeech, inCorner, relativeCenter, requestedClick, type ClickIntent } from "./live-response";
 import { prepare, validate, hasImages, type Attachment } from "./attachments";
@@ -171,7 +171,11 @@ const uiId = (ws: ServerWebSocket<{ kind: string; fresh?: boolean; trusted?: boo
   if (!id) { id = ++uiSeq; uiIds.set(ws, id); }
   return id;
 };
-const broadcast = (msg: unknown) => { const s = JSON.stringify(msg); for (const ui of uis) ui.send(s); };
+// Der App-Name aus den Einstellungen ersetzt „Jarvis“ in Hinweisen, Fehlern und Ansagen (nicht in „Jarvis Bildschirm“, dem Namen der macOS-App)
+const brand = (text: string) => (settings.appName && settings.appName !== "Jarvis" ? text.replace(/\bJarvis\b(?! Bildschirm)/g, settings.appName) : text);
+const branded = (msg: any) => (msg && (msg.type === "notice" || msg.type === "error")
+  ? { ...msg, ...(typeof msg.text === "string" ? { text: brand(msg.text) } : {}), ...(typeof msg.message === "string" ? { message: brand(msg.message) } : {}) } : msg);
+const broadcast = (msg: unknown) => { const s = JSON.stringify(branded(msg)); for (const ui of uis) ui.send(s); };
 type AudioDevice = { id: number; name: string; default: boolean };
 type AudioDevices = { input: AudioDevice[]; output: AudioDevice[] };
 let audioDevices: AudioDevices | undefined;
@@ -674,6 +678,7 @@ let activeTurn: ActiveTurn | undefined;
 let recentClick: { session: string; intent: ClickIntent; text: string; at: number } | undefined;
 
 function say(text: string) {
+  text = brand(text);
   lastSayAt = Date.now();
   recentSaid.push({ text, at: lastSayAt });
   if (recentSaid.length > 10) recentSaid.shift();
@@ -749,7 +754,7 @@ async function chatHermes(text: string, spoken: boolean, fresh: boolean, atts: A
   const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
   let response = "", finished = false;
   try {
-    await client.prompt(rawId, (text || "Sieh dir die angehängten Dateien an.") + attachmentText, SYSTEM_PROMPT, (event: BrainEvent) => {
+    await client.prompt(rawId, (text || "Sieh dir die angehängten Dateien an.") + attachmentText, systemPrompt(settings.appName), (event: BrainEvent) => {
       if (finished || latestRun.get(id) !== run) return;
       if (event.kind === "text") { response += event.delta; if (!spoken) emit({ type: "delta", text: event.delta }); }
       else if (event.kind === "tool") emit({ type: "tool", ...event });
@@ -810,7 +815,7 @@ async function chatCli(kind: CliKind, text: string, spoken: boolean, fresh: bool
   try {
     const row = cli.get(id);
     const hint = kind === "claude" && imageFiles.length ? `\n\nBilder liegen unter: ${imageFiles.join(", ")} (mit Read ansehen).` : "";
-    const result = await cli.agent.prompt(id, { kind, config, input: (text || "Sieh dir die angehängten Dateien an.") + attachmentText + hint, instructions: spoken ? SYSTEM_PROMPT + SPOKEN_SUFFIX : SYSTEM_PROMPT,
+    const result = await cli.agent.prompt(id, { kind, config, input: (text || "Sieh dir die angehängten Dateien an.") + attachmentText + hint, instructions: spoken ? systemPrompt(settings.appName) + SPOKEN_SUFFIX : systemPrompt(settings.appName),
       native: row.native, resume: row.started, images: kind === "codex" ? imageFiles : [] }, (event: BrainEvent) => {
       if (finished || latestRun.get(id) !== run) return;
       if (event.kind === "text") {
@@ -905,7 +910,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
   }, 1300);
-  const system = spoken ? SYSTEM_PROMPT + SPOKEN_SUFFIX : SYSTEM_PROMPT;
+  const system = spoken ? systemPrompt(settings.appName) + SPOKEN_SUFFIX : systemPrompt(settings.appName);
   const attachmentBlocks = saved?.text ? [saved.text] : [];
   const attachmentNames = [...(saved?.names ?? []), ...atts.map(file => file.name)];
   const images = canSee(model) ? [...(saved?.images ?? [])] : [];
