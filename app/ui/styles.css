@@ -997,3 +997,6 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 .topbar { container: topbar / inline-size; }
 @container topbar (max-width: 880px) { .limit-chip .full { display: none; } .limit-chip .short { display: inline; } }
 @container topbar (max-width: 640px) { .limit-chip { display: none; } }
+
+#setAppName { min-width: 140px; }
+#setAppNameReset { flex: none; }
