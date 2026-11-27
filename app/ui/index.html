@@ -16,23 +16,23 @@
     <!-- Seitenleiste (Gemini: schmale Leiste, ausklappbar) -->
     <nav class="rail" aria-label="Navigation">
       <div class="rail-top" data-tauri-drag-region>
+        <span class="rail-brand" id="railBrand">Jarvis</span>
         <button class="rail-item" id="railToggle" aria-label="Seitenleiste öffnen" aria-expanded="false"><span data-icon="layout-sidebar-left-expand"></span></button>
       </div>
-      <button class="rail-item" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
+      <button class="rail-item selected" id="newChat"><span data-icon="edit"></span><span class="rail-label">Neuer Chat</span></button>
       <label class="chat-search" aria-label="Chats durchsuchen"><span data-icon="search"></span><input id="chatSearch" type="search" placeholder="Chats suchen"></label>
       <button class="rail-item" id="openProjects"><span data-icon="folder-open"></span><span class="rail-label">Projekte</span></button>
       <ul class="history" id="history"></ul>
       <div class="rail-spacer"></div>
-      <button class="rail-item" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDialog"><span data-icon="settings"></span><span class="rail-label">Einstellungen</span></button>
+      <div class="rail-profile">
+        <button class="rail-item" id="openSettings" aria-haspopup="dialog" aria-controls="settingsDialog" aria-label="Einstellungen" title="Einstellungen"><span data-icon="settings"></span></button>
+        <div class="rail-user"><span class="rail-avatar" id="railAvatar" aria-hidden="true">J</span><span class="rail-name" id="railName">Jarvis</span></div>
+      </div>
     </nav>
 
     <main class="main">
       <header class="topbar" data-tauri-drag-region>
-        <button class="model-chip" id="modelChip" aria-haspopup="dialog">
-          <span class="brand">Jarvis</span>
-          <span class="model-name" id="modelName">…</span>
-          <span data-icon="chevron-down" class="chev"></span>
-        </button>
+        <span class="brand" id="topBrand">Jarvis</span>
         <div class="topbar-right">
           <button class="limit-chip" id="limitChip" hidden aria-label="Verbleibendes Kontingent"><span class="full" id="limitText">Limit</span><span class="short" id="limitShort">Limit</span></button>
           <button class="icon-btn view-toggle" id="viewToggle" data-icon="eye" aria-pressed="true" title="Live-Ansicht des Tabs"></button>
@@ -68,6 +68,7 @@
           <button type="button" class="icon-btn" id="attach" data-icon="plus" aria-label="Fotos und Dateien hinzufügen" title="Fotos und Dateien hinzufügen"></button>
           <div class="ta-wrap"><textarea id="input" rows="1" placeholder="Frag Jarvis" aria-label="Nachricht"></textarea><div class="ta-mirror" id="taMirror" aria-hidden="true"></div></div>
           <div class="composer-actions">
+            <button type="button" class="model-btn" id="modelChip" aria-haspopup="dialog" aria-label="Modell wählen"><span class="model-name" id="modelName">…</span><span data-icon="chevron-down" class="chev"></span></button>
             <button type="button" class="icon-btn" id="dictate" data-icon="microphone" aria-label="Diktieren"></button>
             <button type="button" class="live-btn" id="liveBtn" aria-label="Sprachmodus"><span data-icon="live" class="live-ic"></span></button>
             <button type="submit" class="send-btn" id="send" aria-label="Senden" hidden><span data-icon="arrow-up"></span></button>

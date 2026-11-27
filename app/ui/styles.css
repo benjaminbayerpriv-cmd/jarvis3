@@ -37,7 +37,9 @@
   /* Form */
   --r-xs: 4px; --r-s: 8px; --r-m: 12px; --r-l: 16px; --r-xl: 28px; --r-xl-inc: 32px; --r-full: 9999px;
   /* Raster und Maße (alles Vielfache von 4) */
-  --rail-w: 72px;       /* Rail: Symbole mittig bei x = 36 */
+  --rail-w: 52px;       /* Rail (zu): Symbole mittig bei x = 26, wie bei Gemini */
+  --rail-open-w: 280px;
+  --row-h: 32px;        /* Zeilenhöhe in der Seitenleiste */
   --header-h: 64px;     /* Kopfzeile und Rail-Kopf: gemeinsame Mittellinie bei y = 32 */
   --hit: 40px;          /* Standard-Klickfläche */
   --ctl: 36px;          /* Steuerelemente in der Kopfzeile */
@@ -95,44 +97,49 @@ svg.ic { width: 24px; height: 24px; display: block; flex: none; }
 html.tauri { --inset-top: 28px; }
 
 .rail {
-  width: var(--rail-w); display: flex; flex-direction: column; gap: 4px;
-  padding: 0 calc((var(--rail-w) - 48px) / 2) var(--gutter); background: var(--bg);
+  width: var(--rail-w); display: flex; flex-direction: column; gap: 0;
+  padding: 0 calc((var(--rail-w) - var(--row-h)) / 2) var(--gutter); background: var(--bg);
   transition: width var(--d-m2) var(--ease), background-color var(--d-m2) var(--ease);
   overflow: hidden;
 }
-.app[data-rail="open"] .rail { width: 280px; background: var(--surface-low); }
+.app[data-rail="open"] .rail { width: var(--rail-open-w); padding: 0 8px var(--gutter); background: var(--surface); }
 .rail-top { flex: none; height: calc(var(--header-h) + var(--inset-top)); padding-top: var(--inset-top); display: flex; align-items: center; }
 .rail-item {
-  flex: none; display: flex; align-items: center; gap: 12px; height: var(--hit); min-width: 48px;
-  padding: 0 12px; border-radius: var(--r-full); color: var(--on-surface-variant);
+  flex: none; display: flex; align-items: center; gap: 8px; height: var(--row-h); min-width: var(--row-h);
+  padding: 0 4px; border-radius: var(--r-full); color: var(--on-surface); font-size: 14px;
   white-space: nowrap; transition: background-color var(--d-s3) var(--ease);
 }
 .rail-item:hover { background: var(--state-hover); }
-.chat-search { flex:none; display:flex; align-items:center; gap:10px; min-height:40px; margin:0 4px; padding:0 12px; border-radius:var(--r-full); color:var(--on-surface-low); background:var(--surface); }
-.chat-search svg { width:20px; height:20px; }
+.rail-item.selected { background: #171717; }                              /* „Neuer Chat“ wie bei Gemini hervorgehoben */
+.rail-item.selected:hover { background: #1c1c1c; }
+.app[data-rail="open"] .rail-item { padding: 0 8px; }
+.app[data-rail="open"] .rail-top .rail-item { padding: 0 4px; }
+.chat-search { flex:none; display:flex; align-items:center; gap:8px; min-height:var(--row-h); margin:0; padding:0 8px; border-radius:var(--r-full); color:var(--on-surface); font-size:14px; background:transparent; }
+.chat-search svg { width:24px; height:24px; }
 .chat-search input { width:100%; min-width:0; color:var(--on-surface); background:transparent; border:0; outline:0; font:inherit; }
 .chat-search input::placeholder { color:var(--on-surface-low); }
-.app:not([data-rail="open"]) .chat-search { width:48px; height:40px; min-height:40px; margin:0; padding:0 12px; justify-content:flex-start; cursor:pointer; background:transparent; }
+.chat-search:hover, .chat-search:focus-within { background: var(--state-hover); }
+.app:not([data-rail="open"]) .chat-search { width:var(--row-h); height:var(--row-h); min-height:var(--row-h); margin:0; padding:0 4px; justify-content:flex-start; cursor:pointer; background:transparent; }
 .app:not([data-rail="open"]) .chat-search input { display:none; }
 .app[data-rail="open"] .chat-search { width:100%; margin:0; }
 .rail-label { opacity: 0; transition: opacity var(--d-s3) linear; white-space: nowrap; }
 .app[data-rail="open"] .rail-label { opacity: 1; transition-delay: var(--d-s2); }
-.rail-section { flex: none; font-size: 14px; color: var(--on-surface-low); padding: 16px 12px 4px; }
+.rail-section { flex: none; font-size: 14px; color: var(--on-surface-low); padding: 16px 8px 4px; }
 .history { flex: 1 1 0; min-height: 0; list-style: none; margin: 0; padding: 0; overflow-y: auto; }
 .history li {
-  height: 36px; line-height: 36px; padding: 0 12px; border-radius: var(--r-full); font-size: 14px;
-  color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  height: var(--row-h); line-height: var(--row-h); padding: 0 8px; border-radius: var(--r-full); font-size: 14px;
+  color: var(--on-surface); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
 }
 .history-chat[data-id]:hover:not(.active) { background: var(--state-hover); }
 .history li.active { background: var(--primary-container); color: var(--on-primary-container); }
-.history li.history-section { height:36px; display:block; padding:0; margin-top:8px; overflow:visible; }
-.history-section-toggle { width:100%; height:30px; display:flex; align-items:center; justify-content:space-between; gap:4px; padding:0 8px; border-radius:0; color:var(--on-surface-low); font-size:12px; font-weight:400; text-align:left; outline:none; }
+.history li.history-section { height:var(--row-h); display:block; padding:0; margin-top:16px; overflow:visible; }
+.history-section-toggle { width:100%; height:var(--row-h); display:flex; align-items:center; justify-content:space-between; gap:4px; padding:0 8px; border-radius:0; color:var(--on-surface-low); font-size:14px; font-weight:400; text-align:left; outline:none; }
 .history-section-toggle:hover { color:var(--on-surface); background:transparent; }
 .history-section-toggle:focus-visible { outline:none; }
 .history-section-toggle svg { width:12px; height:12px; transform:rotate(-90deg); transition:transform 120ms ease; }
 .history-section-toggle[aria-expanded="true"] svg { transform:rotate(0); }
-.history li.history-chat { position:relative; height:36px; display:flex; align-items:center; gap:2px; padding:0 4px 0 12px; line-height:normal; overflow:visible; }
-.history li.folder-chat { height:auto; min-height:36px; display:block; padding:0; }
+.history li.history-chat { position:relative; height:var(--row-h); display:flex; align-items:center; gap:2px; padding:0 4px 0 8px; line-height:normal; overflow:visible; }
+.history li.folder-chat { height:auto; min-height:var(--row-h); display:block; padding:0; }
 .history-title { min-width:0; flex:1; overflow:hidden; text-align:left; text-overflow:ellipsis; white-space:nowrap; color:inherit; font-size:14px; }
 .history-menu { position:relative; flex:none; }
 .history-menu-toggle { width:28px; height:28px; border-radius:var(--r-full); display:grid; place-items:center; color:var(--on-surface-low); }
@@ -142,7 +149,7 @@ html.tauri { --inset-top: 28px; }
 .history-actions button { width:100%; min-height:36px; display:flex; align-items:center; gap:10px; padding:0 10px; border-radius:8px; color:var(--on-surface); text-align:left; }
 .history-actions button:hover { background:var(--state-hover); }
 .history-actions svg { width:17px!important; height:17px!important; }
-.folder-toggle { width:100%; height:36px; display:flex; align-items:center; gap:10px; padding:0 12px; border-radius:var(--r-full); color:var(--on-surface-variant); text-align:left; font-size:14px; }
+.folder-toggle { width:100%; height:var(--row-h); display:flex; align-items:center; gap:8px; padding:0 8px; border-radius:var(--r-full); color:var(--on-surface); text-align:left; font-size:14px; }
 .folder-toggle:hover { background:var(--state-hover); color:var(--on-surface); }
 .history-chat[data-id] { user-select:none; touch-action:none; }
 .history-chat.chat-drag-source { opacity:.45; }
@@ -157,6 +164,7 @@ html.tauri { --inset-top: 28px; }
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .folder-toggle svg { width:24px; height:24px; }
+.history-menu-toggle { width:24px; height:24px; }
 .folder-children { list-style:none; margin:0; padding:0 0 0 14px; }
 .app:not([data-rail="open"]) .history { visibility: hidden; }
 .rail-spacer { display: none; }
@@ -174,15 +182,12 @@ html.tauri { --inset-top: 28px; }
 /* ---------- Kopfzeile ---------- */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: var(--gutter);
   height: calc(var(--header-h) + var(--inset-top)); padding: var(--inset-top) var(--gutter) 0 var(--gutter); }
-.model-chip {
-  display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-radius: var(--r-s);
-  transition: background-color var(--d-s3) var(--ease);
-}
-.model-chip:hover { background: var(--state-hover); }
-.model-chip { flex-shrink: 0; }   /* der Limit-Chip darf schrumpfen, nicht der Modellname */
 .brand { font-size: 22px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; }
-.model-name { font-size: 14px; color: var(--on-surface-low); white-space: nowrap; }
-.chev svg { width: 18px; height: 18px; color: var(--on-surface-low); }
+.model-btn { display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 8px 0 12px; border-radius: var(--r-full); max-width: min(240px, 38vw); flex-shrink: 1; min-width: 0; color: var(--on-surface); transition: background-color var(--d-s3) var(--ease); }
+.model-btn:hover { background: var(--state-hover); }
+.model-name { font-size: 16px; color: var(--on-surface); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.chev { flex: none; display: grid; place-items: center; }
+.chev svg { width: 20px; height: 20px; color: var(--on-surface); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .status-pill {
   display: flex; align-items: center; gap: 6px; height: var(--ctl); padding: 0 12px; border-radius: var(--r-full);
@@ -377,7 +382,8 @@ html.tauri { --inset-top: 28px; }
   flex: 1; resize: none; border: 0; outline: 0; background: none; color: inherit;
   font-family: var(--font); font-size: var(--chat-text-size); line-height: var(--chat-line-height); font-weight: 400; font-variation-settings: "wdth" 92; padding: 8px 4px; max-height: 240px;
 }
-.composer textarea::placeholder { color: var(--on-surface-low); }
+.composer textarea::placeholder { color: var(--on-surface-variant); }
+.composer { --chat-text-size: 16px; }   /* Eingabefeld: 16 px wie bei Gemini */
 .composer-actions { display: flex; align-items: center; gap: 4px; }
 .live-btn {
   width: 40px; height: 40px; padding: 0; border-radius: var(--r-full); display: grid; place-items: center;
@@ -440,16 +446,24 @@ kbd { font-family: var(--font); font-size: 12px; opacity: .8; }
 /* Zu: Symbol mittig bei x=36 wie alle Rail-Symbole. Auf: wandert mit der aufklappenden Leiste an deren rechten Rand
    (Leistenbreite 280 - 72 = 208 px Versatz, gleiche Dauer und Kurve wie die Leiste).  */
 .rail-top { position: relative; }
-#railToggle { position: relative; z-index: 1; margin-left: 0; transition: transform var(--d-m2) var(--ease), background-color var(--d-s3) var(--ease); }
-.app[data-rail="open"] #railToggle { transform: translateX(208px); }
+#railToggle { position: relative; z-index: 1; margin-left: 0; width: 36px; height: 36px; min-width: 36px; padding: 0; justify-content: center; }
+.app:not([data-rail="open"]) #railToggle { margin-left: -2px; }
+.app[data-rail="open"] #railToggle { margin-left: auto; }
+.rail-brand { display: none; flex: 1; min-width: 0; padding-left: 8px; font-size: 22px; line-height: 28px; font-weight: 400; font-variation-settings: "wdth" 100, "wght" 400; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app[data-rail="open"] .rail-brand { display: block; }
+.app[data-rail="open"] .topbar .brand { display: none; }
 #railToggle svg { transition: opacity var(--d-s3) linear; }
 
 
-/* ---------- Modell-Chip: bei offener Leiste in deren freien Platz links vom Umschalter ---------- */
-.app[data-rail="open"] .model-chip { position: fixed; z-index: 3; left: 12px; top: calc(var(--inset-top) + 12px); width: 196px; padding: 0 8px; gap: 6px; }
-.app[data-rail="open"] .model-chip .brand { font-size: 18px; flex: none; }
-.app[data-rail="open"] .model-chip .model-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; }
-.app[data-rail="open"] .model-chip .chev { display: none; }
+/* ---------- Profilzeile unten (wie Gemini): zu = Zahnrad über dem Avatar, auf = Avatar, Name, Zahnrad ---------- */
+.rail-profile { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 8px; }
+.rail-user { display: flex; align-items: center; gap: 12px; min-width: 0; height: 44px; }
+.rail-avatar { flex: none; width: 32px; height: 32px; margin-left: 0; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, #a8c7fa, #d0bcff 60%, #f2b8b5); color: #1b1b1b; font-size: 15px; font-weight: 500; }
+.rail-name { display: none; font-size: 16px; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.app[data-rail="open"] .rail-profile { flex-direction: row-reverse; align-items: center; justify-content: space-between; padding: 8px 4px 0; }
+.app[data-rail="open"] .rail-user { flex: 1; }
+.app[data-rail="open"] .rail-name { display: block; }
+.app[data-rail="open"] #openSettings { padding: 0 4px; }
 
 /* ---------- Dialoge ---------- */
 .sheet {
@@ -1000,3 +1014,6 @@ body:has(.viewer:not([hidden])) .live-controls { flex-wrap: wrap; gap: clamp(8px
 
 #setAppName { min-width: 140px; }
 #setAppNameReset { flex: none; }
+
+/* Schmale Fenster: der Modellname wird kurz, damit das Eingabefeld Platz behält */
+@media (max-width: 520px) { .model-btn { max-width: 96px; padding: 0 4px 0 8px; } .model-btn .model-name { font-size: 14px; } }

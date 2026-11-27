@@ -157,6 +157,7 @@ function renderAppName() {
   const input = $("#setAppName");
   if (input && document.activeElement !== input) input.value = name === DEFAULT_NAME ? "" : name;
   $("#setAppNameReset").disabled = name === DEFAULT_NAME;
+  $("#railAvatar").textContent = ([...name][0] || "J").toUpperCase();
 }
 {
   let timer = 0;
