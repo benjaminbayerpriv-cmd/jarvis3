@@ -6,6 +6,7 @@ import { renderMarkdown } from "./markdown.js";
 import { BlurText } from "./blurtext.js";
 import { preferences, setPreference, lessMotion } from "./preferences.js";
 import { initBackendPanel } from "./backend-panel.js";
+import { limitLevel, limitSummary, normalizeLimits } from "./backends.js";
 
 const $ = s => document.querySelector(s);
 const DAEMON = location.protocol.startsWith("http") && location.port ? location.host : "127.0.0.1:7777"; // von jarvisd ausgeliefert: derselbe Dienst (auch auf Testports)
@@ -110,6 +111,7 @@ function handle(m) {
     case "ext_scan": renderImport(m); break;
     // Backend-Wechsel: Nachrichten nach dem Vertrag aus PR #63 (Formen in backends.js, docs/backend-ui.md)
     case "backend": case "backend_saved": case "backend_test": backendPanel.handle(m); break;
+    case "limits": backendPanel.handle(m); limitState = normalizeLimits(m); renderLimitChip(); break;
     case "viewer_idle": viewerIdle(); break;
     case "visual": visualEvent(m); break;
     case "dt_open": dtOpen(m.id, m.url); break;
@@ -131,9 +133,21 @@ function handle(m) {
 
 // ---------- Kopfzeile / Status ----------
 const short = id => id ? id.split("/").pop().replace(/-free$/, "") : "…";
+// Limit-Chip in der Kopfzeile: nur für Claude Code und Codex, Rest-Kontingent aus den Programmen selbst
+let limitState = {}, limitAsked = 0;
+function renderLimitChip() {
+  const chip = $("#limitChip"), kind = state.backend === "claude" || state.backend === "codex" ? state.backend : "";
+  chip.hidden = !kind;
+  if (!kind) return;
+  const s = limitSummary(limitState[kind]);
+  $("#limitText").textContent = s.text; chip.title = s.title + "\nKlicken zum Aktualisieren"; chip.dataset.level = limitLevel(s.percent);
+  if (!limitState[kind] && Date.now() - limitAsked > 15000) { limitAsked = Date.now(); send({ type: "limits_get" }); }
+}
+$("#limitChip").onclick = () => { limitAsked = Date.now(); send({ type: "limits_get", force: true }); };
 function renderState() {
+  renderLimitChip();
   syncBusy();
-  $("#modelName").textContent = short(state.model);
+  { const cur = (state.backend === "claude" || state.backend === "codex") && (state.models || []).find(x => x.id === state.model); $("#modelName").textContent = cur ? cur.model : short(state.model); }
   $("#footModel").textContent = state.model;
   const pill = $("#browserPill");
   pill.classList.toggle("ok", state.browser);

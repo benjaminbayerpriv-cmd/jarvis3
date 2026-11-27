@@ -1,5 +1,5 @@
 // Prüft Claude Code oder Codex mit den installierten Programmen und dem Konto des Nutzers (kurze Testfragen, kein Download):
-//   bun core/scripts/cli-check.ts claude|codex
+//   bun core/scripts/cli-check.ts claude|codex [--adopt]   (--adopt prüft zusätzlich die Übernahme installierter Skills und Plugins)
 // Ein Ersatz-jarvisd beantwortet den Jarvis-MCP-Aufruf; es wird nichts am Rechner bedient. Zwei Läufe: Werkzeug aufrufen, dann dieselbe
 // Sitzung fortsetzen. Kostet zwei sehr kurze Anfragen am Abo bzw. ChatGPT-Konto.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -34,6 +34,14 @@ try {
   const second = await turn("Wie hieß der Monitor noch einmal? Antworte mit einem Wort.", true, first.native ?? native);
   check("Fortsetzen: Sitzung kennt die frühere Antwort", /Hauptbildschirm/i.test(second.events.filter(e => e.kind === "text").map(e => e.delta).join("")), JSON.stringify(second.events).slice(0, 300));
   check("Fortsetzen endet ohne Fehler", second.events.at(-1)?.kind === "done");
+  if (process.argv.includes("--adopt")) {
+    const skill = kind === "claude" ? "andrej-karpathy-guidelines" : "skill-creator";
+    const prompt = kind === "claude" ? `Lade den Skill ${skill} mit dem Skill-Werkzeug und nenne danach einen Satz daraus.` : `Lies die Datei SKILL.md des Skills ${skill} mit einem Lese-Befehl und nenne eine Überschrift daraus.`;
+    const events: any[] = []; await agent.prompt("s3", { kind, config: { ...defaultCliConfig(), adopt: true }, input: prompt, instructions: "Antworte kurz auf Deutsch.", native: crypto.randomUUID(), resume: false }, e => events.push(e));
+    const names = events.filter(e => e.kind === "tool").map(e => `${e.name}:${e.status}`);
+    check("Übernahme: Skill wird benutzt (Claude: Skill-Werkzeug, Codex: Lese-Befehl)", kind === "claude" ? names.includes("Skill:completed") : names.includes("Befehl:completed"), JSON.stringify(names));
+    check("Übernahme: Lauf endet ohne Fehler", events.at(-1)?.kind === "done", JSON.stringify(events.at(-1)));
+  }
   // Abbrechen: lange Anfrage starten und nach kurzer Zeit stoppen
   const events: any[] = []; const t0 = performance.now();
   const running = agent.prompt("s2", { kind, config: defaultCliConfig(), input: "Zähle langsam von 1 bis 500 und schreibe jede Zahl in eine eigene Zeile.", instructions: "", native: crypto.randomUUID(), resume: false }, e => events.push(e));

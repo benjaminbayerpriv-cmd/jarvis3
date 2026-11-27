@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { BACKENDS, BACKEND_IDS, CLI_FILES, KEY_STORAGE_NOTE, PROVIDER_KEY_NOTE, classifyHost, isManagedGateway, keyStatus, parseNetworkUrl, cliConfigOf, isCliBackend, msgConfig, msgSecret, normalizeBackendState, redact, sameCliConfig, sameConfig, validateCliConfig, validateConfig } from "./backends.js";
+import { BACKENDS, BACKEND_IDS, CLI_FILES, KEY_STORAGE_NOTE, PROVIDER_KEY_NOTE, classifyHost, isManagedGateway, keyStatus, parseNetworkUrl, cliConfigOf, formatReset, isCliBackend, limitLevel, limitSummary, normalizeLimits, msgConfig, msgSecret, normalizeBackendState, redact, sameCliConfig, sameConfig, validateCliConfig, validateConfig } from "./backends.js";
 
 test("Ohne Angaben ist OpenCode aktiv und Hermes als nicht unterstützt markiert", () => {
   const s = normalizeBackendState(undefined);
@@ -120,10 +120,15 @@ test("Vier Backends: OpenCode, Hermes, Claude Code, Codex; die beiden Programme 
 
 test("Zustand von Claude Code und Codex: Anmeldung über das Programm, Fehlertext, kein Schlüsselstatus", () => {
   const s = normalizeBackendState({ active: "claude", backends: {
-    claude: { label: "Claude Code", status: "ready", loginManaged: true, keySet: true, config: { provider: "claude", model: "sonnet", files: "read", serverUrl: "http://evil" } },
+    claude: { label: "Claude Code", status: "ready", loginManaged: true, keySet: true, config: { provider: "claude", model: "sonnet", files: "read", effort: "high", adopt: true, serverUrl: "http://evil" }, installed: { skills: 124, plugins: 1 }, models: ["sonnet", { id: "claude-opus-5-5", label: "Opus 5.5" }, { id: "bö se" }], efforts: ["low", "high", "extrem"] },
     codex: { label: "Codex", status: "error", error: "Nicht angemeldet: im Terminal `codex login` ausführen.", config: { provider: "codex", model: "", files: "bogus" } } } });
   expect(s.active).toBe("claude");
-  expect(s.backends.claude.config).toEqual({ provider: "claude", model: "sonnet", files: "read" });
+  expect(s.backends.claude.config).toEqual({ provider: "claude", model: "sonnet", files: "read", effort: "high", adopt: true });
+  expect(s.backends.claude.installed).toEqual({ skills: 124, plugins: 1 }); expect(s.backends.codex.installed).toEqual({ skills: 0, plugins: 0 });
+  expect(s.backends.codex.config.adopt).toBe(false);
+  expect(s.backends.claude.models).toEqual([{ id: "sonnet", label: "sonnet" }, { id: "claude-opus-5-5", label: "Opus 5.5" }]);   // ungültige Namen fallen weg
+  expect(s.backends.claude.efforts).toEqual(["low", "high"]);
+  expect(s.backends.codex.config.effort).toBe("");
   expect(s.backends.claude.keySet).toBe(false);                       // diese Backends haben hier nie einen Schlüssel
   expect(s.backends.claude.loginManaged).toBe(true);
   expect(s.backends.codex.config.files).toBe("none");                 // unbekannte Werte fallen auf den sicheren Standard
@@ -140,10 +145,41 @@ test("Prüfung und Nachricht für Claude Code/Codex: Modellname, Dateizugriff, n
   for (const model of ["a b", "--evil", "x".repeat(101), "modell;rm", "$(x)"]) expect(validateCliConfig({ model, files: "none" }).errors.model).toBeTruthy();
   expect(validateCliConfig({ model: "", files: "write" }).errors.files).toBeTruthy();
   expect(CLI_FILES.map(o => o.id)).toEqual(["none", "read"]);
-  const m = msgConfig("claude", { model: " sonnet ", files: "read", serverUrl: "http://x", apiKey: "sk-geheim-1234567890abcd", provider: "claude" });
-  expect(m).toEqual({ type: "backend_config", backend: "claude", config: { model: "sonnet", files: "read" } });
+  const m = msgConfig("claude", { model: " sonnet ", files: "read", effort: "high", adopt: true, serverUrl: "http://x", apiKey: "sk-geheim-1234567890abcd", provider: "claude" });
+  expect(m).toEqual({ type: "backend_config", backend: "claude", config: { model: "sonnet", files: "read", effort: "high", adopt: true } });
+  expect(validateCliConfig({ model: "", files: "none", effort: "extrem" }).errors.effort).toBeTruthy();
+  expect(validateCliConfig({ model: "", files: "none", effort: "" }).valid).toBe(true);
   expect(JSON.stringify(m)).not.toMatch(/geheim|serverUrl/);
-  expect(cliConfigOf({ model: "m", files: "x" })).toEqual({ model: "m", files: "none" });
+  expect(cliConfigOf({ model: "m", files: "x", effort: "bogus" })).toEqual({ model: "m", files: "none", effort: "", adopt: false });
   expect(sameCliConfig({ model: "a", files: "read" }, { model: "a", files: "read" })).toBe(true);
   expect(sameCliConfig({ model: "a", files: "read" }, { model: "a", files: "none" })).toBe(false);
+  expect(sameCliConfig({ model: "a", files: "none", effort: "low" }, { model: "a", files: "none", effort: "" })).toBe(false);
+});
+
+test("Übernahme-Einstellung: nur ein echtes true zählt, ändert die Vergleichsprüfung", () => {
+  expect(cliConfigOf({ model: "", files: "none", adopt: "ja" }).adopt).toBe(false);
+  expect(sameCliConfig({ model: "", files: "none", adopt: true }, { model: "", files: "none", adopt: false })).toBe(false);
+  expect(sameCliConfig({ model: "", files: "none" }, { model: "", files: "none", adopt: false })).toBe(true);
+});
+
+test("Limit-Anzeige: Nachricht lesen, Farben, Kurztext, Zeitpunkt", () => {
+  const l = normalizeLimits({ type: "limits", limits: {
+    claude: { kind: "claude", ok: true, at: 5, windows: [{ id: "a", label: "Sitzung (5 Std.)", usedPercent: 10, resetText: "28. Nov., 02:20" }, { id: "b", label: "Woche (alle Modelle)", usedPercent: 74.6 }, { nope: 1 }] },
+    codex: { kind: "codex", ok: true, plan: "plus", windows: [{ id: "primary", label: "5 Std.", usedPercent: 250, resetsAt: 1795829552 }] },
+    evil: { ok: true, windows: [] } } });
+  expect(Object.keys(l)).toEqual(["claude", "codex"]);
+  expect(l.claude.windows.map(w => w.usedPercent)).toEqual([10, 75]); expect(l.codex.windows[0].usedPercent).toBe(100);
+  expect(limitLevel(10)).toBe("ok"); expect(limitLevel(70)).toBe("warn"); expect(limitLevel(89)).toBe("warn"); expect(limitLevel(90)).toBe("bad");
+  const s = limitSummary(l.claude);
+  expect(s.text).toBe("Sitzung 10 % · Woche 75 %"); expect(s.percent).toBe(75);
+  expect(s.title).toContain("noch 90 % frei"); expect(s.title).toContain("zurückgesetzt 28. Nov., 02:20");
+  expect(limitSummary(undefined).text).toBe("Limit ?");
+  expect(limitSummary(normalizeLimits({ limits: { codex: { ok: false, error: "Codex nicht erreichbar", windows: [] } } }).codex)).toMatchObject({ text: "Limit ?", title: "Codex nicht erreichbar" });
+  expect(normalizeLimits(undefined)).toEqual({}); expect(normalizeLimits({ limits: "x" })).toEqual({});
+  const now = Date.UTC(2026, 10, 27, 12, 0, 0);
+  expect(formatReset({ resetsAt: now / 1000 + 30 * 60 }, now)).toBe("in 30 Min.");
+  expect(formatReset({ resetsAt: now / 1000 - 5 }, now)).toBe("gleich");
+  expect(formatReset({ resetsAt: now / 1000 + 3 * 3600 }, now)).toContain("in 3 Std.");
+  expect(formatReset({ resetText: "3. Dez., 11:00" }, now)).toBe("3. Dez., 11:00");
+  expect(formatReset({}, now)).toBe("");
 });

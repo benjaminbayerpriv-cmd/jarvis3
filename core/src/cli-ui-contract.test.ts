@@ -7,6 +7,7 @@ import { parseCliConfig } from "./cli-agents";
 test("Oberfläche und Daemon prüfen Modellname und Dateizugriff gleich", () => {
   const models = ["", "sonnet", "claude-sonnet-5-5", "gpt-5.5-codex", "o3", "a b", "--evil", "-x", "x".repeat(100), "x".repeat(101), "a;b", "$(x)", "mo/del:1", "m[1m]", "ä"];
   const files = ["none", "read", "write", "", undefined];
+  const efforts = ["", "low", "medium", "high", "xhigh", "max", "ultra", "extrem", "LOW"];
   let n = 0;
   for (const model of models) for (const f of files) {
     const ui = validateCliConfig({ model, files: f }).valid;
@@ -20,7 +21,15 @@ test("Oberfläche und Daemon prüfen Modellname und Dateizugriff gleich", () => 
 });
 
 test("Die Nachricht der Oberfläche wird vom Daemon unverändert angenommen", () => {
-  const msg = msgConfig("codex", { model: " gpt-5.5 ", files: "read" });
-  expect(msg).toEqual({ type: "backend_config", backend: "codex", config: { model: "gpt-5.5", files: "read" } });
-  expect(parseCliConfig(msg.config)).toEqual({ model: "gpt-5.5", files: "read" });
+  const msg = msgConfig("codex", { model: " gpt-5.5 ", files: "read", effort: "ultra", adopt: true });
+  expect(msg).toEqual({ type: "backend_config", backend: "codex", config: { model: "gpt-5.5", files: "read", effort: "ultra", adopt: true } });
+  expect(parseCliConfig(msg.config)).toEqual({ model: "gpt-5.5", files: "read", effort: "ultra", adopt: true });
+});
+
+test("Denkaufwand: Oberfläche und Daemon kennen dieselben Stufen", () => {
+  for (const effort of ["", "low", "medium", "high", "xhigh", "max", "ultra", "extrem", "LOW", " low"]) {
+    const ui = validateCliConfig({ model: "", files: "none", effort }).valid;
+    let daemon = true; try { parseCliConfig({ model: "", files: "none", effort }); } catch { daemon = false; }
+    expect({ effort, ui }).toEqual({ effort, ui: daemon });
+  }
 });

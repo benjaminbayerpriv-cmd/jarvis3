@@ -14,13 +14,13 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
     active: "opencode",
     backends: {
       opencode: { status: "ready", config: { provider: "opencode", model: "opencode/big-pickle", baseUrl: "" }, secret: null },
-      claude: { status: "ready", config: { provider: "claude", model: "", files: "none" }, secret: null },
-      codex: { status: "error", error: "Nicht angemeldet: im Terminal `codex login` ausführen.", config: { provider: "codex", model: "", files: "none" }, secret: null },
+      claude: { status: "ready", config: { provider: "claude", model: "", files: "none", effort: "", adopt: false }, secret: null },
+      codex: { status: "error", error: "Nicht angemeldet: im Terminal `codex login` ausführen.", config: { provider: "codex", model: "", files: "none", effort: "", adopt: false }, secret: null },
       hermes: { status: "ready", config: { provider: "default", model: "hermes-agent", serverUrl: "http://127.0.0.1:8642", modelBaseUrl: "", modelSupportsVision: false }, secret: null, providerSecret: null },
     },
   };
   const view = () => ({ type: "backend", active: store.active, backends: Object.fromEntries(Object.entries(store.backends).map(([id, b]) =>
-    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(b.error ? { error: b.error } : {}), ...(id === "claude" || id === "codex" ? { loginManaged: true, providers: [] } : {}), ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
+    [id, { status: b.status, config: b.config, keySet: !!b.secret, ...(b.error ? { error: b.error } : {}), ...(id === "claude" || id === "codex" ? { loginManaged: true, installed: { skills: id === "claude" ? 124 : 60, plugins: id === "claude" ? 1 : 3 }, providers: [], models: id === "claude" ? [{ id: "sonnet", label: "Sonnet (aktuell)" }, { id: "claude-opus-5-5", label: "Opus 5.5" }] : [{ id: "gpt-6.2-sol", label: "GPT-6.2-Sol" }], efforts: id === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"] } : {}), ...(id === "hermes" ? { providerKeySet: !!b.providerSecret, externalGatewayManaged: isManagedGateway(b.config.serverUrl),
       providers: [{ id: "default", label: "Hermes-Standardanbieter", needsKey: false }, { id: "custom", label: "OpenAI-kompatibler Modellserver", needsKey: false }] } : {}) }])) });
   const sockets = new Set();
   const broadcast = m => { for (const s of sockets) s.send(JSON.stringify(m)); };
@@ -47,6 +47,12 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
       close(ws) { sockets.delete(ws); },
       message(ws, raw) {
         let m; try { m = JSON.parse(String(raw)); } catch { return; }
+        if (m.type === "limits_get" && !legacy) {
+          ws.send(JSON.stringify({ type: "limits", limits: {
+            claude: { kind: "claude", ok: true, at: Date.now(), windows: [{ id: "current-session", label: "Sitzung (5 Std.)", usedPercent: 10, resetText: "28. Nov., 02:20" }, { id: "current-week-all-models", label: "Woche (alle Modelle)", usedPercent: 74, resetText: "3. Dez., 11:00" }] },
+            codex: { kind: "codex", ok: true, at: Date.now(), plan: "plus", windows: [{ id: "primary", label: "5 Std.", usedPercent: 0, resetsAt: Math.floor(Date.now() / 1000) + 3 * 3600 }, { id: "secondary", label: "Woche", usedPercent: 92, resetsAt: Math.floor(Date.now() / 1000) + 3 * 86400 }] } } }));
+          return;
+        }
         if (!String(m.type).startsWith("backend") || legacy) { if (m.type !== "client_error") log("ignoriert", redact({ type: m.type })); return; }
         log("empfangen", redact(m));
         const b = store.backends[m.backend];
@@ -60,8 +66,9 @@ export function startMock({ port = 0, legacy = false, log = () => {} } = {}) {
             if (!b || !m.config) return;
             if (m.backend === "claude" || m.backend === "codex") {
               const c = m.config ?? {};
-              if (typeof c.model !== "string" || (c.model && !/^[\w][\w.:/\-\[\]]*$/.test(c.model)) || (c.files !== "none" && c.files !== "read")) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Modellname ungültig" })); break; }
-              b.config = { provider: m.backend, model: c.model, files: c.files };
+              if (typeof c.model !== "string" || (c.model && !/^[\w][\w.:/\-\[\]]*$/.test(c.model)) || (c.files !== "none" && c.files !== "read") || !["", "low", "medium", "high", "xhigh", "max", "ultra"].includes(c.effort ?? "")) { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Modellname ungültig" })); break; }
+              if (c.adopt !== undefined && typeof c.adopt !== "boolean") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Übernahme ungültig" })); break; }
+              b.config = { provider: m.backend, model: c.model, files: c.files, effort: c.effort ?? "", adopt: c.adopt === true };
               ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: true })); broadcast(view()); break;
             }
             if (m.backend !== "hermes") { ws.send(JSON.stringify({ type: "backend_saved", backend: m.backend, ok: false, error: "Dieses Backend verwaltet seine Anbieter selbst" })); break; }

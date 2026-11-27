@@ -21,14 +21,14 @@ test("Chats, Verlauf und Einstellungen bleiben nach Neustart erhalten, Dateien n
   cb.markStarted(id);
   const codex = cb.createSession("codex", "Cx");
   cb.markStarted(codex, "thread-1");
-  cb.configure("claude", { model: "sonnet", files: "read" });
+  cb.configure("claude", { model: "sonnet", files: "read", effort: "high" });
   const again = make(home).cb;
   expect(again.rows.map(r => [r.kind, r.title, r.started])).toEqual([["claude", "Test", true], ["codex", "Cx", true]]);
   expect(again.get(codex).native).toBe("thread-1");
   expect(again.get(id).native).toMatch(/^[0-9a-f-]{36}$/);           // Claude: ID von Jarvis vergeben
   expect(again.messages(id).map(m => [m.role, m.text])).toEqual([["user", "Hallo"], ["assistant", "Hi"]]);
-  expect(again.configs.claude).toEqual({ model: "sonnet", files: "read" });
-  expect(again.configs.codex).toEqual({ model: "", files: "none" });
+  expect(again.configs.claude).toEqual({ model: "sonnet", files: "read", effort: "high", adopt: false });
+  expect(again.configs.codex).toEqual({ model: "", files: "none", effort: "", adopt: false });
   for (const f of readdirSync(join(home, "backend"))) expect(statSync(join(home, "backend", f)).mode & 0o077).toBe(0);
 });
 

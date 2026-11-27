@@ -153,5 +153,11 @@ ChatGPT-Konto): Jarvis speichert, liest und sendet dafür **keine Schlüssel ode
 - `backend.backends.claude|codex`: `{label, status, error?, loginManaged:true, keySet:false, config:{provider, model, files}, providers:[]}`;
   `status` `ready` (installiert und angemeldet), `error` (nicht angemeldet; `error` nennt den Befehl), `unsupported` (nicht installiert),
   `connecting` (Status wird abgefragt). Die Statusabfrage läuft bei `backend_get` im Hintergrund; danach folgt ein neues `backend`.
+- `config` hat zusätzlich `effort` (`""`, `low`…`max`, `ultra` nur Codex) und `adopt` (bool): installierte Skills und Plugins des Programms übernehmen, ohne dessen
+  Hooks und MCP-Server (siehe `docs/cli-backends.md`). `backend.backends.claude|codex` liefert dazu `models:[{id,label}]`, `efforts:[…]` und `installed:{skills, plugins}`.
+- Modellwahl im Chat: `{type:"settings", settings:{model:"claude/<modell>"|"codex/<modell>"}}` setzt `config.model` des aktiven Programms (`default` = Vorgabe);
+  `state.models` führt „Vorgabe“ und die Liste des Programms.
+- Limits: `{type:"limits_get", force?}` → `{type:"limits", limits:{claude?, codex?}}`, je `{kind, ok, windows:[{id,label,usedPercent,resetsAt?,resetText?}], plan?, note?, error?, at}`;
+  ohne Modellaufruf (Claude Code `/usage`, Codex App-Server `account/rateLimits/read`).
 - Eigene Werkzeuge: nur die von Jarvis (MCP `jarvis`, dieselben Sperren und derselbe Not-Aus über jarvisd). Bearbeiten/erneutes Senden und
   Zurücksetzen auf eine Nachricht sind für beide noch nicht möglich und werden abgelehnt.

@@ -71,7 +71,7 @@ test("Claude Code und Codex: Einstellungen speichern, ungültig ablehnen, Schlü
   try {
     const got = await talk(mock.port, [
       msgGet(),
-      msgConfig("claude", { model: "sonnet", files: "read" }),
+      msgConfig("claude", { model: "sonnet", files: "read", effort: "high", adopt: true }),
       msgConfig("claude", { model: "a b", files: "read" }),
       msgSecret("claude", "geheim-123456789", "server"),
       msgTest("claude"), msgTest("codex"),
@@ -82,11 +82,22 @@ test("Claude Code und Codex: Einstellungen speichern, ungültig ablehnen, Schlü
     expect(saved[2].error).toContain("meldet sich selbst an");
     const state = got.filter(m => m.type === "backend").at(-1);
     expect(state.active).toBe("claude");
-    expect(state.backends.claude).toMatchObject({ status: "ready", loginManaged: true, keySet: false, config: { provider: "claude", model: "sonnet", files: "read" } });
+    expect(state.backends.claude).toMatchObject({ status: "ready", loginManaged: true, keySet: false, config: { provider: "claude", model: "sonnet", files: "read", effort: "high", adopt: true }, installed: { skills: 124, plugins: 1 }, efforts: expect.arrayContaining(["high"]) });
+    expect(state.backends.claude.models.map(x => x.id)).toContain("claude-opus-5-5");
     expect(state.backends.codex).toMatchObject({ status: "error", error: expect.stringContaining("codex login") });
     const tests = got.filter(m => m.type === "backend_test");
     expect(tests.find(m => m.backend === "claude").ok).toBe(true);
     expect(tests.find(m => m.backend === "codex").ok).toBe(false);
     expect(JSON.stringify(got)).not.toContain("geheim-123");
   } finally { mock.stop(); }
+});
+
+test("Limits: der Daemon liefert beide Programme, ohne Modellaufruf, alte Daemons schweigen", async () => {
+  const mock = startMock(), legacy = startMock({ legacy: true });
+  try {
+    const got = await talk(mock.port, [{ type: "limits_get" }], 200);
+    const l = got.find(m => m.type === "limits").limits;
+    expect(l.claude.windows).toHaveLength(2); expect(l.codex.plan).toBe("plus");
+    expect((await talk(legacy.port, [{ type: "limits_get" }], 200)).some(m => m.type === "limits")).toBe(false);
+  } finally { mock.stop(); legacy.stop(); }
 });

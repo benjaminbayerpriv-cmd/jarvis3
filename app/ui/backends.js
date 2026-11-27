@@ -12,12 +12,16 @@
 //     {type:"backend_set", backend:"opencode"|"hermes"|"claude"|"codex"}                           Backend für NEUE Chats wählen
 //     {type:"backend_config", backend:"hermes", config:{serverUrl, provider, model, modelBaseUrl, modelSupportsVision}}   nie ein Schlüssel
 //     {type:"backend_secret", backend:"hermes", target:"server"|"provider", apiKey:string|null}   getrennte Schlüssel (null = entfernen)
-//     {type:"backend_config", backend:"claude"|"codex", config:{model, files}}    Modell und Dateizugriff des Programms
+//     {type:"backend_config", backend:"claude"|"codex", config:{model, files, effort, adopt}}   Modell, Dateizugriff, Denkaufwand ("" = Vorgabe), installierte Skills/Plugins übernehmen
+//     {type:"settings", settings:{model:"claude/<modell>"}}                       Modellwahl im Chat (setzt model des aktiven Programms)
 //     {type:"backend_test", backend}                                              Hermes: Gateway prüfen; Claude Code/Codex: installiert und angemeldet?
 //   jarvisd → UI
 //     {type:"backend", active, backends:{<id>:{label?, status, error?, config, keySet, providerKeySet?, externalGatewayManaged?, providers?}}}
 //         Hermes-config: {serverUrl, provider, model, modelBaseUrl, modelSupportsVision}; OpenCode-config: {provider, model, baseUrl} nur Anzeige;
-//         Claude Code/Codex-config: {provider, model, files}; Claude Code/Codex: loginManaged:true, error = Hinweis zur Anmeldung
+//         Claude Code/Codex-config: {provider, model, files, effort, adopt}, models:[{id,label}], efforts:[…], installed:{skills,plugins}; loginManaged:true,
+//         error = Hinweis zur Anmeldung
+//     {type:"limits", limits:{claude?, codex?}}   Rest-Kontingent: {kind, ok, windows:[{id,label,usedPercent,resetsAt?,resetText?}], plan?, note?, error?, at}
+//   UI → jarvisd: {type:"limits_get", force?} (kein Modellaufruf; Claude Code: /usage, Codex: App-Server)
 //         keySet/providerKeySet: nur Ja/Nein, Schlüssel verlassen den Daemon nie
 //     {type:"backend_saved", backend, ok, error?}
 //     {type:"backend_test", backend, ok, error?, latencyMs?}
@@ -62,6 +66,8 @@ export const BACKENDS = {
 };
 export const isCliBackend = id => BACKENDS[id]?.kind === "cli";
 export const CLI_FILES = [{ id: "none", label: "Keine Dateien" }, { id: "read", label: "Dateien lesen" }];
+export const CLI_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const EFFORT_LABEL = { "": "Vorgabe", low: "Niedrig", medium: "Mittel", high: "Hoch", xhigh: "Sehr hoch", max: "Maximal", ultra: "Ultra (nur Codex)" };
 export const CLI_MODEL_RE = /^[\w][\w.:/\-\[\]]*$/;
 export const BACKEND_IDS = Object.keys(BACKENDS);
 export const isBackend = id => Object.hasOwn(BACKENDS, id);
@@ -84,12 +90,15 @@ export function normalizeBackendState(message) {
       status: STATUS.has(raw?.status) ? raw.status : raw ? "ready" : "unsupported",
       error: text(raw?.error, 400),
       // `baseUrl` (OpenCode) ist KEINE Hermes-Serveradresse und wird nie als solche gelesen.
-      config: cli ? { provider: id, model: text(cfg.model, 100), files: cfg.files === "read" ? "read" : "none" } : hermes ? { serverUrl: text(cfg.serverUrl, 300), provider: text(cfg.provider, 60) || DEFAULT_PROVIDER, model: text(cfg.model, 200) || DEFAULT_MODEL,
+      config: cli ? { provider: id, model: text(cfg.model, 100), files: cfg.files === "read" ? "read" : "none", effort: CLI_EFFORTS.includes(cfg.effort) ? cfg.effort : "", adopt: cfg.adopt === true } : hermes ? { serverUrl: text(cfg.serverUrl, 300), provider: text(cfg.provider, 60) || DEFAULT_PROVIDER, model: text(cfg.model, 200) || DEFAULT_MODEL,
           modelBaseUrl: text(cfg.modelBaseUrl, 300), modelSupportsVision: cfg.modelSupportsVision === true }
         : { provider: text(cfg.provider, 60), model: text(cfg.model, 200), serverUrl: "", modelBaseUrl: "", modelSupportsVision: false },
       keySet: hermes && raw?.keySet === true, loginManaged: cli,                        // nur ein Ja/Nein, nie ein Schlüssel oder Teil davon
       providerKeySet: hermes && raw?.providerKeySet === true,
       externalGatewayManaged: hermes && raw?.externalGatewayManaged === false ? false : true,
+      models: cli && Array.isArray(raw?.models) ? raw.models.map(x => (typeof x === "string" ? { id: x, label: x } : { id: text(x?.id, 100), label: text(x?.label, 80) || text(x?.id, 100) })).filter(x => x.id && CLI_MODEL_RE.test(x.id)).slice(0, 200) : [],
+      installed: cli ? { skills: Math.max(0, Number(raw?.installed?.skills) || 0), plugins: Math.max(0, Number(raw?.installed?.plugins) || 0) } : { skills: 0, plugins: 0 },
+      efforts: cli ? (Array.isArray(raw?.efforts) ? raw.efforts.filter(e => CLI_EFFORTS.includes(e)) : CLI_EFFORTS.filter(e => e !== "ultra")) : [],
       providers: Array.isArray(raw?.providers) && raw.providers.length
         ? raw.providers.filter(p => p && typeof p.id === "string").map(p => ({ id: p.id, label: text(p.label, 80) || p.id }))
         : BACKENDS[id].providers,
@@ -165,10 +174,11 @@ export function validateCliConfig(draft) {
   const errors = {}, model = text(draft.model, 120);
   if (model && (model.length > 100 || !CLI_MODEL_RE.test(model))) errors.model = "Modellname ungültig (Buchstaben, Ziffern und . : / - _ [ ]); leer lassen für die Vorgabe.";
   if (draft.files !== "none" && draft.files !== "read") errors.files = "Dateizugriff wählen.";
+  if (draft.effort && !CLI_EFFORTS.includes(draft.effort)) errors.effort = "Denkaufwand wählen.";
   return { errors, valid: Object.keys(errors).length === 0 };
 }
-export const cliConfigOf = draft => ({ model: text(draft.model, 100), files: draft.files === "read" ? "read" : "none" });
-export const sameCliConfig = (a, b) => text(a?.model) === text(b?.model) && (a?.files === "read") === (b?.files === "read");
+export const cliConfigOf = draft => ({ model: text(draft.model, 100), files: draft.files === "read" ? "read" : "none", effort: CLI_EFFORTS.includes(draft.effort) ? draft.effort : "", adopt: draft.adopt === true });
+export const sameCliConfig = (a, b) => text(a?.model) === text(b?.model) && (a?.files === "read") === (b?.files === "read") && text(a?.effort) === text(b?.effort) && (a?.adopt === true) === (b?.adopt === true);
 
 export const configOf = draft => ({ serverUrl: trimUrl(draft.serverUrl), provider: text(draft.provider, 60), model: text(draft.model, 200),
   modelBaseUrl: trimUrl(draft.modelBaseUrl), modelSupportsVision: draft.modelSupportsVision === true });
@@ -197,3 +207,41 @@ export const keyStatus = keySet => (keySet ? "Gespeichert (wird nie angezeigt)" 
 /** Wahrheitsgemäßer Hinweis zur Ablage des Server-Schlüssels (Stand PR #63): Dateirechte, keine Verschlüsselung, kein Windows. */
 export const KEY_STORAGE_NOTE = "Liegt als Datei in ~/.jarvis3/backend/ und ist durch Dateirechte (nur dein Benutzer) geschützt, nicht verschlüsselt. Windows wird noch nicht unterstützt. Der Schlüssel wird nie wieder angezeigt.";
 export const PROVIDER_KEY_NOTE = KEY_STORAGE_NOTE + " Hermes bekommt ihn beim Start über eine Umgebungsvariable.";
+
+// ----- Limit-Anzeige (Rest-Kontingent) -----
+/** Zustand aus der Nachricht `limits`; unbrauchbare Einträge fallen weg. */
+export function normalizeLimits(message) {
+  const out = {};
+  const raw = message && typeof message === "object" && message.limits && typeof message.limits === "object" ? message.limits : {};
+  for (const kind of ["claude", "codex"]) {
+    const l = raw[kind];
+    if (!l || typeof l !== "object") continue;
+    const windows = Array.isArray(l.windows) ? l.windows.filter(w => w && Number.isFinite(Number(w.usedPercent))).map(w => ({
+      id: text(w.id, 60), label: text(w.label, 60) || "Fenster", usedPercent: Math.max(0, Math.min(100, Math.round(Number(w.usedPercent)))),
+      resetsAt: Number.isFinite(Number(w.resetsAt)) ? Number(w.resetsAt) : undefined, resetText: text(w.resetText, 60) })).slice(0, 8) : [];
+    out[kind] = { kind, ok: l.ok === true && windows.length > 0, windows, plan: text(l.plan, 30), note: text(l.note, 80), error: text(l.error, 200), at: Number(l.at) || 0 };
+  }
+  return out;
+}
+/** ok (unter 70 %), warn (ab 70 %), bad (ab 90 %) */
+export const limitLevel = percent => (percent >= 90 ? "bad" : percent >= 70 ? "warn" : "ok");
+/** Wann das Fenster zurückgesetzt wird: aus dem Zeitstempel (Codex) oder dem Text (Claude Code). `now` nur für Tests. */
+export function formatReset(w, now = Date.now()) {
+  if (w.resetsAt) {
+    const d = new Date(w.resetsAt * 1000), diff = d.getTime() - now;
+    if (diff <= 0) return "gleich";
+    const mins = Math.round(diff / 60000);
+    if (mins < 90) return `in ${mins} Min.`;
+    if (mins < 36 * 60) return `in ${Math.round(mins / 60)} Std. (${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })})`;
+    return `${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })}, ${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return w.resetText || "";
+}
+/** Kurztext für die Kopfzeile: z. B. „5 Std. 10 % · Woche 11 %“ und die höchste Auslastung (für die Farbe). */
+export function limitSummary(l) {
+  if (!l?.ok) return { text: "Limit ?", percent: 0, title: l?.error || "Limit unbekannt" };
+  const short = w => w.label.replace(/ \(5 Std\.\)$/, "").replace(" (alle Modelle)", "");
+  const percent = Math.max(...l.windows.map(w => w.usedPercent));
+  return { text: l.windows.slice(0, 2).map(w => `${short(w)} ${w.usedPercent} %`).join(" · "), percent,
+    title: [...l.windows.map(w => `${w.label}: ${w.usedPercent} % verbraucht, noch ${100 - w.usedPercent} % frei${formatReset(w) ? ` · zurückgesetzt ${formatReset(w)}` : ""}`), l.note, l.plan ? `Tarif: ${l.plan}` : ""].filter(Boolean).join("\n") };
+}

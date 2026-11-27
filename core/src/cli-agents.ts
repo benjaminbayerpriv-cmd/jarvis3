@@ -9,6 +9,7 @@
 import { join } from "node:path";
 import type { BrainEvent } from "./opencode";
 import { baseToolName } from "./hermes-tools";
+import { codexUserMcpNames } from "./cli-adopt";
 
 export type CliKind = "claude" | "codex";
 export const CLI_KINDS: readonly CliKind[] = ["claude", "codex"];
@@ -16,15 +17,18 @@ export const CLI_LABEL: Record<CliKind, string> = { claude: "Claude Code", codex
 export const isCliKind = (v: unknown): v is CliKind => v === "claude" || v === "codex";
 
 /** Einstellungen je Programm. `model` leer = Vorgabe des Programms. `files`: ob es Dateien lesen darf. */
-export type CliConfig = { model: string; files: "none" | "read" };
-export const defaultCliConfig = (): CliConfig => ({ model: "", files: "none" });
+export const EFFORTS = ["", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type CliConfig = { model: string; files: "none" | "read"; effort: string; adopt: boolean };
+export const defaultCliConfig = (): CliConfig => ({ model: "", files: "none", effort: "", adopt: false });
 export function parseCliConfig(input: unknown): CliConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Ungültige Einstellungen");
   const v = input as Record<string, unknown>;
   const model = v.model === undefined ? "" : v.model;
   if (typeof model !== "string" || model.length > 100 || (model && !/^[\w][\w.:/\-\[\]]*$/.test(model))) throw new Error("Modellname ungültig");
   if (v.files !== undefined && v.files !== "none" && v.files !== "read") throw new Error("Dateizugriff ungültig");
-  return { model, files: v.files === "read" ? "read" : "none" };
+  if (v.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(v.effort)) throw new Error("Denkaufwand ungültig");
+  if (v.adopt !== undefined && typeof v.adopt !== "boolean") throw new Error("Übernahme ungültig");
+  return { model, files: v.files === "read" ? "read" : "none", effort: typeof v.effort === "string" ? v.effort : "", adopt: v.adopt === true };
 }
 
 export const cliModelId = (kind: CliKind, config: CliConfig) => `${kind}/${config.model || "default"}`;
@@ -37,6 +41,8 @@ export interface CliEnv {
   mcpPath?: string;
   daemonUrl: string;
   workspace: string;
+  /** Namen der Codex-MCP-Server des Nutzers (bei der Übernahme abgeschaltet). Standard: aus ~/.codex/config.toml */
+  userMcp?: () => string[];
 }
 export interface CliRun { kind: CliKind; config: CliConfig; input: string; instructions: string; native: string; resume: boolean; images?: string[] }
 
@@ -47,10 +53,15 @@ export function claudeArgs(run: CliRun, env: CliEnv): string[] {
   const read = run.config.files === "read";
   const args = ["-p", run.input, "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     // Nur Jarvis' Werkzeuge (und auf Wunsch Lesen); Einstellungen, Hooks und Plugins des Nutzers werden nicht geladen
-    "--tools", read ? "Read,Glob,Grep" : "", "--allowedTools", read ? "mcp__jarvis__*,Read,Glob,Grep" : "mcp__jarvis__*",
-    "--mcp-config", JSON.stringify({ mcpServers: { jarvis: jarvisMcp(env) } }), "--strict-mcp-config", "--setting-sources", "",
+    "--tools", [...(read ? ["Read", "Glob", "Grep"] : []), ...(run.config.adopt ? ["Skill"] : [])].join(","),
+    "--allowedTools", ["mcp__jarvis__*", ...(read ? ["Read", "Glob", "Grep"] : []), ...(run.config.adopt ? ["Skill"] : [])].join(","),
+    // --strict-mcp-config: MCP-Server von Plugins und Nutzer bleiben aus (sie würden Jarvis' Sperren und den Not-Aus umgehen)
+    "--mcp-config", JSON.stringify({ mcpServers: { jarvis: jarvisMcp(env) } }), "--strict-mcp-config",
+    // Übernahme: Skills und Plugins aus den Nutzereinstellungen, aber ohne deren Hooks (eigene Befehle des Nutzers laufen nicht mit)
+    ...(run.config.adopt ? ["--setting-sources", "user", "--settings", JSON.stringify({ disableAllHooks: true })] : ["--setting-sources", ""]),
     "--permission-mode", "default", "--append-system-prompt", run.instructions];
   if (run.config.model) args.push("--model", run.config.model);
+  if (run.config.effort && run.config.effort !== "ultra") args.push("--effort", run.config.effort);   // „ultra“ kennt nur Codex
   args.push(...(run.resume ? ["--resume", run.native] : ["--session-id", run.native]));
   return args;
 }
@@ -59,8 +70,11 @@ export function codexArgs(run: CliRun, env: CliEnv): string[] {
   const mcp = jarvisMcp(env);
   const config = ["-c", `mcp_servers.jarvis.command=${toml(mcp.command)}`, "-c", `mcp_servers.jarvis.args=${toml(mcp.args)}`,
     "-c", `mcp_servers.jarvis.env={JARVISD_URL=${toml(mcp.env.JARVISD_URL)}}`, "-c", `sandbox_mode="read-only"`];
-  const base = ["--json", "--skip-git-repo-check", "--ignore-user-config", ...(run.config.files === "read" ? [] : ["--disable", "shell_tool"]),
-    ...(run.config.model ? ["-m", run.config.model] : []), ...(run.images ?? []).flatMap(path => ["-i", path]), ...config];
+  // Übernahme: config.toml (Plugins, Skills) wird geladen, aber Hooks bleiben aus, Freigaben werden nie erfragt und jeder MCP-Server des Nutzers ist abgeschaltet
+  const adopt = run.config.adopt ? ["--disable", "hooks", "-c", `approval_policy="never"`, ...(env.userMcp ?? codexUserMcpNames)().flatMap(n => ["-c", `mcp_servers.${n}.enabled=false`])] : ["--ignore-user-config"];
+  const base = ["--json", "--skip-git-repo-check", ...adopt, ...(run.config.files === "read" || run.config.adopt ? [] : ["--disable", "shell_tool"]),   // Codex-Skills liest Codex über die (nur lesende) Shell
+    
+    ...(run.config.model ? ["-m", run.config.model] : []), ...(run.config.effort ? ["-c", `model_reasoning_effort=${toml(run.config.effort)}`] : []), ...(run.images ?? []).flatMap(path => ["-i", path]), ...config];
   // Codex kennt keine getrennte System-Anweisung: die Jarvis-Anweisungen stehen vor der ersten Nachricht der Unterhaltung.
   const text = run.resume ? run.input : `${run.instructions}\n\n---\n\n${run.input}`;
   return run.resume ? ["exec", "resume", ...base, run.native, text] : ["exec", ...base, text];

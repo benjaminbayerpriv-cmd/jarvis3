@@ -32,6 +32,9 @@ import { Haptics } from "./haptics";
 import { BACKEND_IDS, BackendRuntime, isHermes, type BackendId } from "./backend-runtime";
 import { CliAgent, CLI_LABEL, cliModelId, defaultCliConfig, isCliKind, parseCliConfig, type CliKind } from "./cli-agents";
 import { CliBackends, cliKindOf, isCli } from "./cli-backends";
+import { effortsFor, loadCodexModels, staticModels, type CliModel } from "./cli-models";
+import { readLimits, type Limits } from "./cli-limits";
+import { scanInstalled } from "./cli-adopt";
 import { HermesSupervisor } from "./hermes-supervisor";
 import { managedGateway } from "./hermes";
 import { MARKER, markers, getVisual, runPython, saveHtml, serveVisual, setVisualTheme, type Visual } from "./visuals";
@@ -73,6 +76,32 @@ const hermesSupervisor = new HermesSupervisor(PORT);
 // Claude Code und Codex: schon installierte Programme, eigene Anmeldung (Jarvis speichert dafür nichts)
 let cliBackends: CliBackends | undefined;
 try { if (backendRuntime) cliBackends = new CliBackends(backendRuntime.store, new CliAgent({ daemonUrl: `http://127.0.0.1:${PORT}`, workspace })); } catch { /* die übrigen Backends bleiben nutzbar */ }
+const cliModels = new Map<CliKind, CliModel[]>([["claude", staticModels("claude")], ["codex", []]]);
+let cliModelsAt = 0;
+async function refreshCliModels(force = false) {   // Codex liefert seinen Modellkatalog selbst (`codex debug models`, kein Modellaufruf)
+  if (!force && Date.now() - cliModelsAt < 10 * 60_000) return;
+  cliModelsAt = Date.now();
+  const list = await loadCodexModels();
+  if (list.length) { cliModels.set("codex", list); broadcast(backendState()); broadcast(state()); }
+}
+const cliModelEntries = (kind: CliKind) => {
+  const config = cliBackends!.configs[kind], list = cliModels.get(kind) ?? [];
+  const known = list.some(m => m.id === config.model) || !config.model;
+  return [{ id: cliModelId(kind, defaultCliConfig()), provider: kind, model: "Vorgabe", group: "other" as const, vision: kind === "codex" || config.files === "read" },
+    ...(known ? [] : [{ id: cliModelId(kind, config), provider: kind, model: config.model, group: "other" as const, vision: kind === "codex" || config.files === "read" }]),
+    ...list.map(m => ({ id: `${kind}/${m.id}`, provider: kind, model: m.label, group: "other" as const, vision: kind === "codex" || config.files === "read" }))];
+};
+// Limit-Anzeige: Rest-Kontingent aus den Programmen selbst (kein Modellaufruf, kein Verbrauch)
+const cliLimits = new Map<CliKind, Limits>(), limitsBusy = new Map<CliKind, Promise<void>>();
+const limitsMessage = () => ({ type: "limits", limits: Object.fromEntries(cliLimits) });
+async function refreshLimits(kind: CliKind, force = false) {
+  const known = cliLimits.get(kind);
+  if (!force && known && Date.now() - known.at < 20_000) return;
+  let run = limitsBusy.get(kind);
+  if (!run) { run = (async () => { cliLimits.set(kind, await readLimits(kind)); })().finally(() => limitsBusy.delete(kind)); limitsBusy.set(kind, run); }
+  await run; broadcast(limitsMessage());
+}
+setInterval(() => { const b = effectiveBackend(); if (uis.size && cliBackends && isCliKind(b)) void refreshLimits(b); }, 5 * 60_000);
 const cliStatus = new Map<CliKind, { installed: boolean; loggedIn: boolean; detail: string; at: number }>();
 async function refreshCliStatus(kind: CliKind, force = false) {
   const known = cliStatus.get(kind);
@@ -81,6 +110,7 @@ async function refreshCliStatus(kind: CliKind, force = false) {
   cliStatus.set(kind, status);
   return status;
 }
+if (cliBackends) void refreshCliModels();
 const brain = new OpenCode(Number(process.env.JARVIS_OPENCODE_PORT ?? 4096), workspace);
 const desktop = new Desktop();
 const browser = new Browser();
@@ -155,7 +185,7 @@ const state = () => {
   return { type: "state", ...settings, ...(own ? { model: own, voiceModel: own } : {}), extStale: extensionStale,
     backend, busy: isBusy(), busySessions: [...busySessions], browser: browser.connected,
     speech: speech.connected, voice, models: hermes ? [{ id, provider: config?.provider ?? "default", model: config?.model ?? "hermes-agent", group: "other", vision: config?.modelSupportsVision === true }]
-      : cli ? [{ id: cliId, provider: cli, model: cliConfig!.model || "Vorgabe", group: "other", vision: cli === "codex" || cliConfig!.files === "read" }] : models, devices: audioDevices };
+      : cli ? cliModelEntries(cli) : models, devices: audioDevices };
 };
 
 // ---------- Sprache ----------
@@ -404,7 +434,8 @@ function cliBackendState(kind: CliKind) {
   const st = cliStatus.get(kind), cfg = cliBackends?.configs[kind] ?? defaultCliConfig();
   return { label: CLI_LABEL[kind], loginManaged: true, keySet: false,
     status: !cliBackends ? "unsupported" : !st ? "connecting" : !st.installed ? "unsupported" : st.loggedIn ? "ready" : "error",
-    ...(st && !st.loggedIn ? { error: st.detail } : {}), config: { provider: kind, model: cfg.model, files: cfg.files }, providers: [] };
+    ...(st && !st.loggedIn ? { error: st.detail } : {}), config: { provider: kind, model: cfg.model, files: cfg.files, effort: cfg.effort, adopt: cfg.adopt }, installed: scanInstalled(kind), providers: [],
+    models: (cliModels.get(kind) ?? []).map(m => ({ id: m.id, label: m.label })), efforts: effortsFor(kind) };
 }
 function backendState() {
   let keySet = false, providerKeySet = false;
@@ -792,7 +823,8 @@ async function chatCli(kind: CliKind, text: string, spoken: boolean, fresh: bool
     if (response) cli.append(id, { role: "assistant", text: response });
     for (const file of imageFiles) { try { unlinkSync(file); } catch { /* schon weg */ } }
     busySessions.delete(id); runBuffer.clear(id);
-    if (fresh) { try { cli.remove(id); } catch { /* schon weg */ } } else cli.touch(id);   // „fresh“ = kurzlebiger Testchat, kein Verlauf
+    if (fresh) { try { cli.remove(id); } catch { /* schon weg */ } } else cli.touch(id);
+    if (!fresh) setTimeout(() => void refreshLimits(kind), 3000);   // das Kontingent ändert sich erst nach dem Lauf   // „fresh“ = kurzlebiger Testchat, kein Verlauf
     broadcast(state()); broadcast({ type: "history", sessions: await history(), folders: folderLabels() });
   }
 }
@@ -1687,10 +1719,15 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
       const msg = JSON.parse(raw);
       // Die Oberfläche sagt, in welchem Chat sie gerade ist (null = neuer Chat); sie bestimmt, wohin die Nachricht geht.
       if ((msg.type === "chat" || msg.type === "run_command") && "session" in msg) session = msg.session ? String(msg.session) : undefined;
+      if (msg.type === "limits_get") {
+        if (ws.data.trusted && cliBackends) await Promise.all((["claude", "codex"] as const).map(kind => refreshLimits(kind, msg.force === true)));
+        ws.send(JSON.stringify(limitsMessage())); return;
+      }
       if (typeof msg.type === "string" && msg.type.startsWith("backend_")) {
         const reply = (m: unknown) => ws.send(JSON.stringify(m));
         if (!ws.data.trusted) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Nicht vertrauenswürdiger Ursprung" }); return; }
-        if (msg.type === "backend_get") { reply(backendState()); for (const kind of ["claude", "codex"] as const) void refreshCliStatus(kind).then(() => broadcast(backendState())); return; }
+        if (msg.type === "backend_get") { reply(backendState()); for (const kind of ["claude", "codex"] as const) void refreshCliStatus(kind).then(() => broadcast(backendState()));
+          void refreshCliModels(); return; }
         const backend = backendRuntime;
         if (!backend || !BACKEND_IDS.includes(msg.backend)) { reply({ type: "backend_saved", backend: msg.backend, ok: false, error: "Backend nicht verfügbar" }); return; }
         try {
@@ -1776,6 +1813,20 @@ async function socketMessage(ws: ServerWebSocket<{ kind: string; fresh?: boolean
           for (const key of ["model", "voiceModel"] as const) {
             if (!(key in patch)) continue;
             if (patch[key] !== hermesModelId()) ws.send(JSON.stringify({ type: "notice", text: "Hermes-Modelle werden in den Backend-Einstellungen gewählt." }));
+            delete patch[key];
+          }
+        }
+        if (isCliKind(effectiveBackend()) && cliBackends) {
+          // Claude Code und Codex: die Modellwahl im Chat setzt das Modell des Programms (Denkaufwand und Dateizugriff bleiben)
+          const kind = effectiveBackend() as CliKind, config = cliBackends.configs[kind];
+          for (const key of ["model", "voiceModel"] as const) {
+            if (!(key in patch)) continue;
+            const picked = String(patch[key]), prefix = `${kind}/`;
+            if (key === "model" && picked.startsWith(prefix)) {
+              const name = picked.slice(prefix.length) === "default" ? "" : picked.slice(prefix.length);
+              try { cliBackends.configure(kind, { ...config, model: name }); broadcast(backendState()); }
+              catch { ws.send(JSON.stringify({ type: "notice", text: "Modellname ungültig." })); }
+            } else ws.send(JSON.stringify({ type: "notice", text: `${CLI_LABEL[kind]}: Das Modell wählst du im Modellmenü oder in den Backend-Einstellungen.` }));
             delete patch[key];
           }
         }

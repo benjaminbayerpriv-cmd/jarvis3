@@ -44,7 +44,14 @@ Zwei weitere Backends neben OpenCode und Hermes (Umschalter mit vier Einträgen)
 | --- | --- |
 | Anmeldung | Hinweis: die Programme melden sich selbst an (Terminal: `claude` bzw. `codex login`). Kein Schlüsselfeld; Jarvis speichert dafür nichts. „Anmeldung prüfen“ fragt nur den Status ab. |
 | Modell (optional) | `model`; leer = Vorgabe des Programms. |
+| Modell (optional) | Eingabe mit Vorschlagsliste (`models`); auch im Modellmenü des Chats wählbar. |
+| Denkaufwand | `effort`, „Vorgabe“ oder die Stufen aus `efforts`. |
+| Installierte Skills und Plugins übernehmen | `adopt`; zeigt „Gefunden: N Skills, M Plugins“ (`installed`) und erklärt, was nicht übernommen wird (Hooks, MCP-Server). |
 | Dateizugriff | `files`: „Keine Dateien“ (Standard) oder „Dateien lesen“. |
 
 Zustand kommt als `loginManaged:true`, `status` und bei fehlender Anmeldung `error` mit dem Befehl (auch als Banner, wenn das Programm aktiv ist). Logik und Prüfung: `backends.js`
 (`validateCliConfig`, `cliConfigOf`); `core/src/cli-ui-contract.test.ts` stellt sicher, dass Oberfläche und Daemon dieselben Einstellungen zulassen. Daemon-Seite: `docs/cli-backends.md`.
+
+### Limit-Anzeige
+
+Nachricht `limits` (`normalizeLimits`, `limitSummary`, `limitLevel`, `formatReset` in `backends.js`): Chip in der Kopfzeile bei aktivem Claude Code/Codex („Sitzung 10 % · Woche 11 %“, gelb ab 70 %, rot ab 90 %, Klick = `limits_get` mit `force`) und Balken je Fenster in der Karte unter „Verbleibendes Kontingent“. Ohne Angaben („Limit ?“) steht der Grund im Tooltip.

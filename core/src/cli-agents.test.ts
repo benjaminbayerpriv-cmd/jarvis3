@@ -78,10 +78,13 @@ describe("Aufruf und Einstellungen", () => {
     expect(a.join(" ")).not.toMatch(/Bash|Edit|Write/);
     expect(a.slice(a.indexOf("--session-id"), a.indexOf("--session-id") + 2)).toEqual(["--session-id", base.native]);
     expect(JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.jarvis).toEqual({ command: "/bin/bun", args: ["/x/mcp.ts"], env: { JARVISD_URL: "http://127.0.0.1:7777" } });
-    const r = claudeArgs({ ...base, resume: true, config: { model: "sonnet", files: "read" } }, env);
+    const r = claudeArgs({ ...base, resume: true, config: { model: "sonnet", files: "read", effort: "high" } }, env);
     expect(r).toContain("--resume"); expect(r).not.toContain("--session-id");
     expect(r[r.indexOf("--tools") + 1]).toBe("Read,Glob,Grep");
     expect(r[r.indexOf("--model") + 1]).toBe("sonnet");
+    expect(r[r.indexOf("--effort") + 1]).toBe("high");
+    expect(claudeArgs({ ...base, config: { ...defaultCliConfig(), effort: "ultra" } }, env)).not.toContain("--effort");   // „ultra“ gibt es nur bei Codex
+    expect(claudeArgs(base, env)).not.toContain("--effort");
   });
   test("Codex: Nur-Lese-Sandbox, Shell aus, eigene MCP-Konfiguration, Anweisung nur vor der ersten Nachricht", () => {
     const a = codexArgs({ ...base, kind: "codex" }, env);
@@ -92,15 +95,37 @@ describe("Aufruf und Einstellungen", () => {
     expect(a.join(" ")).toContain('mcp_servers.jarvis.env={JARVISD_URL="http://127.0.0.1:7777"}');
     expect(a.at(-1)).toBe("Anweisung\n\n---\n\nHallo");
     expect(a.join(" ")).not.toContain("danger");
-    const r = codexArgs({ ...base, kind: "codex", resume: true, native: "t-1", config: { model: "gpt-x", files: "read" } }, env);
+    const r = codexArgs({ ...base, kind: "codex", resume: true, native: "t-1", config: { model: "gpt-x", files: "read", effort: "ultra" } }, env);
     expect(r.slice(0, 2)).toEqual(["exec", "resume"]);
     expect(r).not.toContain("shell_tool");
     expect(r.at(-2)).toBe("t-1"); expect(r.at(-1)).toBe("Hallo");
+    expect(r.join(" ")).toContain('model_reasoning_effort="ultra"'); expect(r[r.indexOf("-m") + 1]).toBe("gpt-x");
+    expect(a.join(" ")).not.toContain("model_reasoning_effort");
+  });
+  test("Übernahme Claude Code: Nutzer-Skills über Skill-Werkzeug, Hooks aus, fremde MCP-Server weiterhin aus", () => {
+    const a = claudeArgs({ ...base, config: { ...defaultCliConfig(), adopt: true } }, env);
+    expect(a[a.indexOf("--setting-sources") + 1]).toBe("user");
+    expect(JSON.parse(a[a.indexOf("--settings") + 1])).toEqual({ disableAllHooks: true });
+    expect(a[a.indexOf("--tools") + 1]).toBe("Skill"); expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__jarvis__*,Skill");
+    expect(a).toContain("--strict-mcp-config");
+    expect(a.join(" ")).not.toMatch(/Bash|Edit|Write|dangerously/);
+    const off = claudeArgs(base, env);
+    expect(off).not.toContain("--settings"); expect(off[off.indexOf("--setting-sources") + 1]).toBe(""); expect(off[off.indexOf("--tools") + 1]).toBe("");
+  });
+  test("Übernahme Codex: Konfiguration geladen, Hooks und eigene MCP-Server aus, keine Rückfragen, Skills lesbar", () => {
+    const a = codexArgs({ ...base, kind: "codex", config: { ...defaultCliConfig(), adopt: true } }, { ...env, userMcp: () => ["computer-use", "higgsfield"] });
+    expect(a).not.toContain("--ignore-user-config");
+    expect(a.join(" ")).toContain("--disable hooks"); expect(a.join(" ")).toContain('approval_policy="never"');
+    expect(a.join(" ")).toContain("mcp_servers.computer-use.enabled=false"); expect(a.join(" ")).toContain("mcp_servers.higgsfield.enabled=false");
+    expect(a.join(" ")).toContain('mcp_servers.jarvis.command='); expect(a.join(" ")).toContain('sandbox_mode="read-only"');
+    expect(a).not.toContain("shell_tool");
+    const off = codexArgs({ ...base, kind: "codex" }, env);
+    expect(off).toContain("--ignore-user-config"); expect(off.join(" ")).not.toContain("approval_policy");
   });
   test("Einstellungen prüfen", () => {
-    expect(parseCliConfig({ model: "", files: "none" })).toEqual({ model: "", files: "none" });
-    expect(parseCliConfig({ model: "claude-sonnet-5-5", files: "read" })).toEqual({ model: "claude-sonnet-5-5", files: "read" });
-    for (const bad of [null, [], { model: 5 }, { model: "a b" }, { model: "x".repeat(101) }, { files: "write" }, { model: "--evil" }]) expect(() => parseCliConfig(bad)).toThrow();
+    expect(parseCliConfig({ model: "", files: "none" })).toEqual({ model: "", files: "none", effort: "", adopt: false });
+    expect(parseCliConfig({ model: "claude-sonnet-5-5", files: "read", effort: "high" })).toEqual({ model: "claude-sonnet-5-5", files: "read", effort: "high", adopt: false });
+    for (const bad of [null, [], { model: 5 }, { model: "a b" }, { model: "x".repeat(101) }, { files: "write" }, { model: "--evil" }, { effort: "extrem" }, { adopt: "ja" }]) expect(() => parseCliConfig(bad)).toThrow();
     expect(cliModelId("claude", defaultCliConfig())).toBe("claude/default");
   });
 });
