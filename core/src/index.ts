@@ -668,6 +668,7 @@ function announcement(e: Extract<BrainEvent, { kind: "tool" }>) {
 const canSee = (id: string) => models.find(m => m.id === id)?.vision ?? false;
 
 let runSeq = 0, voiceRun = 0, lastSayAt = 0;   // jeder chat()-Aufruf bekommt eine Nummer; ein abgelöster Lauf darf danach nichts mehr auslösen (z. B. Wiederholung)
+const SPOKEN_SUFFIX = "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll. Antworte knapp und direkt in vollständigen Sätzen. Wenn der Nutzer um Details bittet oder etwas vorgelesen haben möchte, gib den gewünschten Inhalt vollständig wieder. Erwähne Koordinaten und Elementnummern nur auf Nachfrage.";
 type ActiveTurn = { run: number; sid?: string; spoken: boolean; click?: ClickIntent; clickSent?: boolean; clickInFlight?: boolean; firstAction?: Promise<void> };
 let activeTurn: ActiveTurn | undefined;
 let recentClick: { session: string; intent: ClickIntent; text: string; at: number } | undefined;
@@ -800,21 +801,36 @@ async function chatCli(kind: CliKind, text: string, spoken: boolean, fresh: bool
   if (!existing && !fresh) { session = id; broadcast({ type: "session", id }); }
   latestRun.set(id, run); if (spoken) voiceRun = run;
   busySessions.add(id); runBuffer.start(id); broadcast(state());
+  // Wie bei OpenCode: Jarvis spricht die kurze Ansage vor einer Aktion selbst (announceToolAction braucht den aktiven Lauf)
+  const turn: ActiveTurn = { run, spoken, sid: id };
+  activeTurn = turn;
   cli.append(id, { role: "user", text: text || "Sieh dir die angehängten Dateien an.", ...(names.length ? { files: names } : {}) });
   const emit = (msg: Record<string, unknown>) => { const event = { ...msg, session: id }; runBuffer.add(id, event as any); broadcast(event); };
-  let response = "", finished = false;
+  let response = "", finalSpeech = "", finished = false, afterTool = false, toolSeen = false;
   try {
     const row = cli.get(id);
     const hint = kind === "claude" && imageFiles.length ? `\n\nBilder liegen unter: ${imageFiles.join(", ")} (mit Read ansehen).` : "";
-    const result = await cli.agent.prompt(id, { kind, config, input: (text || "Sieh dir die angehängten Dateien an.") + attachmentText + hint, instructions: SYSTEM_PROMPT,
+    const result = await cli.agent.prompt(id, { kind, config, input: (text || "Sieh dir die angehängten Dateien an.") + attachmentText + hint, instructions: spoken ? SYSTEM_PROMPT + SPOKEN_SUFFIX : SYSTEM_PROMPT,
       native: row.native, resume: row.started, images: kind === "codex" ? imageFiles : [] }, (event: BrainEvent) => {
       if (finished || latestRun.get(id) !== run) return;
-      if (event.kind === "text") { response += event.delta; if (!spoken) emit({ type: "delta", text: event.delta }); }
-      else if (event.kind === "tool") emit({ type: "tool", ...event });
+      if (event.kind === "text") {
+        // Text nach einem Werkzeug beginnt einen neuen Absatz („…Moment.“ und „YouTube ist geöffnet“ nicht aneinanderkleben)
+        const delta = afterTool && response ? `\n\n${event.delta}` : event.delta;
+        afterTool = false; response += delta; finalSpeech += delta;
+        if (!spoken) emit({ type: "delta", text: delta });
+      }
+      else if (event.kind === "tool") {
+        emit({ type: "tool", ...event });
+        toolSeen = true;
+        if (event.status === "running") { afterTool = true; finalSpeech = ""; }   // gesprochen wird nur, was nach dem letzten Werkzeug kommt
+      }
       else if (event.kind === "reasoning") { if (!spoken) emit({ type: "reasoning", text: event.delta }); }
       else {
         finished = true;
-        if (event.kind === "done" && !event.aborted && spoken && response) { emit({ type: "delta", text: response }); liveAnswer.deliver(run, response); }
+        if (event.kind === "done" && !event.aborted && spoken) {
+          const toRead = formatLiveSpeech(finalSpeech || (!toolSeen ? response : ""), text) || "Ich konnte die Antwort nicht abschließen.";
+          emit({ type: "delta", text: toRead }); liveAnswer.deliver(run, toRead);
+        }
         emit({ type: event.kind, ...event });
       }
     });
@@ -822,6 +838,7 @@ async function chatCli(kind: CliKind, text: string, spoken: boolean, fresh: bool
   } finally {
     if (response) cli.append(id, { role: "assistant", text: response });
     for (const file of imageFiles) { try { unlinkSync(file); } catch { /* schon weg */ } }
+    if (activeTurn === turn) activeTurn = undefined;
     busySessions.delete(id); runBuffer.clear(id);
     if (fresh) { try { cli.remove(id); } catch { /* schon weg */ } } else cli.touch(id);
     if (!fresh) setTimeout(() => void refreshLimits(kind), 3000);   // das Kontingent ändert sich erst nach dem Lauf   // „fresh“ = kurzlebiger Testchat, kein Verlauf
@@ -888,7 +905,7 @@ async function chat(text: string, model = settings.model, spoken = false, tried:
     if (maySpeak() && busySessions.has(sid) && !textSeen && !turn.firstAction && Date.now() - lastSayAt >= 2500)
       say("Einen Moment.");
   }, 1300);
-  const system = spoken ? SYSTEM_PROMPT + "\n\nIm Sprachmodus übernimmt Jarvis die kurze Ansage vor der Aktion. Arbeite ohne Zwischenkommentare und schreibe am Ende nur die Antwort, die vorgelesen werden soll. Antworte knapp und direkt in vollständigen Sätzen. Wenn der Nutzer um Details bittet oder etwas vorgelesen haben möchte, gib den gewünschten Inhalt vollständig wieder. Erwähne Koordinaten und Elementnummern nur auf Nachfrage." : SYSTEM_PROMPT;
+  const system = spoken ? SYSTEM_PROMPT + SPOKEN_SUFFIX : SYSTEM_PROMPT;
   const attachmentBlocks = saved?.text ? [saved.text] : [];
   const attachmentNames = [...(saved?.names ?? []), ...atts.map(file => file.name)];
   const images = canSee(model) ? [...(saved?.images ?? [])] : [];

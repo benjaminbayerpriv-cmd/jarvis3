@@ -24,6 +24,7 @@ case "$*" in *"-p /usage"*) printf '%s\\n' '{"type":"result","result":"Current s
 case "$*" in *WARTE-AUF-STOPP*) echo '{"type":"system","subtype":"init","session_id":"x"}'; sleep 30; exit 0;; esac
 SID=x; for a in "$@"; do case "$prev" in --session-id|--resume) SID="$a";; esac; prev="$a"; done
 echo '{"type":"system","subtype":"init","session_id":"'$SID'"}'
+case "$*" in *VORTEXT*) echo '{"type":"stream_event","api_message_id":"m0","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Ich öffne es."}}}';; esac
 echo '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__jarvis__desktop_displays","input":{}}]}}'
 echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
 echo '{"type":"stream_event","api_message_id":"m2","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Antwort von Claude"}}}'
@@ -95,8 +96,14 @@ echo '{"type":"turn.completed"}'
     expect(claudeCalls[0]).toContain("--setting-sources user"); expect(claudeCalls[0]).toContain("disableAllHooks"); expect(claudeCalls[0]).toContain("--allowedTools mcp__jarvis__*,Skill");
     expect(claudeCalls[0]).toContain("--model opus"); expect(claudeCalls[0]).toContain("--effort high"); expect(claudeCalls[0]).toContain("--strict-mcp-config");
     expect(claudeCalls[0]).not.toMatch(/dangerously|Bash/);
+    // Text vor und nach einem Werkzeug: neuer Absatz, nicht aneinandergeklebt
+    messages.length = 0;
+    send({ type: "chat", text: "Mit VORTEXT", session: sid });
+    expect((await wait(m => m.type === "delta" && m.session === sid)).text).toBe("Ich öffne es.");
+    expect((await wait(m => m.type === "delta" && m.session === sid)).text).toBe("\n\nAntwort von Claude");
+    await wait(m => m.type === "done" && m.session === sid);
     send({ type: "open", id: sid });
-    expect((await wait(m => m.type === "messages" && m.session === sid)).messages.map((m: any) => m.text)).toEqual(["Hallo Claude", "Antwort von Claude", "Noch eine", "Antwort von Claude"]);
+    expect((await wait(m => m.type === "messages" && m.session === sid)).messages.map((m: any) => m.text)).toEqual(["Hallo Claude", "Antwort von Claude", "Noch eine", "Antwort von Claude", "Mit VORTEXT", "Ich öffne es.\n\nAntwort von Claude"]);
 
     // Verlauf, Umbenennen, Bearbeiten abgelehnt
     send({ type: "history" }); const hist = await wait(m => m.type === "history" && m.sessions.some((s: any) => s.id === sid)); expect(hist.sessions.find((s: any) => s.id === sid).running).toBe(false);
